@@ -56,6 +56,18 @@ class TestGood(unittest.TestCase):
         self.assertIn("invented OP-1", out)
         self.assertNotIn("DIFFERENT ANSWER", out)
 
+    def test_go_learns_and_shows_its_evidence(self):
+        import re
+        from tests.helpers import run_salish
+        with open(os.path.join(ROOT, "programs/good/go.sal")) as f:
+            src = f.read()
+        src = re.sub(r"const ROUNDS = 3, TRAIN = 100, TEST = 10",
+                     "const ROUNDS = 1, TRAIN = 20, TEST = 2", src)
+        out, res = run_salish(src)
+        self.assertEqual(res[0], 0, out[-500:])
+        self.assertIn("filling its own eye", out)
+        self.assertRegex(out, r"area score -?\d+")
+
     def test_explosion_needs_the_key(self):
         sat = run_job("//JOB E KEY=WCS\n//SALISH FROM=programs/good/"
                       "explosion.sal\n//EXEC\n")

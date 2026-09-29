@@ -9,6 +9,7 @@ to look for, and what the output does and does not show.
 ```
 python -m duwamish run jobs/good.job --wcs     # Good (the explosion needs the WCS key)
 python -m duwamish run jobs/hofstadter.job     # Hofstadter
+python -m duwamish run jobs/go.job --model 90  # go, learned by self-play (about two minutes)
 python -m duwamish run jobs/tower.job          # LISP in LISP in LISP (about a minute)
 python -m duwamish run jobs/tour.job           # the machine and its languages
 ```
@@ -54,7 +55,47 @@ designs available to the next, to improve how it improves and not just
 what it runs. The demonstration makes that premise concrete, testable and
 visibly unmet.
 
-### 2. Weight of evidence — `programs/good/banburismus.sal`
+### 2. Go, learned by self-play — `programs/good/go.sal`
+
+Good learned go at Bletchley and did much to bring it to the West. His
+article "The Mystery of Go" (*New Scientist*, 1965) argued it would be far
+harder to program than chess. This program learns 5×5 go from nothing but
+the rules and the results of games against itself.
+
+* **The board is ternary.** A point is a trit: black +1, empty 0, white −1.
+  The position seen from the other side is its negation.
+* **Knowledge is a table of patterns**, and a pattern is exactly one
+  6-trit number (3⁶ = 729 patterns). Four trits are the move's neighbours
+  from the mover's side, one says centre, edge or corner, and one says
+  whether the move captures (+1), puts itself in atari (−1) or neither.
+* **Learning is by randomized experiment.** Half the self-play moves are
+  chosen at random. Each pattern's value is Good's weight of evidence, in
+  decibans, that *choosing* it goes with winning, over and above merely
+  having it *available*. Good's flattening constant of 1 means no evidence,
+  no opinion. The program plays the move with the most evidence in its
+  favour, and passes when every move has evidence against it.
+
+**What to look for.** After 300 games of self-play it beats a random
+player 20 games in 20, up from 8 when untrained. It then *shows its
+evidence*: the patterns it came to prefer and to fear, each with the
+count of winners and losers who chose it. It was never told that filling
+its own eye is bad. It found something subtler: filling an eye is harmless
+(+0.69 db) while the group keeps other liberties, and bad (−4.45 db) when
+the move leaves the group in atari.
+
+**Why randomization matters.** The naive rule credits every move with its
+game's result, as Michie's MENACE (1961) did. Set `CREDIT = 0` to try it:
+it reaches only 15 in 20 on the same budget. The naive rule confuses cause
+with circumstance, because a losing side plays desperate moves *because* it
+is losing. Choosing experimental moves at random (Fisher's device) breaks
+that confusion, so the evidence measures what a move does.
+
+**What it does not show.** Four neighbours cannot see a whole group, let
+alone the board. The program is a beginner that exploits a random
+opponent's blunders. That limitation is the "mystery of go" Good wrote
+about.
+
+### 3. Weight of evidence — `programs/good/banburismus.sal`
 
 Turing and Good at Bletchley measured evidence in **decibans**: *W* = 10
 log₁₀ of the likelihood ratio, which *adds* across independent
@@ -67,7 +108,7 @@ logarithms by repeated squaring. It plots the evidence letter by letter and
 reports its verdicts. A pair that fails to reach the threshold is reported
 as undecided, not guessed.
 
-### 3. The probability of the unseen — `programs/good/goodturing.sal`
+### 4. The probability of the unseen — `programs/good/goodturing.sal`
 
 Good's 1953 paper (crediting Turing): the chance that the next specimen is
 of a *new* species is about *N₁/N*, the fraction of the sample seen exactly
@@ -88,7 +129,7 @@ once. A species seen *r* times deserves the adjusted count
 
 ## Douglas Hofstadter
 
-### 4. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
+### 5. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
 
 Gödel's diagonal lemma says that a sentence can state a property of its
 *own* Gödel number. The program's "sentence" is its own machine code.
@@ -104,7 +145,7 @@ claim is false. The program then
 
 Nothing is assumed: the true self-description is *computed*, as Gödel's is.
 
-### 5. Quining — `programs/hofstadter/quine.sal`
+### 6. Quining — `programs/hofstadter/quine.sal`
 
 A SALISH program whose output is exactly its own source text, byte for
 byte. The test suite checks this on every run. It follows Hofstadter's
@@ -112,7 +153,7 @@ byte. The test suite checks this on every run. It follows Hofstadter's
 using it. `tools/make_quine.py` shows how the text was constructed. TRILISP's
 tour includes the LISP version, checked in-machine by `(equal (eval q) q)`.
 
-### 6. The MU puzzle — `programs/hofstadter/miu.sal`
+### 7. The MU puzzle — `programs/hofstadter/miu.sal`
 
 This separates Hofstadter's **mechanical mode** from his **intelligent
 mode**. Working inside the MIU system, the machine derives all 216
@@ -123,7 +164,7 @@ last trit is 0", and the machine checks that trit on every theorem it
 derives. The table shows the count of I's in balanced ternary: the last
 trit is always 1 or T.
 
-### 7. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
+### 8. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
 
 With the word `bloop`, the SALISH compiler *certifies termination*. It
 accepts only bounded `for` loops, no recursion and no indirect calls, and
@@ -134,7 +175,7 @@ wondrous-numbers (Collatz) program is **refused** certification, with each
 unbounded loop named, and then runs as FlooP. Whether *every* number is
 wondrous is a GlooP question that no bounded loop can answer.
 
-### 8. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
+### 9. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
 
 The tower of interpreters: Python → microcode → TRIAD → SALISH (the TRILISP
 interpreter) → M-EVAL, McCarthy's LISP-in-LISP → M-EVAL again, running its
@@ -144,7 +185,7 @@ Each costs about 100–160 times the level below. The top interpreter is the
 same *text* as the one below it, read as data: the program has become its
 own subject.
 
-### 9. Contracrostipunctus — `diagonal.lsp`
+### 10. Contracrostipunctus — `diagonal.lsp`
 
 The Crab's record players and the Tortoise's records. `HALTS?` is an honest
 would-be oracle: it runs a program in M-EVAL with a step budget. It is right
@@ -153,7 +194,7 @@ about *itself* and does the opposite. The oracle says "runs forever";
 `CONTRARY` then halts. Raising the budget changes nothing. This is Turing's
 halting theorem, the engine of Gödel's.
 
-### 10. The tangled hierarchy — the machine as a whole
+### 11. The tangled hierarchy — the machine as a whole
 
 The deepest Hofstadterian feature is architectural. The writable control
 store lets software rewrite the microcode that runs it (§1). TRILISP can

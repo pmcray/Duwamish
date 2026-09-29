@@ -27,9 +27,10 @@ Needs only Python 3.8+ and no packages.
 python -m duwamish run jobs/tour.job --model 90        # the machine and its languages
 python -m duwamish run jobs/hofstadter.job --model 90  # Goedel, quines, MIU, BlooP, halting
 python -m duwamish run jobs/good.job --wcs             # evidence, Good-Turing, the explosion
+python -m duwamish run jobs/go.job --model 90          # go, learned by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
 python -m duwamish go programs/hello.sal               # run one program
-python -m unittest discover -s tests -t .              # 31 tests
+python -m unittest discover -s tests -t .              # 32 tests
 ```
 
 ## The demonstrations
@@ -43,6 +44,10 @@ shows, and what it does not.
   itself*, and rewrites itself to use them. The gains converge to a fixed
   point, which shows exactly which premise of the intelligence-explosion
   argument is missing.
+* `go.sal`: Good's game. The program learns 5×5 go by self-play, using
+  randomized experiments and weights of evidence over 729 six-trit
+  patterns. It goes from 8 to 20 wins in 20 against a random player, and
+  shows the evidence for what it learned.
 * `banburismus.sal`: Turing and Good's weight of evidence in decibans, in a
   sequential test for messages "in depth"; the machine computes its own
   logarithms.
