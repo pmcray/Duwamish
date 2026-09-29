@@ -28,9 +28,10 @@ python -m duwamish run jobs/tour.job --model 90        # the machine and its lan
 python -m duwamish run jobs/hofstadter.job --model 90  # Goedel, quines, MIU, BlooP, halting
 python -m duwamish run jobs/good.job --wcs             # evidence, Good-Turing, the explosion
 python -m duwamish run jobs/go.job --model 90          # go, learned by self-play (about two minutes)
+python -m duwamish run jobs/draughts.job --model 90    # Samuel's draughts learner (about four minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
 python -m duwamish go programs/hello.sal               # run one program
-python -m unittest discover -s tests -t .              # 32 tests
+python -m unittest discover -s tests -t .              # 33 tests
 ```
 
 ## The demonstrations
@@ -48,6 +49,10 @@ shows, and what it does not.
   randomized experiments and weights of evidence over 729 six-trit
   patterns. It goes from 8 to 20 wins in 20 against a random player, and
   shows the evidence for what it learned.
+* `draughts.sal`: after Strachey and Samuel. Alpha-beta search plus an
+  evaluation polynomial that learns by self-play, using Samuel's
+  "generalization" and Alpha/Beta scheme. It discovers for itself which
+  positional terms matter.
 * `banburismus.sal`: Turing and Good's weight of evidence in decibans, in a
   sequential test for messages "in depth"; the machine computes its own
   logarithms.

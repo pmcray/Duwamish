@@ -68,6 +68,20 @@ class TestGood(unittest.TestCase):
         self.assertIn("filling its own eye", out)
         self.assertRegex(out, r"area score -?\d+")
 
+    def test_draughts_learns_and_reports(self):
+        import re
+        from tests.helpers import run_salish
+        with open(os.path.join(ROOT, "programs/good/draughts.sal")) as f:
+            src = f.read()
+        src = re.sub(r"const TRAIN = 20, TEST = 20",
+                     "const TRAIN = 2, TEST = 1", src)
+        src = re.sub(r"const DEPTH = 2, OPENING = 4, MAXPLY = 100",
+                     "const DEPTH = 2, OPENING = 4, MAXPLY = 30", src)
+        out, res = run_salish(src)
+        self.assertEqual(res[0], 0, out[-500:])
+        self.assertIn("settled judgement", out)
+        self.assertRegex(out, r"won \d+, drew \d+, lost \d+")
+
     def test_explosion_needs_the_key(self):
         sat = run_job("//JOB E KEY=WCS\n//SALISH FROM=programs/good/"
                       "explosion.sal\n//EXEC\n")

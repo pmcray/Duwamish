@@ -1,0 +1,419 @@
+-- =====================================================================
+--  DRAUGHTS: a program that learns to play better than its author.
+--
+--  Christopher Strachey's draughts program (1951-52, for the Pilot ACE
+--  and the Ferranti Mark 1) was among the first game programs ever run.
+--  Arthur Samuel's checkers program at IBM, begun in 1952, *learned*: in
+--  "Some Studies in Machine Learning Using the Game of Checkers" (1959)
+--  he described it teaching itself, by playing against itself, to play
+--  better than he could.  That -- a machine surpassing its maker at an
+--  intellectual task -- is the step on which Good's intelligence
+--  explosion rests.  This program follows Samuel's method.
+--
+--  SEARCH.  To choose a move the program looks ahead with minimax and
+--  alpha-beta pruning, two moves deep, and further while captures are
+--  pending (captures are compulsory, and a position is not quiet until
+--  they are over).
+--
+--  EVALUATION.  At the end of the lookahead a position is scored by a
+--  polynomial, as Samuel's was: material (a man 100, a king 150, fixed)
+--  plus six learned terms -- mobility, men in the centre, advancement,
+--  kings in the centre, men guarding the back row, and threats.
+--
+--  LEARNING BY GENERALISATION.  After each move, the learner compares
+--  the score its evaluation gave the position *before* looking ahead
+--  with the score the lookahead *backed up*.  The lookahead knows more,
+--  so each coefficient is nudged in proportion to how much its term
+--  would have closed the gap -- Samuel's rule, in the normalised
+--  least-mean-squares form of Widrow and Hoff (1960).  It is also the
+--  idea, decades on, behind TD-Gammon and AlphaZero.
+--
+--  ALPHA AND BETA.  As in Samuel's experiments, a learning player, Alpha,
+--  plays a frozen copy, Beta.  Whenever Alpha wins a game, Beta adopts
+--  Alpha's coefficients.  At the end, Alpha's coefficients averaged over
+--  all its learning -- its settled judgement -- play a program that knows
+--  only material, which is where both began.
+-- =====================================================================
+
+const W = 12, SZ = W * W, BORDER = 3
+const DEPTH = 2, OPENING = 4, MAXPLY = 100
+const TRAIN = 20, TEST = 20
+const NF = 6
+const RATE = 800                   -- 0.08, in ten-thousandths
+const MAXMV = 3000, MAXCAP = 12
+
+global b[SZ], sq[32], centre[SZ], adv_b[SZ], adv_w[SZ], back_b[SZ], back_w[SZ]
+global dirs := table(-W - 1, -W + 1, W - 1, W + 1)
+global seed := 1959
+
+-- the move stack: every node of the search pushes its moves here
+global mfrom[MAXMV], mto[MAXMV], mpiece[MAXMV], mprom[MAXMV], mncap[MAXMV]
+global mcap[MAXMV * MAXCAP], mcapv[MAXMV * MAXCAP]
+global mtop := 0
+
+-- the players' coefficients, in ten-thousandths
+global alpha[NF], beta[NF], zero[NF], settled[NF], curw
+global feat[NF]
+global fname := table("mobility (moves available)",
+                      "men in the centre",
+                      "advancement of men",
+                      "kings in the centre",
+                      "men guarding the back row",
+                      "threats (captures pending)")
+global nodes := 0
+
+proc random31()
+begin
+  var hi := seed / 44488, lo := seed mod 44488
+  seed := 48271 * lo - 3399 * hi
+  if seed <= 0 then seed := seed + 2147483647
+  return seed
+end
+
+proc random(n) = random31() mod n
+
+-- ---------------------------------------------------------------------
+-- the board.  Black men +1, black kings +2, white men -1, white kings -2:
+-- the sign is the colour, so the other side's view is a negation.
+-- Black moves up the board (towards row 0).
+-- ---------------------------------------------------------------------
+inline proc rowof(p) = p / W - 2
+
+proc setup()
+begin
+  var k := 0, p
+  for i := 0 to SZ - 1 do b[i] := BORDER
+  for r := 0 to 7 do
+    for c := 0 to 7 do begin
+      p := (r + 2) * W + c + 2
+      if (r + c) mod 2 = 1 then begin
+        sq[k] := p
+        k := k + 1
+        b[p] := r < 3 -> -1, r > 4 -> 1, 0
+        centre[p] := (r >= 2 and r <= 5 and c >= 2 and c <= 5) -> 1, 0
+        adv_b[p] := 7 - r
+        adv_w[p] := r
+        back_b[p] := r = 7 -> 1, 0
+        back_w[p] := r = 0 -> 1, 0
+      end else b[p] := 0
+    end
+end
+
+-- directions a piece may move: men forward only, kings both ways
+inline proc dlo(v) = v = -1 -> 2, 0
+inline proc dhi(v) = v = 1 -> 1, 3
+
+-- row 0 is squares 24..35 and row 7 is 108..119 of the padded board
+inline proc promotes(v, t) = (v = 1 and t < 3 * W) or (v = -1 and t >= 9 * W)
+
+-- ---------------------------------------------------------------------
+-- move generation, with compulsory multiple captures
+-- ---------------------------------------------------------------------
+global tstack[MAXCAP], tdepth, tmark[SZ], jstart, jcol, jv
+
+proc push(dest, prom)
+begin
+  mfrom[mtop] := jstart
+  mto[mtop] := dest
+  mpiece[mtop] := jv
+  mprom[mtop] := prom
+  mncap[mtop] := tdepth
+  for i := 0 to tdepth - 1 do mcap[mtop * MAXCAP + i] := tstack[i]
+  mtop := mtop + 1
+end
+
+-- extend a capture from p; the jumped pieces are marked, not removed
+proc jumps(p)
+begin
+  var found := false, d, m, t
+  for k := dlo(jv) to dhi(jv) do begin
+    d := dirs[k]
+    m := p + d
+    t := m + d
+    if b[m] <> BORDER and b[m] * jcol < 0 and tmark[m] = 0 and b[t] = 0 then begin
+      found := true
+      tstack[tdepth] := m
+      tdepth := tdepth + 1
+      tmark[m] := 1
+      if promotes(jv, t) then push(t, true)      -- crowning ends the move
+      else begin
+        b[t] := jv
+        jumps(t)
+        b[t] := 0
+      end
+      tdepth := tdepth - 1
+      tmark[m] := 0
+    end
+  end
+  if not found and tdepth > 0 then push(p, false)
+end
+
+-- can the piece v at p capture at least once?
+proc can_jump(p, v, col)
+begin
+  var d
+  for k := dlo(v) to dhi(v) do begin
+    d := dirs[k]
+    if b[p + d] * col < 0 and b[p + d] <> BORDER and b[p + d + d] = 0 then
+      return true
+  end
+  return false
+end
+
+-- push the moves for col: captures if there are any, else simple moves.
+-- One pass: simple moves are collected until the first capture is found,
+-- and then thrown away.
+proc gen(col)
+begin
+  var start := mtop, p, v, t, captured := false
+  jcol := col
+  tdepth := 0
+  for i := 0 to 31 do begin
+    p := sq[i]
+    v := b[p]
+    if v * col > 0 then begin
+      if can_jump(p, v, col) then begin
+        if not captured then begin captured := true; mtop := start end
+        jstart := p
+        jv := v
+        b[p] := 0
+        jumps(p)
+        b[p] := v
+      end else if not captured then
+        for k := dlo(v) to dhi(v) do begin
+          t := p + dirs[k]
+          if b[t] = 0 then begin
+            mfrom[mtop] := p; mto[mtop] := t; mpiece[mtop] := v
+            mprom[mtop] := promotes(v, t); mncap[mtop] := 0
+            mtop := mtop + 1
+          end
+        end
+    end
+  end
+  return mtop - start
+end
+
+proc make(i)
+begin
+  var v := mpiece[i], c
+  b[mfrom[i]] := 0
+  for j := 0 to mncap[i] - 1 do begin
+    c := mcap[i * MAXCAP + j]
+    mcapv[i * MAXCAP + j] := b[c]
+    b[c] := 0
+  end
+  b[mto[i]] := mprom[i] > 0 -> 2 * v, v
+end
+
+proc unmake(i)
+begin
+  b[mto[i]] := 0
+  for j := 0 to mncap[i] - 1 do b[mcap[i * MAXCAP + j]] := mcapv[i * MAXCAP + j]
+  b[mfrom[i]] := mpiece[i]
+end
+
+-- ---------------------------------------------------------------------
+-- Samuel's scoring polynomial, from col's point of view
+-- ---------------------------------------------------------------------
+proc evaluate(col)
+begin
+  var mat := 0, p, v, s, score, t, d, mine := 0, theirs := 0
+  for f := 0 to NF - 1 do feat[f] := 0
+  for i := 0 to 31 do begin
+    p := sq[i]
+    v := b[p]
+    if v <> 0 then begin
+      s := v * col > 0 -> 1, -1
+      if v = 1 then begin
+        mat := mat + 100 * s
+        feat[1] := feat[1] + s * centre[p]
+        feat[2] := feat[2] + s * adv_b[p]
+        feat[4] := feat[4] + s * back_b[p]
+      end else if v = -1 then begin
+        mat := mat + 100 * s
+        feat[1] := feat[1] + s * centre[p]
+        feat[2] := feat[2] + s * adv_w[p]
+        feat[4] := feat[4] + s * back_w[p]
+      end else begin
+        mat := mat + 150 * s
+        feat[3] := feat[3] + s * centre[p]
+      end
+      -- mobility, and whether this piece has a capture
+      for k := dlo(v) to dhi(v) do begin
+        d := dirs[k]
+        t := b[p + d]
+        if t = 0 then feat[0] := feat[0] + s
+        else if t * v < 0 and t <> BORDER and b[p + d + d] = 0 then begin
+          if s > 0 then mine := 1 else theirs := 1
+        end
+      end
+    end
+  end
+  feat[5] := mine - theirs
+  score := 0
+  for f := 0 to NF - 1 do score := score + curw[f] * feat[f]
+  return mat + score / 10000
+end
+
+-- ---------------------------------------------------------------------
+-- minimax with alpha-beta pruning (negamax form)
+-- ---------------------------------------------------------------------
+global bestidx
+proc search(col, depth, lo, hi)
+begin
+  var start := mtop, n, best := -1000000, v, first, i
+  nodes := nodes + 1
+  n := gen(col)
+  if n = 0 then begin mtop := start; return -10000 end      -- no move: lost
+  if depth <= 0 and mncap[start] = 0 then begin             -- quiet: score it
+    mtop := start
+    return evaluate(col)
+  end
+  first := random(n)
+  for j := 0 to n - 1 do begin
+    i := start + (first + j) mod n
+    make(i)
+    v := -search(-col, depth - 1, -hi, -lo)
+    unmake(i)
+    if v > best then begin
+      best := v
+      if start = 0 then bestidx := i
+    end
+    if v > lo then lo := v
+    if lo >= hi then break
+  end
+  mtop := start
+  return best
+end
+
+-- Samuel's learning by generalisation: move the static score towards the
+-- backed-up score, each coefficient in proportion to its term.  The step
+-- is divided by the size of the terms (Widrow and Hoff's normalisation),
+-- and a running sum of the coefficients is kept, so that the program's
+-- settled judgement is the average of everything it has believed.
+global wsum[NF], nsum := 0
+proc generalise(col, backed_up)
+begin
+  var delta := backed_up - evaluate(col), n := 1
+  delta := max(-300, min(300, delta))
+  for f := 0 to NF - 1 do n := n + feat[f] * feat[f]
+  for f := 0 to NF - 1 do begin
+    alpha[f] := alpha[f] + RATE * delta * feat[f] / n
+    wsum[f] := wsum[f] + alpha[f]
+  end
+  nsum := nsum + 1
+end
+
+proc material_black()
+begin
+  var m := 0, v
+  for i := 0 to 31 do begin
+    v := b[sq[i]]
+    if v <> 0 then m := m + (v = 1 or v = -1 -> 100, 150) * (v > 0 -> 1, -1)
+  end
+  return m
+end
+
+global plies
+-- a game; returns +1 if black wins, -1 if white wins, 0 for a draw
+proc game(wb, ww, learner)
+begin
+  var col := 1, n, i, val, m
+  setup()
+  for ply := 1 to MAXPLY do begin
+    plies := ply
+    curw := col > 0 -> wb, ww
+    mtop := 0
+    n := gen(col)
+    if n = 0 then return -col
+    if ply <= OPENING then i := random(n)
+    else begin
+      mtop := 0
+      val := search(col, DEPTH, -1000000, 1000000)
+      i := bestidx
+      if learner = col then generalise(col, val)
+    end
+    make(i)
+    col := -col
+  end
+  -- adjudicate a long game on material, as a referee would
+  m := material_black()
+  return m > 0 -> 1, m < 0 -> -1, 0
+end
+
+proc copyw(src, dst)
+begin
+  for f := 0 to NF - 1 do dst[f] := src[f]
+end
+
+proc showw(w)
+begin
+  for f := 0 to NF - 1 do begin printfix(w[f] / 100, 2); spaces(1) end
+end
+
+proc show_board()
+begin
+  var v
+  for r := 0 to 7 do begin
+    prints("      ")
+    for c := 0 to 7 do begin
+      v := b[(r + 2) * W + c + 2]
+      putc(v = 1 -> 'b', v = 2 -> 'B', v = -1 -> 'w', v = -2 -> 'W',
+           (r + c) mod 2 = 1 -> '.', ' ')
+      space()
+    end
+    newline()
+  end
+end
+
+proc main()
+begin
+  var side, r, won := 0, drawn := 0, lost := 0, adopted := 0
+  prints("DRAUGHTS -- learning by self-play, after Samuel (1959)\n\n")
+  prints("Alpha learns as it plays; Beta, frozen, adopts Alpha's coefficients\n")
+  prints("whenever Alpha beats it.  Both begin knowing only material.\n\n")
+  prints(" game  Alpha      plies   Alpha's coefficients (mob cent adv kcent back threat)\n")
+  for g := 1 to TRAIN do begin
+    side := g mod 2 = 1 -> 1, -1
+    r := side * game(side > 0 -> alpha, beta, side > 0 -> beta, alpha, side)
+    printw(g, 5); spaces(2)
+    sign r of
+      +: begin prints("won "); copyw(alpha, beta); adopted := adopted + 1 end
+      0: prints("drew")
+      -: prints("lost")
+    end
+    printw(plies, 10); spaces(4); showw(alpha)
+    if r > 0 then prints("  Beta adopts")
+    newline()
+  end
+
+  for f := 0 to NF - 1 do settled[f] := wsum[f] / nsum
+  prints("\nBeta adopted Alpha's coefficients "); print(adopted)
+  prints(" times.  Averaged over all its learning, Alpha's\nsettled judgement is:\n\n")
+  for f := 0 to NF - 1 do begin
+    prints("   "); printsw(fname[f], 30)
+    if settled[f] >= 0 then putc('+')
+    printfix(settled[f] / 100, 2); newline()
+  end
+  prints("\nthat judgement against the material-only program it grew from, ")
+  print(TEST); prints(" games:\n")
+  for g := 1 to TEST do begin
+    side := g mod 2 = 1 -> 1, -1
+    r := side * game(side > 0 -> settled, zero, side > 0 -> zero, settled, 0)
+    if r > 0 then won := won + 1
+    if r = 0 then drawn := drawn + 1
+    if r < 0 then lost := lost + 1
+  end
+  prints("   won "); print(won); prints(", drew "); print(drawn)
+  prints(", lost "); print(lost); newline()
+  prints("\nthe final position of the last game:\n\n")
+  show_board()
+  prints("\n"); print(nodes); prints(" positions searched in all.\n")
+  prints("\nWhat it came to value, it found for itself: a capture in hand, a king\n")
+  prints("in the centre, a man guarding the back row -- and not a man in the\n")
+  prints("centre, where it can be taken, nor one advanced too soon.  Whether that\n")
+  prints("makes it stronger, twenty games cannot prove; two moves of lookahead\n")
+  prints("and six terms are a small brain.  Samuel's had 38 terms, deeper search\n")
+  prints("and years of play on an IBM 701 -- and in the end it beat him.\n")
+  return 0
+end
