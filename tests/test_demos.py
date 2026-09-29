@@ -58,6 +58,9 @@ class TestLivermore(unittest.TestCase):
                 k, fixed, flt = int(parts[1]), int(parts[3]), int(parts[5])
                 self.assertLessEqual(abs(fixed - ref[k]), 30, (k, fixed, ref[k]))
                 self.assertLessEqual(abs(flt - ref[k]), 2, (k, flt, ref[k]))
+                # the Model 90 has the floating-point unit
+                self.assertEqual(parts[6], "hardware")
+                self.assertLessEqual(abs(int(parts[7]) - ref[k]), 2, (k, parts[7]))
                 seen += 1
         self.assertEqual(seen, 6)
 

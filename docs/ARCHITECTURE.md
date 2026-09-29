@@ -129,6 +129,15 @@ used as an operand with `#0(Rn)`.
 | 44 | `WKS` | RA | constant store K[EA] <- R |
 | 45 | `RMAP` | RA | R <- dispatch map entry for opcode EA |
 | 46 | `WMAP` | RA | dispatch map entry for opcode EA <- R |
+| 47 | `FAD` | RE | R <- R + operand, floating; C <- sign |
+| 48 | `FSB` | RE | R <- R - operand, floating; C <- sign |
+| 49 | `FMP` | RE | R <- R * operand, floating; C <- sign |
+| 50 | `FDV` | RE | R <- R / operand, floating; C <- sign |
+| 51 | `FLT` | RE | R <- the integer operand as a float; C <- sign |
+| 52 | `FIX` | RE | R <- the float operand rounded to an integer; C <- sign |
+| 53 | `FCM` | RE | C <- sign(R - operand), floating |
+
+Opcodes 47–53 belong to the floating-point feature (§7).
 
 Two instructions exist *because* the machine is ternary.
 
@@ -147,7 +156,7 @@ argument and faulting address at fixed protected locations −1…−7. It then
 enters supervisor mode at the address held in −5. Codes: 1 illegal
 instruction, 2 protection, 3 divide by zero, 4 address out of core,
 5 privileged instruction, 6 supervisor call, 8 control store locked, 10 time
-limit. A trap *in supervisor mode* is a machine check and halts the machine.
+limit, 11 floating-point feature not installed. A trap *in supervisor mode* is a machine check and halts the machine.
 
 The **Executive** (`duwamish/executive.tri`, about 150 words of TRIAD) lives
 at −60000. It:
@@ -156,7 +165,8 @@ at −60000. It:
 2. starts the step in user mode with a clean register file and an
    interval-timer limit;
 3. services supervisor calls (0 exit, 1 print a character, 2 read a
-   character from the card reader, 3 console typewriter);
+   character from the card reader, 3 console typewriter, 4 configuration:
+   +1 if the floating-point unit is fitted, −1 if not);
 4. on EXIT or on a program check, prints a diagnostic, reports the outcome
    and the cycles used to the satellite, and loops.
 
@@ -242,8 +252,51 @@ MULSH2: U<-SHL U, CASE C MULGO
 `ENDI` ends an instruction by jumping to it. Normally the continuation is
 FETCH. That one indirection is what lets the machine chain instructions
 together without fetching them (§8). The full microprogram is
-`duwamish/microcode/model30.dmc` (142 words); list it with
+`duwamish/microcode/model30.dmc` (156 words); list it with
 `python -m duwamish micro`.
+
+### The floating-point unit
+
+Floating point is a **feature**, as it was on the System/360 and the
+PDP-6. It is standard on the Model 90 and can be ordered for the Model 30
+(`--fpu`). The unit is `duwamish/fpu.py`, and both models share it.
+
+A float fills one word, and its fields are balanced:
+
+```
+| exponent : 5 trits | mantissa : 22 trits |      value = m × 3^(e − 21)
+```
+
+The fields need no sign bit, no bias and no complement. The exponent
+runs from −121 to +121, which is about 10^±57. A normalised mantissa has
+a non-zero leading trit, so 3²¹/2 < |m| ≤ 3²²/2. That is 22 trits, about
+34.9 bits of precision (the 7600 carries 48). The word is a sum,
+e·3²² + m, so **the sign of a float is the sign of its mantissa, not of
+the word**. A small negative mantissa under a positive exponent makes a
+positive word. The unit therefore sets C from the mantissa, and `FCM`
+compares values, not words.
+
+Every operation forms the exact result and rounds it once, to nearest.
+In balanced ternary, rounding to nearest is simply dropping trits, and it
+has no ties and no bias. An exponent above 121 saturates to the largest
+magnitude. One below −121 gives zero. Dividing by zero takes trap 3.
+
+| order | time in the unit |
+|---|---|
+| `FAD`, `FSB` | 3 cycles (0.6 µs) |
+| `FMP` | 5 cycles (1.0 µs) |
+| `FDV` | 15 cycles (3.0 µs) |
+| `FLT`, `FIX`, `FCM` | 2 cycles (0.4 µs) |
+
+On the Model 90 these times are added to the 1 µs instruction. On the
+Model 30 the microcode fetches the operand as usual. One micro-order,
+`FPU`, then hands R and MDR to the unit, whose time is added to the
+clock. Without the feature, that micro-order takes program check 11. A
+program can ask the Executive whether the unit is there (`SVC 4`, or
+`hasfpu()` in SALISH) and fall back on the software library `tfloat`,
+which uses the same format. The library rounds once, as the unit does,
+and agrees with it to the trit; a test checks this on thousands of
+operand pairs, including near-cancellations, overflow and underflow.
 
 ## 8. The writable control store, and the machine's own inventions
 
@@ -308,7 +361,7 @@ commonly published values from memory, not checked against sources here.
 | Add from core | 14 cycles = 2.8 µs | 1 µs | overlapped |
 | Full-width multiply | 102 cycles = 20.4 µs (microcoded, one trit per pass) | 1 µs | floating multiply in about 5 clocks, one started per clock |
 | Typical instruction rate | about 0.4 MIPS (`hello.sal`: 47,329 instructions in 604,075 cycles) | about 1 MIPS | up to one instruction per clock |
-| Floating point | **none**: software only (below) | none | 60-bit hardware, 48-bit mantissa; about 36 MFLOPS peak |
+| Floating point | optional feature; otherwise software (below) | standard: FAD 1.6 µs, FMP 2 µs, FDV 4 µs | 60-bit hardware, 48-bit mantissa; about 36 MFLOPS peak |
 | Word | 27 trits, about 42.8 bits of information | same | 60 bits |
 | Main memory | 531,441 words, about 22.7 Mbit | same | 65K words of small core plus 512K words of large core, about 34.4 Mbit |
 
@@ -316,49 +369,74 @@ commonly published values from memory, not checked against sources here.
 
 `programs/livermore.sal` runs six of McMahon's Livermore Fortran Kernels
 (1, 3, 5, 7, 11 and 12, with n = 100). These are the loops by which the
-7600 and its successors were judged. Having no floating-point hardware, the
-Duwamish runs each kernel two ways:
+7600 and its successors were judged. The Duwamish runs each kernel three
+ways:
 
 * **Fixed point**, with numbers scaled by 3¹². A product is rescaled by
   one ternary shift, which rounds correctly. This is what a programmer of
   an integer machine would really do.
-* **Software floating point** (`duwamish/lib/tfloat.sal`). A 5-trit
-  exponent and a 22-trit mantissa are packed in one word; the balanced
-  fields need no sign bits or bias, and the XTR instruction unpacks them.
-  Products are formed from 11-trit halves so no partial product overflows.
+* **Software floating point** (`duwamish/lib/tfloat.sal`), in the unit's
+  format. The XTR instruction unpacks the fields. Products are formed
+  from 11-trit halves so no partial product overflows, and sums carry
+  four guard trits, so each operation rounds exactly once.
+* **Hardware floating point**, with the unit (§7). This column is skipped
+  on a machine without the feature. The program asks the Executive with
+  `hasfpu()`.
 
 Each loop is timed by the machine's own clock. The answers are checked
-against double precision (`tools/livermore_reference.py`): the software
-float agrees to one unit in 3⁻¹², and fixed point to within about ten.
+against double precision (`tools/livermore_reference.py`). Both float
+columns agree with it to one unit in 3⁻¹², and with each other exactly.
+Fixed point agrees to within about ten units.
 
-| kernel | flops | Model 30 fixed | Model 30 float | Model 90 fixed | Model 90 float |
-|---|---:|---:|---:|---:|---:|
-| 1 hydro fragment | 500 | 0.0363 | 0.0030 | 0.1160 | 0.0080 |
-| 3 inner product | 200 | 0.0287 | 0.0031 | 0.0865 | 0.0082 |
-| 5 tri-diagonal elimination | 198 | 0.0227 | 0.0026 | 0.0664 | 0.0070 |
-| 7 equation of state | 1,600 | 0.0485 | 0.0031 | 0.1582 | 0.0083 |
-| 11 first sum | 99 | 0.0173 | 0.0028 | 0.0452 | 0.0073 |
-| 12 first difference | 100 | 0.0173 | 0.0023 | 0.0452 | 0.0059 |
-| **harmonic mean** | | **0.0247** | **0.0027** | **0.0699** | **0.0073** |
+| kernel | flops | M30 fixed | M30 soft float | M30 + FPU | M90 fixed | M90 soft float | M90 FPU |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 hydro fragment | 500 | 0.0363 | 0.0024 | 0.0509 | 0.1160 | 0.0065 | 0.1241 |
+| 3 inner product | 200 | 0.0287 | 0.0026 | 0.0367 | 0.0865 | 0.0070 | 0.0921 |
+| 5 tri-diagonal elimination | 198 | 0.0227 | 0.0023 | 0.0234 | 0.0664 | 0.0061 | 0.0593 |
+| 7 equation of state | 1,600 | 0.0485 | 0.0027 | 0.0630 | 0.1582 | 0.0072 | 0.1511 |
+| 11 first sum | 99 | 0.0173 | 0.0028 | 0.0157 | 0.0452 | 0.0073 | 0.0405 |
+| 12 first difference | 100 | 0.0173 | 0.0019 | 0.0157 | 0.0452 | 0.0050 | 0.0405 |
+| **harmonic mean** | | **0.0247** | **0.0024** | **0.0257** | **0.0699** | **0.0064** | **0.0653** |
 
 (MFLOPS; for fixed point, arithmetic operations per microsecond counted as
-the kernel's floating-point operations.)
+the kernel's floating-point operations. Run `python -m duwamish run
+jobs/livermore.job --model 90`, or `--model 30 --fpu`.)
 
 ### What the numbers say
 
-* **Against the 7600's peak of 36 MFLOPS**, the Model 30 is about 1,500
-  times slower in fixed point and about 13,000 times slower in software
-  floating point. The Model 90 narrows this to about 500 and 5,000 times.
-  Sustained 7600 performance on real codes was typically quoted at a
-  fraction of its peak, perhaps 10 MFLOPS, which divides these ratios by
-  three or four.
-* **Where the time goes.** On the Model 30 a fixed-point multiply-add
-  costs about 100 cycles (20 µs). Most of that is the microcoded ternary
-  multiply, which takes up to 102 cycles for a full word, and the SALISH
-  compiler's plain array indexing. A software floating-point operation
-  costs about 1,500 cycles (300 µs). The 7600 finished a floating
-  multiply in about five of its 27.5 ns clocks, and started a new one
-  every clock.
+* **Against the 7600's peak of 36 MFLOPS**, the Model 90 with its unit is
+  about 550 times slower. Without the unit, the Model 30 is about 1,500
+  times slower in fixed point and about 15,000 times slower in software
+  floating point. Sustained 7600 performance on real codes was typically
+  quoted at a fraction of its peak, perhaps 10 MFLOPS, which divides
+  these ratios by three or four.
+* **What the unit bought.** Floating point became about ten times faster
+  than the software library (0.0653 against 0.0064 on the Model 90), and
+  exact to the same trit. It became *as cheap as fixed point*, but no
+  cheaper. An earlier version of this section predicted that a unit
+  "would gain a factor of a hundred or more". Measurement shows ten,
+  because arithmetic was never the bottleneck. On the Model 30 the unit
+  also relieves the trit-serial multiply, so there it is slightly faster
+  than fixed point.
+* **Where the time goes now.** Here is the inner loop of kernel 3,
+  `s := fadd(s, fmul(fz[k], fy[k]))`, as SALISH compiles it:
+
+  ```
+  L104: LD R1,-5(FP)   CMP R1,-6(FP)  JP L106        ; loop test
+        LD R1,-5(FP)   ADD R1,G_fz    LD R1,0(R1)    PUSH R1   ; fz[k]
+        LD R1,-5(FP)   ADD R1,G_fy    LD R1,0(R1)    PUSH R1   ; fy[k]
+        POP R2         POP R1
+        FMP R1,#0(R2)  FAD R1,-2(FP)  ST R1,-2(FP)   ; the arithmetic
+        LD R1,-5(FP)   ADD R1,#1      ST R1,-5(FP)   JMP L104  ; k := k+1
+  ```
+
+  That is 20 instructions per pass, and two of them are floating point.
+  At 1 µs an instruction, the loop runs at about a tenth of what the unit
+  could do. The remaining gap is instruction issue: fetching and
+  decoding one instruction at a time from core, with index arithmetic
+  in memory, not registers. The 7600 attacked exactly this. It held the
+  loop in an instruction buffer, kept operands in registers, and
+  overlapped everything.
 * **Why.** The 7600 was built for exactly these loops: independent
   pipelined functional units, and an instruction buffer that held a whole
   inner loop so it ran without fetching instructions from memory. The
@@ -367,9 +445,10 @@ the kernel's floating-point operations.)
   that lets programs invent their own instructions. The explosion
   demonstration's fused instructions are a small version of the 7600's
   instruction buffer. They save fetches, but not the arithmetic.
-* **What would close the gap.** A hardware floating-point unit would gain
-  a factor of a hundred or more on the float column. A multiplier array in
-  place of the trit-serial loop would gain up to ten on multiplies. So
-  would overlapping fetch with execution, as the IBM 360/91 and the 7600
-  did. None of these touches what the machine is for, which is the point
-  of the committee's choices.
+* **What would close the gap next.** An optimising compiler would help:
+  keeping `k` in a register, strength-reducing the subscripts and
+  dropping the PUSH/POP pairs would take the loop from 20 instructions to
+  about 7. That alone is worth more than the floating-point unit was.
+  After that would come overlapping fetch with execution, as the IBM
+  360/91 and the 7600 did. None of these touches what the machine is
+  for, which is the point of the committee's choices.

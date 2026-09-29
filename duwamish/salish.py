@@ -529,6 +529,8 @@ INTRINSICS = {
     "rcs": 1, "wcs": 2, "rks": 1, "wks": 2, "rmap": 1, "wmap": 2,
     "heapbase": 0, "stackptr": 0, "svc": 2, "codebase": 0,
     "catchpoint": 1, "throw": 2, "codeend": 0,
+    "fadd": 2, "fsub": 2, "fmul": 2, "fdiv": 2, "float": 1, "fix": 1,
+    "fcmp": 2, "hasfpu": 0,
 }
 
 
@@ -1339,6 +1341,33 @@ class Compiler:
             self.emit("LD   R1, #START")
         elif name == "codeend":
             self.emit("LD   R1, #CODE_END")
+        elif name in ("fadd", "fsub", "fmul", "fdiv", "fcmp"):
+            ins = {"fadd": "FAD", "fsub": "FSB", "fmul": "FMP",
+                   "fdiv": "FDV", "fcmp": "FCM"}[name]
+            bop = self.simple(args[1], scope)
+            aop = self.simple(args[0], scope)
+            if bop is not None:
+                self.gen_expr(args[0], scope)
+                self.emit(f"{ins:4} R1, {bop}")
+            elif aop is not None and name in ("fadd", "fmul"):
+                # commutative: evaluate the complex side, use the simple one
+                self.gen_expr(args[1], scope)
+                self.emit(f"{ins:4} R1, {aop}")
+            else:
+                self.gen_args_to_regs(args, scope)   # R1 = a, R2 = b
+                self.emit(f"{ins:4} R1, #0(R2)")
+            if name == "fcmp":
+                self.emit("SEL  R1, #8")             # -1, 0, +1
+        elif name in ("float", "fix"):
+            op = self.simple(args[0], scope)
+            ins = "FLT" if name == "float" else "FIX"
+            if op is not None:
+                self.emit(f"{ins:4} R1, {op}")
+            else:
+                self.gen_expr(args[0], scope)
+                self.emit(f"{ins:4} R1, #0(R1)")
+        elif name == "hasfpu":
+            self.emit("SVC  4")
         elif name == "stackptr":
             self.emit("LD   R1, #0(SP)")
         elif name == "catchpoint":

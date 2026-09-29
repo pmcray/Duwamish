@@ -1,8 +1,8 @@
 -- tfloat: balanced-ternary floating point, in software.
 --
--- The Duwamish has no floating-point hardware.  A number is packed into
--- one word, and because the fields are balanced they need no sign bits,
--- no bias and no complement:
+-- For machines without the floating-point feature.  A number is packed
+-- into one word, and because the fields are balanced they need no sign
+-- bits, no bias and no complement:
 --
 --      | exponent : 5 trits | mantissa : 22 trits |
 --
@@ -13,6 +13,11 @@
 -- (the CDC 7600's mantissa has 48).  The fields are unpacked with the
 -- XTR instruction; negation is negating the mantissa.  Truncating trits
 -- rounds to nearest, so every shift here rounds correctly for free.
+--
+-- The floating-point unit (duwamish/fpu.py; standard on the Model 90) uses
+-- exactly this format.  Addition and multiplication here round once, as
+-- the unit does, and give the same answer to the trit.  Note that the sign
+-- of a float is the sign of its mantissa, not of the word.
 
 const TF_P22 = 31381059609        -- 3^22
 const TF_MHI = 15690529804        -- (3^22 - 1) / 2
@@ -32,7 +37,10 @@ begin
     if m <= TF_MLO and m >= -TF_MLO then begin m := m << 1; e := e - 1 end
     else break
   if e < -121 then return 0                    -- underflow: zero
-  if e > 121 then e := 121                     -- overflow: saturate
+  if e > 121 then begin                        -- overflow: saturate
+    e := 121
+    if m > 0 then m := TF_MHI else m := -TF_MHI
+  end
   return e * TF_P22 + m
 end
 
@@ -45,7 +53,7 @@ proc tf_neg(a) = a - 2 * tf_mant(a)
 
 proc tf_add(a, b)
 begin
-  var ma := tf_mant(a), mb := tf_mant(b), ea, eb, d, t
+  var ma := tf_mant(a), mb := tf_mant(b), ea, eb, d, t, s, m
   if ma = 0 then return b
   if mb = 0 then return a
   ea := tf_exp(a)
@@ -56,23 +64,54 @@ begin
   end
   d := ea - eb
   if d > 23 then return ea * TF_P22 + ma
-  return tf_norm(ma + (mb >> d), ea)
+  -- four guard trits: when the operands nearly cancel (d <= 4) the sum is
+  -- exact; otherwise it loses at most one trit to normalisation, and since
+  -- dropping trits is rounding, the answer is rounded once, correctly
+  s := (ma << 4) + ((mb << 4) >> d)
+  m := s >> 4
+  if m > TF_MHI or m < -TF_MHI then begin      -- a carry: one trit more
+    m := s >> 5
+    ea := ea + 1
+  end
+  else if m <= TF_MLO and m >= -TF_MLO then    -- cancellation
+    return tf_norm(s, ea - 4)
+  if ea > 121 then return tf_norm(m, ea)       -- saturate
+  return ea * TF_P22 + m
 end
 
 proc tf_sub(a, b) = tf_add(a, tf_neg(b))
 
--- the 44-trit product of two 22-trit mantissas, formed from 11-trit halves
--- so that no partial product overflows a word
+-- The 44-trit product P = ma * mb, formed from 11-trit halves so that no
+-- partial product overflows a word:  P = hi*3^22 + mid*3^11 + lo.
+-- tf_scaled(k) is P / 3^k rounded once, exactly, for k = 20, 21 or 22:
+-- the part of mid below the point is recombined with lo before the one
+-- rounding, as the hardware's double-length register would do.
+global tf_hi, tf_mid, tf_lo
+proc tf_scaled(k)
+begin
+  var j := k - 11, mh, ml
+  mh := tf_mid >> j
+  ml := tf_mid - (mh << j)
+  return (tf_hi << (22 - k)) + mh + (((ml << 11) + tf_lo) >> k)
+end
+
 proc tf_mul(a, b)
 begin
-  var ma := tf_mant(a), mb := tf_mant(b), a1, a0, b1, b0, p
+  var ma := tf_mant(a), mb := tf_mant(b), a1, a0, b1, b0, p, e
   if ma = 0 or mb = 0 then return 0
   a1 := ma >> 11
   a0 := ma - (a1 << 11)
   b1 := mb >> 11
   b0 := mb - (b1 << 11)
-  p := 3 * a1 * b1 + ((a1 * b0 + a0 * b1) >> 10) + ((a0 * b0) >> 21)
-  return tf_norm(p, tf_exp(a) + tf_exp(b))
+  tf_hi := a1 * b1
+  tf_mid := a1 * b0 + a0 * b1
+  tf_lo := a0 * b0
+  e := tf_exp(a) + tf_exp(b)
+  -- pick the scale that leaves a normalised mantissa, then round once
+  p := tf_scaled(21)
+  if p > TF_MHI or p < -TF_MHI then return tf_norm(tf_scaled(22), e + 1)
+  if p <= TF_MLO and p >= -TF_MLO then return tf_norm(tf_scaled(20), e - 1)
+  return tf_norm(p, e)
 end
 
 -- the value times 3^places, as an integer (rounded)

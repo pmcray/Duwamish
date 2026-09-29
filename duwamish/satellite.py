@@ -111,9 +111,10 @@ def parse_control(card):
 
 class Satellite:
     def __init__(self, decks, model=30, wcs=False, listing=False,
-                 out=None, base_dir=None, trace=False):
+                 out=None, base_dir=None, trace=False, fpu=None):
         self.model = model
         self.wcs = wcs
+        self.fpu = (model == 90) if fpu is None else fpu
         self.listing = listing
         self.out = out or (lambda s: print(s, end=""))
         self.base_dir = base_dir or os.getcwd()
@@ -271,7 +272,7 @@ class Satellite:
     # ------------------------------------------------------------------
     def run(self):
         m = mach.Machine(model=self.model, wcs_enabled=self.wcs,
-                         satellite=self)
+                         satellite=self, fpu=self.fpu)
         self.machine = m
         ex = assemble_executive()
         self.executive = ex
@@ -285,6 +286,7 @@ class Satellite:
         w = self.out
         line = "=" * 72
         w(f"{line}\nDUWAMISH MODEL {self.model}"
+          f"{'  WITH FLOATING-POINT UNIT' if self.fpu else ''}"
           f"{'  (WRITABLE CONTROL STORE ENABLED)' if self.wcs else ''}"
           f"   -- satellite job log\n")
         tty = m.text(m.tty)
@@ -330,7 +332,7 @@ def run_decks(paths, **kw):
 
 
 def run_program(path, data=None, model=30, wcs=False, listing=False,
-                time_limit=0, out=None):
+                time_limit=0, out=None, fpu=None):
     """Convenience: wrap one SALISH/TRIAD source file into a job."""
     kind = "TRIAD" if path.endswith(".tri") else "SALISH"
     name = re.sub(r"\W", "", os.path.splitext(os.path.basename(path))[0])
@@ -340,6 +342,7 @@ def run_program(path, data=None, model=30, wcs=False, listing=False,
             "//EXEC"]
     if data:
         deck.append(f"//DATA FROM={os.path.abspath(data)}")
-    sat = Satellite([("\n".join(deck), path)], model=model, wcs=wcs, out=out)
+    sat = Satellite([("\n".join(deck), path)], model=model, wcs=wcs, out=out,
+                    fpu=fpu)
     sat.run()
     return sat

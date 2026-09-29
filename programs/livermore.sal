@@ -13,13 +13,16 @@
 --    11  first sum                 x(k) = x(k-1) + y(k)
 --    12  first difference          x(k) = y(k+1) - y(k)
 --
---  The Duwamish has no floating-point hardware, so every kernel is run
---  twice:
+--  Every kernel is run three ways:
 --
 --    FIXED POINT     numbers scaled by 3^12; a product is rescaled by one
 --                    ternary shift, which rounds correctly.  This is what
 --                    a programmer of an integer machine would really do.
 --    SOFTWARE FLOAT  22-trit ternary floating point (lib/tfloat.sal).
+--    HARDWARE FLOAT  the same format, on the floating-point unit -- if the
+--                    machine has one (standard on the Model 90; ask with
+--                    --fpu on the Model 30).  The formats are identical,
+--                    so the same data serve both.
 --
 --  Each loop is timed by the machine's own clock.  One cycle is 200 ns,
 --  so MFLOPS = operations * 5 / cycles.  On the Model 30 the clock is
@@ -36,6 +39,7 @@ global x[M], y[M], z[M], u[M]
 global fx[M], fy[M], fz[M], fu[M]
 global q, r, t, fq, fr, ft
 global cyc_fixed[13], cyc_float[13], sum_fixed[13], sum_float[13]
+global cyc_hard[13], sum_hard[13]
 global flops[13]
 
 inline proc fm(a, b) = (a * b) >> SH
@@ -158,6 +162,57 @@ begin
   sum_float[12] := checksum_float()
 end
 
+-- the same kernels on the floating-point unit: one instruction each
+proc checksum_hard()
+begin
+  var s := 0
+  for k := 0 to N - 1 do s := fadd(s, fx[k])
+  return tf_to_fixed(s, SH)
+end
+
+proc hard_kernels()
+begin
+  var c0, s
+  c0 := clock()
+  for k := 0 to N - 1 do
+    fx[k] := fadd(fq, fmul(fy[k], fadd(fmul(fr, fz[k + 10]), fmul(ft, fz[k + 11]))))
+  cyc_hard[1] := clock() - c0
+  sum_hard[1] := checksum_hard()
+
+  c0 := clock()
+  s := 0
+  for k := 0 to N - 1 do s := fadd(s, fmul(fz[k], fy[k]))
+  cyc_hard[3] := clock() - c0
+  sum_hard[3] := tf_to_fixed(s, SH)
+
+  fx[0] := fy[0]
+  c0 := clock()
+  for i := 1 to N - 1 do fx[i] := fmul(fz[i], fsub(fy[i], fx[i - 1]))
+  cyc_hard[5] := clock() - c0
+  sum_hard[5] := checksum_hard()
+
+  c0 := clock()
+  for k := 0 to N - 1 do
+    fx[k] := fadd(fadd(fu[k], fmul(fr, fadd(fz[k], fmul(fr, fy[k])))),
+               fmul(ft, fadd(fadd(fu[k + 3],
+                 fmul(fr, fadd(fu[k + 2], fmul(fr, fu[k + 1])))),
+                 fmul(ft, fadd(fu[k + 6],
+                   fmul(fq, fadd(fu[k + 5], fmul(fq, fu[k + 4]))))))))
+  cyc_hard[7] := clock() - c0
+  sum_hard[7] := checksum_hard()
+
+  fx[0] := fy[0]
+  c0 := clock()
+  for k := 1 to N - 1 do fx[k] := fadd(fx[k - 1], fy[k])
+  cyc_hard[11] := clock() - c0
+  sum_hard[11] := checksum_hard()
+
+  c0 := clock()
+  for k := 0 to N - 1 do fx[k] := fsub(fy[k + 1], fy[k])
+  cyc_hard[12] := clock() - c0
+  sum_hard[12] := checksum_hard()
+end
+
 -- ---------------------------------------------------------------------
 global kname := table("", "hydro fragment", "", "inner product", "",
                       "tri-diagonal elim.", "", "equation of state", "", "",
@@ -169,36 +224,45 @@ proc kflops(ops, cycles) = ops * 50000 / cycles
 
 proc main()
 begin
-  var k, ops, a, b, hm_a := 0, hm_b := 0
+  var k, ops, a, b, h, hm_a := 0, hm_b := 0, hm_h := 0, fpu := hasfpu() > 0
   flops[1] := 5 * N; flops[3] := 2 * N; flops[5] := 2 * (N - 1)
   flops[7] := 16 * N; flops[11] := N - 1; flops[12] := N
   setup()
   fixed_kernels()
   float_kernels()
+  if fpu then hard_kernels()
   prints("LIVERMORE LOOPS on the Duwamish, n = 100\n\n")
-  prints("                                 fixed point (3^12)       software float (22 trits)\n")
-  prints(" kernel                  flops   cycles     MFLOPS        cycles     MFLOPS\n")
+  prints("                              fixed point (3^12)    software float      hardware float\n")
+  prints(" kernel                flops    cycles   MFLOPS    cycles   MFLOPS    cycles   MFLOPS\n")
   for i := 0 to 5 do begin
     k := klist[i]
     ops := flops[k]
     a := kflops(ops, cyc_fixed[k])
     b := kflops(ops, cyc_float[k])
-    printw(k, 3); spaces(2); printsw(kname[k], 20); printw(ops, 6)
-    printw(cyc_fixed[k], 9); spaces(4); printfix(a, 4)
-    printw(cyc_float[k], 14); spaces(4); printfix(b, 4)
+    printw(k, 3); spaces(2); printsw(kname[k], 18); printw(ops, 6)
+    printw(cyc_fixed[k], 10); spaces(3); printfix(a, 4)
+    printw(cyc_float[k], 10); spaces(3); printfix(b, 4)
+    if fpu then begin
+      h := kflops(ops, cyc_hard[k])
+      printw(cyc_hard[k], 10); spaces(3); printfix(h, 4)
+      hm_h := hm_h + 1000000000 / h
+    end else prints("         no FPU")
     newline()
     hm_a := hm_a + 1000000000 / a
     hm_b := hm_b + 1000000000 / b
   end
-  prints("\n harmonic mean MFLOPS            fixed: ")
+  prints("\n harmonic mean MFLOPS               ")
   printfix(6 * 1000000000 / hm_a, 4)
-  prints("      float: "); printfix(6 * 1000000000 / hm_b, 4)
+  spaces(13); printfix(6 * 1000000000 / hm_b, 4)
+  if fpu then begin spaces(13); printfix(6 * 1000000000 / hm_h, 4) end
   newline()
   prints("\n checksums (sum of results x 3^12)\n")
   for i := 0 to 5 do begin
     k := klist[i]
     prints(" kernel "); printw(k, 2); prints("  fixed "); printw(sum_fixed[k], 14)
-    prints("   float "); printw(sum_float[k], 14); newline()
+    prints("   float "); printw(sum_float[k], 14)
+    if fpu then begin prints("   hardware "); printw(sum_hard[k], 14) end
+    newline()
   end
   prints("\n The CDC 7600's peak was about 36 MFLOPS in 60-bit hardware floating\n")
   prints(" point, with a 48-bit mantissa.  One cycle here is 200 ns.\n")

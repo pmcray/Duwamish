@@ -82,6 +82,14 @@ OPCODES = [
     (44, "WKS", "RA", "constant store K[EA] <- R"),
     (45, "RMAP", "RA", "R <- dispatch map entry for opcode EA"),
     (46, "WMAP", "RA", "dispatch map entry for opcode EA <- R"),
+    # the floating-point feature (standard on the Model 90): see fpu.py
+    (47, "FAD", "RE", "R <- R + operand, floating; C <- sign"),
+    (48, "FSB", "RE", "R <- R - operand, floating; C <- sign"),
+    (49, "FMP", "RE", "R <- R * operand, floating; C <- sign"),
+    (50, "FDV", "RE", "R <- R / operand, floating; C <- sign"),
+    (51, "FLT", "RE", "R <- the integer operand as a float; C <- sign"),
+    (52, "FIX", "RE", "R <- the float operand rounded to an integer; C <- sign"),
+    (53, "FCM", "RE", "C <- sign(R - operand), floating"),
 ]
 
 BY_NAME = {name: (op, form) for op, name, form, _ in OPCODES}
@@ -102,6 +110,7 @@ TRAP_PRIV = 5
 TRAP_SVC = 6
 TRAP_WCS = 8
 TRAP_TIME = 10
+TRAP_FPU = 11
 TRAP_NAMES = {
     TRAP_ILLEGAL: "ILLEGAL INSTRUCTION",
     TRAP_PROTECT: "PROTECTION VIOLATION",
@@ -111,6 +120,7 @@ TRAP_NAMES = {
     TRAP_SVC: "SUPERVISOR CALL",
     TRAP_WCS: "CONTROL STORE LOCKED",
     TRAP_TIME: "TIME LIMIT EXCEEDED",
+    TRAP_FPU: "FLOATING-POINT FEATURE NOT INSTALLED",
 }
 
 # Fixed low-core locations (negative, hence protected) used by the trap logic.
@@ -128,6 +138,8 @@ DEV_READER = 2    # card reader (in): characters, 10 at end of card, -1 at end
 DEV_PRINTER = 3   # line printer (out)
 DEV_TIMER = 4     # interval timer (out): trap when clock passes this value
 DEV_SATELLITE = 5 # channel to the satellite job-control computer (in)
+DEV_CONFIG = 6    # configuration switches (in): +1 if the FPU is fitted
+FP_OPS = range(47, 54)
 
 
 def reg_field(idx):

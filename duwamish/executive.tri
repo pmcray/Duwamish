@@ -12,6 +12,8 @@
 ;       SVC 2   GETC       R1 <- next character from the card reader
 ;                          (10 at the end of each card, -1 at end of deck)
 ;       SVC 3   TTYC       R1 = character, to the operator's console
+;       SVC 4   CONFIG     R1 <- +1 if the floating-point unit is fitted,
+;                          -1 if not
 ;
 ;   Channel protocol with the satellite (device 5):
 ;       OUT 1            request the next job step; then
@@ -33,6 +35,7 @@ PRINTER  = 3
 TTY      = 1
 READER   = 2
 TIMER    = 4
+CONFIG   = 6
 
          ORG  -60000
          ENTRY BOOT
@@ -105,6 +108,8 @@ TRAP:    ST   R1, SAVE1
          JZ   SVEXIT
          CMP  R2, #3
          JZ   SVTTY
+         CMP  R2, #4
+         JZ   SVCONF
          JMP  FAULT              ; unknown service: a program check
 
 SVPUTC:  LD   R1, SAVE1
@@ -113,6 +118,10 @@ SVPUTC:  LD   R1, SAVE1
 
 SVTTY:   LD   R1, SAVE1
          OUT  R1, #TTY
+         JMP  RESUME
+
+SVCONF:  IN   R1, #CONFIG
+         ST   R1, SAVE1
          JMP  RESUME
 
 SVGETC:  IN   R1, #READER

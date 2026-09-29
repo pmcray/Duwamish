@@ -8,7 +8,9 @@
     python -m duwamish microkit              print the microkit include file
 
 Options for run/go:  --model 30|90   --wcs (enable the writable control
-store key)   --list (print listings)   --time N (cycle limit, go only)
+store key)   --fpu / --no-fpu (fit or remove the floating-point unit;
+standard on the Model 90)   --list (print listings)   --time N (cycle
+limit, go only)
 """
 
 import argparse
@@ -31,6 +33,8 @@ def main(argv=None):
         p.add_argument("--model", type=int, default=30, choices=(30, 90))
         p.add_argument("--wcs", action="store_true")
         p.add_argument("--list", action="store_true")
+        p.add_argument("--fpu", dest="fpu", action="store_true", default=None)
+        p.add_argument("--no-fpu", dest="fpu", action="store_false")
     c = sub.add_parser("compile")
     c.add_argument("file")
     a = sub.add_parser("asm")
@@ -41,11 +45,11 @@ def main(argv=None):
 
     if args.cmd == "run":
         satellite.run_decks(args.decks, model=args.model, wcs=args.wcs,
-                            listing=args.list)
+                            listing=args.list, fpu=args.fpu)
     elif args.cmd == "go":
         satellite.run_program(args.file, data=args.data, model=args.model,
                               wcs=args.wcs, listing=args.list,
-                              time_limit=args.time)
+                              time_limit=args.time, fpu=args.fpu)
     elif args.cmd == "compile":
         with open(args.file) as f:
             asm, comp = salish.compile_source(f.read(), args.file)

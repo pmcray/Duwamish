@@ -232,11 +232,12 @@ def _describe_microword(u):
 # convenience: set up and record common situations
 # ----------------------------------------------------------------------
 def record_triad(source, max_frames=20000, origin=100, title="TRIAD program",
-                 wcs=False, setup=None):
+                 wcs=False, setup=None, fpu=False):
     """Assemble TRIAD source and run it in supervisor mode from its entry,
-    with no Executive, recording every micro-cycle.  End it with HLT."""
+    with no Executive, recording every micro-cycle.  End it with HLT.
+    fpu=True fits the floating-point feature to the Model 30."""
     obj = triad.assemble(source, origin=origin)
-    m = mach.Machine(model=30, wcs_enabled=wcs)
+    m = mach.Machine(model=30, wcs_enabled=wcs, fpu=fpu)
     m.load_image(obj.image())
     m.pc = obj.entry if obj.entry is not None else origin
     m.rf[8] = mach.MEM_MAX + 1
@@ -262,7 +263,7 @@ class _RecordingSatellite(satellite.Satellite):
 
 
 def record_salish(source, data="", max_frames=40000, title="SALISH job",
-                  wcs=False):
+                  wcs=False, fpu=False):
     """Compile SALISH (text, or a path to a .sal file), then boot the
     Executive and run the job exactly as the satellite would, recording
     from the first micro-cycle of the Executive."""
@@ -275,12 +276,13 @@ def record_salish(source, data="", max_frames=40000, title="SALISH job",
     if data:
         deck += "//DATA\n" + data + "\n"
     sat = _RecordingSatellite([(deck, os.path.join(os.getcwd(), "nb.job"))],
-                              model=30, wcs=wcs, out=lambda s: None)
+                              model=30, wcs=wcs, fpu=fpu,
+                              out=lambda s: None)
     job = sat.jobs[0]
     if job.failed:
         raise RuntimeError("\n".join(job.log))
     obj = job.steps[0].obj
-    m = mach.Machine(model=30, wcs_enabled=wcs, satellite=sat)
+    m = mach.Machine(model=30, wcs_enabled=wcs, satellite=sat, fpu=fpu)
     ex = satellite.assemble_executive()
     m.load_image(ex.image())
     m.pc = ex.entry
@@ -699,7 +701,7 @@ function setLamps(name, v, n){
   const ts = trits(v, n).reverse(), arr = lampEls[name];
   for (let i=0;i<n;i++){ const c = ts[i]>0?"l p":ts[i]<0?"l n":"l"; if (arr[i].className!==c) arr[i].className=c; if (arr[i].style.marginLeft) {} }
 }
-const SIGS = ["READ","WRITE","IFETCH","SETC","PC+1","CASE","CALL","RET","DISP","ENDI","TRAP","IOIN","IOOUT","RTI","WCS"];
+const SIGS = ["READ","WRITE","IFETCH","SETC","PC+1","CASE","CALL","RET","DISP","ENDI","TRAP","IOIN","IOOUT","RTI","WCS","FPU"];
 const sigEls = {};
 const sigDiv = document.getElementById("sigs");
 SIGS.forEach(s=>{ const e=document.createElement("span"); e.className="sig"+(s==="READ"?" rd":s==="WRITE"?" wr":""); e.textContent=s; sigDiv.appendChild(e); sigEls[s]=e; });
@@ -818,7 +820,7 @@ function render(){
   const on = {READ:c.mem<0, WRITE:c.mem>0, IFETCH:c.special==="IFETCH", SETC:!!c.setc, "PC+1":!!c.pcinc,
     CASE:c.seq==="CASE", CALL:c.seq==="CALL", RET:c.seq==="RET", DISP:c.seq==="DISP", ENDI:c.seq==="ENDI",
     TRAP:c.special==="TRAP", IOIN:c.special==="IOIN", IOOUT:c.special==="IOOUT", RTI:c.special==="RTI",
-    WCS:["WCS","WKS","WMAP","RCS","RKS","RMAP"].includes(c.special)};
+    WCS:["WCS","WKS","WMAP","RCS","RKS","RMAP"].includes(c.special), FPU:c.special==="FPU"};
   for (const s of SIGS) sigEls[s].classList.toggle("on", frame>0 && !!on[s]);
   aluLab.textContent = frame>0 && c.alu ? "ALU " + c.alu + (c.seq==="CASE" ? "  CASE "+c.sel : "") : "ALU idle";
   // datapath

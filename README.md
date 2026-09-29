@@ -11,8 +11,8 @@ This repository contains the whole machine, and software that runs on it:
 | layer | |
 |---|---|
 | **Architecture** | 27-trit words; symmetric core of 3¹² words; nine registers; one-trit condition code; three-way `J3` jumps; `SEL` truth-table instruction; Kleene logic in hardware |
-| **Model 30** | microprogrammed: a 142-word horizontal microprogram in a *writable* control store, with ternary micro-branching, cycle-exact timing |
-| **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing |
+| **Model 30** | microprogrammed: a 156-word horizontal microprogram in a *writable* control store, with ternary micro-branching, cycle-exact timing |
+| **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing; a balanced-ternary **floating-point unit** as standard (a feature on the Model 30) |
 | **Executive** | a resident monitor in protected core: traps, supervisor calls, time limits, accounting |
 | **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//EXEC`, `//DATA`) |
 | **TRIAD** | the symbolic assembler |
@@ -33,9 +33,15 @@ python -m duwamish run jobs/chess.job --model 90       # Los Alamos chess (about
 python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
 python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
+python -m duwamish run jobs/livermore.job --model 90   # ... with the floating-point unit
 python -m duwamish go programs/hello.sal               # run one program
-python -m unittest discover -s tests -t .              # 41 tests
+python -m unittest discover -s tests -t .              # the test suite
 ```
+
+Options for `run` and `go`: `--model 30|90` (default 30); `--wcs` to turn
+the writable-control-store key; `--fpu` or `--no-fpu` to fit or remove the
+floating-point unit (by default the Model 90 has one and the Model 30 does
+not); `--list` for listings.
 
 ## Inside the machine: the front-panel notebook
 
@@ -120,12 +126,14 @@ shows, and what it does not.
 ## How fast is it?
 
 `programs/livermore.sal` runs six of the Livermore Fortran Kernels, the
-loops by which the CDC 7600 was judged. The Duwamish has no floating-point
-hardware, so it runs them in fixed point and in a software ternary
-floating point (`duwamish/lib/tfloat.sal`), with answers checked against
-double precision. On the Model 30 the harmonic mean is 0.025 MFLOPS in
-fixed point and 0.0027 in software float. The 7600's peak was about 36
-MFLOPS. See [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) for the full
+loops by which the CDC 7600 was judged. It runs them three ways: in fixed
+point, in a software ternary floating point (`duwamish/lib/tfloat.sal`),
+and on the hardware floating-point unit, with answers checked against
+double precision. On the Model 90 the harmonic means are 0.070 MFLOPS in
+fixed point, 0.0064 in software float and 0.065 with the unit. The unit
+made floating point ten times faster, but no faster than fixed point: the
+machine is limited by issuing one instruction at a time, not by
+arithmetic. The 7600's peak was about 36 MFLOPS. See [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) for the full
 comparison.
 
 ## Documentation

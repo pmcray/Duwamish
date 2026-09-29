@@ -17,6 +17,7 @@ Core: 3^12 = 531,441 words, addressed -265,720 .. +265,720.  The negative
 half belongs to the Executive and is protected from user-mode programs.
 """
 
+from . import fpu as fpunit
 from . import isa
 from . import microasm
 from . import ternary as t
@@ -86,10 +87,12 @@ class MachineCheck(Exception):
 
 class Machine:
     def __init__(self, model=30, microprogram=None, wcs_enabled=False,
-                 satellite=None):
+                 satellite=None, fpu=None):
         if model not in (30, 90):
             raise ValueError("model must be 30 or 90")
         self.model = model
+        # the floating-point unit: standard on the Model 90, optional on 30
+        self.fpu = (model == 90) if fpu is None else fpu
         self.mp = microprogram or microasm.default_microprogram()
         self.mem = [0] * MEM_SIZE
         self.rf = [0] * isa.NREGS
@@ -184,6 +187,8 @@ class Machine:
             return -1
         if dev == isa.DEV_SATELLITE and self.satellite:
             return self.satellite.channel_in(self)
+        if dev == isa.DEV_CONFIG:
+            return 1 if self.fpu else -1
         return -1
 
     def io_out(self, dev, v):
@@ -235,8 +240,23 @@ class Machine:
         ok = not self.factory_dirty
         for i in range(243):
             op = i - 121
-            self._native[i] = (ok and op in isa.BY_OP and op < 41
+            hard = op < 41 or (self.fpu and op in isa.FP_OPS)
+            self._native[i] = (ok and op in isa.BY_OP and hard
                                and self.map[i] == fm[i])
+
+    def fpu_op(self, op, r, operand):
+        """The floating-point unit, shared by both models."""
+        if not self.fpu:
+            raise Trap(isa.TRAP_FPU, op)
+        name = isa.BY_OP[op][0]
+        try:
+            v, c = fpunit.operate(name, self.rf[r], operand)
+        except fpunit.FPUDivideByZero:
+            raise Trap(isa.TRAP_DIVZERO, 0)
+        if r and name != "FCM":
+            self.rf[r] = v
+        self.c = c
+        self.clock += fpunit.LATENCY[name]
 
     def cs_read(self, ea):
         if not 0 <= ea < 2 * microasm.CS_SIZE:
@@ -398,6 +418,8 @@ class Machine:
             self.tally_clear()
         elif sp == -3:
             val = t.wrap(self.clock)
+        elif sp == -4:                            # FPU
+            self.fpu_op(self.ir_f[0], r, ur[MDR])
         else:
             raise Trap(isa.TRAP_ILLEGAL, sp)
         if val is not None and r:
@@ -705,6 +727,8 @@ class Machine:
                 elif op == 40:                                # TCL
                     self.tally_clear()
                     tally = self.tally
+                elif 47 <= op <= 53:                          # FPU
+                    self.fpu_op(op, r, v)
                 else:
                     raise Trap(isa.TRAP_ILLEGAL, op)
             except Trap as tr:

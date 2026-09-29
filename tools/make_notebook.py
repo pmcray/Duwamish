@@ -56,7 +56,7 @@ while here != os.path.dirname(here) and not os.path.isdir(os.path.join(here, "du
 sys.path.insert(0, here)
 os.chdir(here)
 
-from duwamish import panel, ternary, isa, microasm, machine, satellite, salish, triad
+from duwamish import panel, ternary, isa, microasm, machine, satellite, salish, triad, fpu
 print("Duwamish loaded from", here)
 """)
 
@@ -315,7 +315,53 @@ panel.animate(after, speed=20)
 """)
 
 md(r"""
-## 8. Load your own program
+## 8. The floating-point feature
+
+The Model 90 has a floating-point unit as standard, and the Model 30 can
+be fitted with one. A float fills one word: a 5-trit exponent over a
+22-trit mantissa, value = m × 3^(e−21). Both fields are balanced, so there
+is no sign bit and no bias. The word is the sum e·3²² + m, which means **the
+sign of a float is the sign of its mantissa, not of the word**. Here −2.0
+is stored as a *positive* word, because its exponent is positive, and 1/3
+as a *negative* one:
+""")
+
+code(r"""
+for x in (2.0, -2.0, 1/3, -1e-6):
+    w = fpu.from_float(x)
+    m, e = fpu.unpack(w)
+    print(f"{x:>8.4g}   exponent {e:4}   mantissa {m:15,}   word {w:18,}")
+panel.show_words([("2.0", fpu.from_float(2.0)), ("-2.0", fpu.from_float(-2.0)),
+                  ("1/3", fpu.from_float(1/3)), ("-1e-6", fpu.from_float(-1e-6))])
+""")
+
+md(r"""
+On the Model 30 each floating-point order is two lines of microcode: fetch
+the operand as usual, then one micro-order, `FPU`, hands R and MDR to the
+unit. Watch the **FPU** control lamp. Without the feature, that micro-order
+takes program check 11 instead.
+""")
+
+code(r"""
+CIRCLE = '''
+proc main()
+begin
+  var r := float(7), pi := fdiv(float(355), float(113))
+  print(fix(fmul(fmul(pi, r), r))); newline()    -- the area of a circle
+end
+'''
+fp = panel.record_salish(CIRCLE, title="Model 30 with the floating-point feature", fpu=True)
+print("".join(chr(c) for f, c in fp.rec.output))
+panel.animate(fp, speed=60)
+""")
+
+code(r"""
+bare = panel.record_salish(CIRCLE, title="Model 30 without it")
+print("".join(chr(c) for f, c in bare.rec.output))
+""")
+
+md(r"""
+## 9. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long

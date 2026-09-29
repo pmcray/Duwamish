@@ -246,3 +246,30 @@ RMAP:   EA<-ADDR+X
 
 WMAP:   EA<-ADDR+X
         WMAP, ENDI
+
+; ---------------------------------------------------------------------
+; The floating-point feature.  The operand is fetched as usual; the FPU
+; order hands R and MDR to the floating-point unit, which works out the
+; operation from the opcode in IR and returns R and the condition trit.
+; Without the unit fitted, the order takes program check 11.
+; ---------------------------------------------------------------------
+FAD:    CALL OPND
+        FPU, ENDI
+
+FSB:    CALL OPND
+        FPU, ENDI
+
+FMP:    CALL OPND
+        FPU, ENDI
+
+FDV:    CALL OPND
+        FPU, ENDI
+
+FLT:    CALL OPND
+        FPU, ENDI
+
+FIX:    CALL OPND
+        FPU, ENDI
+
+FCM:    CALL OPND
+        FPU, ENDI

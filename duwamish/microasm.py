@@ -47,7 +47,8 @@ SEQ = {"NEXT": 0, "GOTO": 1, "CASE": 2, "CALL": 3, "RET": 4, "DISP": 5,
 SEL = {"C": 0, "Z": 1, "M": 2, "P": 3}
 SPECIAL = {"": 0, "IFETCH": 1, "TRAP": 2, "HALT": 3, "CHKSUP": 4, "IOIN": 5,
            "IOOUT": 6, "RTI": 7, "RCS": 8, "WCS": 9, "RKS": 10, "WKS": 11,
-           "RMAP": 12, "WMAP": 13, "TAL": -1, "TCL": -2, "TIM": -3}
+           "RMAP": 12, "WMAP": 13, "TAL": -1, "TCL": -2, "TIM": -3,
+           "FPU": -4}
 
 # Field positions (least significant trit of each field).
 A_POS = {"a": 0, "b": 3, "alu": 6, "d": 9, "mem": 12, "setc": 13,

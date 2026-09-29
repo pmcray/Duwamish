@@ -98,6 +98,10 @@ and `not 0` is `0` (unknown). Test pointers with `p <> 0`.
 | `tally(a)`, `tclear()` | Beer-monitor execution counts |
 | `rcs`, `wcs`, `rks`, `wks`, `rmap`, `wmap` | the writable control store (key permitting) |
 | `codebase()`, `codeend()`, `heapbase()`, `stackptr()` | where the program lives |
+| `fadd(a, b)`, `fsub(a, b)`, `fmul(a, b)`, `fdiv(a, b)` | the floating-point unit (one instruction each) |
+| `fcmp(a, b)` | −1, 0 or +1 as the float a is less than, equal to or greater than b |
+| `float(n)`, `fix(x)` | integer to float, and float to integer, rounded |
+| `hasfpu()` | +1 if the floating-point unit is fitted, −1 if not (asks the Executive) |
 | `catchpoint(buf)`, `throw(buf, v)` | non-local exit (setjmp/longjmp); `buf` is 3 words |
 
 ## The runtime library (always included)
@@ -109,9 +113,15 @@ and `not 0` is `0` (unknown). Test pointers with `p <> 0`.
 `streq(a, b)`, `readline(buf, max)`. Every routine is written with bounded
 loops, so BlooP programs may call them.
 
-Other libraries: `tfloat` (ternary floating point in software: a 5-trit
-exponent and 22-trit mantissa in one word, with `tf_add`, `tf_sub`,
-`tf_mul`, `tf_norm`, `tf_from_int`, `tf_from_ratio`, `tf_to_fixed`),
+The floating-point intrinsics compile to single instructions. On a
+Model 30 without the feature they stop the job with program check 11. A
+program that must run anywhere tests `hasfpu()` and falls back on the
+`tfloat` library, whose numbers are the same words.
+
+Other libraries: `tfloat` (ternary floating point in software, in the
+unit's format: a 5-trit exponent and 22-trit mantissa in one word, with
+`tf_add`, `tf_sub`, `tf_mul`, `tf_norm`, `tf_from_int`, `tf_from_ratio`,
+`tf_to_fixed`; each rounds once and agrees with the unit to the trit),
 `disasm` (read and disassemble machine code), `isakit`
 (the instruction set as constants and tables) and `microkit` (the
 microword format). The last two are generated from the assembler's own
