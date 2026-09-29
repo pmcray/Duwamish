@@ -38,7 +38,7 @@ KEYWORDS = {
     "global", "const", "proc", "get", "bloop", "begin", "end", "var", "if",
     "then", "else", "while", "do", "repeat", "until", "for", "to", "by",
     "sign", "of", "return", "break", "next", "and", "or", "not", "mod",
-    "true", "false", "unknown", "table",
+    "true", "false", "unknown", "table", "inline",
 }
 
 TOKEN_RE = re.compile(r"""
@@ -188,6 +188,12 @@ class Parser:
                     self.next()
             elif self.at_kw("proc"):
                 decls.append(self.proc())
+            elif self.at_kw("inline"):
+                self.next()
+                d = self.proc()
+                if d[4][0] != "return" or d[4][2] is None:
+                    self.err("an inline proc must be written  proc f(..) = expr")
+                decls.append(d + (True,))
             elif self.at_op(";"):
                 self.next()
             else:
@@ -522,6 +528,7 @@ INTRINSICS = {
     "xtr": 3, "trit": 2, "clock": 0, "tally": 1, "tclear": 0,
     "rcs": 1, "wcs": 2, "rks": 1, "wks": 2, "rmap": 1, "wmap": 2,
     "heapbase": 0, "stackptr": 0, "svc": 2, "codebase": 0,
+    "catchpoint": 1, "throw": 2,
 }
 
 
@@ -552,6 +559,7 @@ class ProcInfo:
         self.file = file
         self.module = module
         self.calls = set()
+        self.inline = False
         self.indirect = False
         self.loops = []
 
@@ -695,6 +703,7 @@ class Compiler:
                 self.globals.names[name] = ("proc", f"P_{name}", len(d[3]))
                 self.procs[name] = ProcInfo(name, d[3], d[4], d[1], fname_,
                                             fname_)
+                self.procs[name].inline = len(d) > 6 and d[6]
         if "main" not in self.procs:
             raise CompileError("no proc main")
 
@@ -835,19 +844,26 @@ class Compiler:
             op = self.var_operand(target, scope, store=True)
             self.gen_expr(rhs, scope)
             self.emit(f"ST   R1, {op}")
-        else:
-            vec, idx = target[2], target[3]
+            return
+        vec, idx = target[2], target[3]
+        ci = self.fold(idx, scope)
+        vop = self.simple(vec, scope)
+        if ci is not None and vop is not None and fits_imm(ci):
             self.gen_expr(rhs, scope)
-            ci = self.fold(idx, scope)
-            vop = self.simple(vec, scope)
-            if ci is not None and vop is not None and fits_imm(ci):
-                self.emit(f"LD   R2, {vop}")
-                self.emit(f"ST   R1, {ci}(R2)")
-                return
-            self.emit("PUSH R1")
+            self.emit(f"LD   R2, {vop}")
+            self.emit(f"ST   R1, {ci}(R2)")
+            return
+        rop = self.simple(rhs, scope)
+        if rop is not None:
             self.gen_index_addr(vec, idx, scope)
-            self.emit("POP  R2")
+            self.emit(f"LD   R2, {rop}")
             self.emit("ST   R2, 0(R1)")
+            return
+        self.gen_expr(rhs, scope)
+        self.emit("PUSH R1")
+        self.gen_index_addr(vec, idx, scope)
+        self.emit("POP  R2")
+        self.emit("ST   R2, 0(R1)")
 
     def s_if(self, s, scope):
         _, line, c, a, b = s
@@ -994,6 +1010,11 @@ class Compiler:
 
     def gen_cond(self, e, false_lab, scope):
         """Jump to false_lab unless e is true (positive)."""
+        while e[0] == "call":
+            s = scope.lookup(e[2])
+            if not (s and s[0] == "proc" and self.procs[e[2]].inline):
+                break
+            e = self.expand_inline(e, scope)
         k = e[0]
         v = self.fold(e, scope)
         if v is not None:
@@ -1019,8 +1040,8 @@ class Compiler:
                 self.emit(f"JZ   {false_lab}")
             self.gen_cond(e[3], false_lab, scope)
             self.place(true_lab)
-        elif k == "neg" and e[2][0] == "cmp":
-            a = e[2]
+        elif k == "neg" and self.inline_cmp(e[2], scope) is not None:
+            a = self.inline_cmp(e[2], scope)
             self.gen_compare(a[3], a[4], scope)
             self.emit(f"{JUMP_TRUE[a[2]]:4} {false_lab}")
         else:
@@ -1185,6 +1206,8 @@ class Compiler:
             return self.gen_intrinsic(e, scope)
         if s is None:
             self.err(e, f"undeclared procedure {name}")
+        if s[0] == "proc" and self.procs[name].inline:
+            return self.gen_expr(self.expand_inline(e, scope), scope)
         for a in args:
             self.gen_expr(a, scope)
             self.emit("PUSH R1")
@@ -1199,6 +1222,55 @@ class Compiler:
             op = self.var_operand(("name", line, name), scope)
             self.emit(f"LD   R2, {op}")
             self.emit("CALL 0(R2)")          # the callee pops its arguments
+
+    def inline_cmp(self, e, scope):
+        """If e is (or inlines to) a comparison, return the comparison."""
+        while e[0] == "call":
+            s = scope.lookup(e[2])
+            if not (s and s[0] == "proc" and self.procs[e[2]].inline):
+                return None
+            e = self.expand_inline(e, scope)
+        return e if e[0] == "cmp" else None
+
+    def expand_inline(self, e, scope):
+        """Return the body of an inline proc with its parameters replaced.
+        A simple argument (a constant or variable) is substituted directly;
+        any other argument is first evaluated into a fresh local."""
+        _, line, name, args = e
+        p = self.procs[name]
+        if len(args) != len(p.params):
+            self.err(e, f"{name} takes {len(p.params)} arguments, "
+                        f"given {len(args)}")
+        self.inline_depth = getattr(self, "inline_depth", 0) + 1
+        if self.inline_depth > 20:
+            self.err(e, f"inline expansion of {name} does not terminate")
+        self.cur_proc.calls.add(name)
+        subst = {}
+        for pn, a in zip(p.params, args):
+            if self.fold(a, scope) is not None or a[0] == "name":
+                subst[pn] = a
+            else:
+                slot = self.new_slot()
+                tmp = f".t{slot}"
+                scope.names[tmp] = ("local", slot)
+                self.gen_expr(a, scope)
+                self.emit(f"ST   R1, {slot}(FP)")
+                subst[pn] = ("name", line, tmp)
+
+        def rewrite(n):
+            if isinstance(n, tuple):
+                if n and n[0] == "name" and n[2] in subst:
+                    return subst[n[2]]
+                if n and n[0] == "addr" and n[2] in subst:
+                    self.err(e, "cannot take the address of an inline "
+                                "parameter")
+                return tuple(rewrite(x) for x in n)
+            if isinstance(n, list):
+                return [rewrite(x) for x in n]
+            return n
+        body = rewrite(p.body[2])
+        self.inline_depth -= 1
+        return body
 
     def gen_intrinsic(self, e, scope):
         _, line, name, args = e
@@ -1266,6 +1338,26 @@ class Compiler:
             self.emit("LD   R1, #START")
         elif name == "stackptr":
             self.emit("LD   R1, #0(SP)")
+        elif name == "catchpoint":
+            # save FP, SP and a resume address; returns 0 now, and later
+            # returns again with the value given to throw
+            self.cur_proc.indirect = True
+            resume = self.label()
+            self.gen_expr(args[0], scope)
+            self.emit("ST   FP, 0(R1)")
+            self.emit("ST   SP, 1(R1)")
+            self.emit(f"LD   R2, #{resume}")
+            self.emit("ST   R2, 2(R1)")
+            self.emit("LD   R1, #0")
+            self.place(resume)
+        elif name == "throw":
+            self.cur_proc.indirect = True
+            self.gen_args_to_regs(args, scope)       # R1 = buffer, R2 = value
+            self.emit("LD   FP, 0(R1)")
+            self.emit("LD   SP, 1(R1)")
+            self.emit("LD   R3, 2(R1)")
+            self.emit("LD   R1, #0(R2)")
+            self.emit("JMP  0(R3)")
 
     # ---------------- BlooP certification ----------------
     def check_bloop(self):

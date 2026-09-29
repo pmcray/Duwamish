@@ -1,0 +1,756 @@
+-- =====================================================================
+--  TRILISP -- a LISP for the Duwamish, written in SALISH.
+--
+--  Every LISP object is one 27-trit word, and its least significant trit
+--  says what kind of object it is -- one trit, three types:
+--
+--        ...  +1    a number     n is stored as 3n + 1
+--        ...   0    a cons       cell i is stored as 3i
+--        ...  -1    a symbol     symbol j is stored as 3j - 1
+--
+--  NIL is symbol 0 (the word -1) and T is symbol 1 (the word 2).
+--
+--  The interpreter reads S-expressions from the card reader, evaluates
+--  them, and prints the results.  EVAL is properly tail-recursive, so a
+--  LISP loop written as recursion runs in constant machine stack.
+--  Storage is reclaimed by a mark-and-sweep collector that scans the
+--  SALISH stack conservatively.
+-- =====================================================================
+
+const HEAP = 30000, MAXSYM = 1200, POOL = 12000, STACKTOP = 265720
+const MARKSTACK = 30000
+
+-- fixed symbol numbers (interned first, in this order)
+const S_NIL = 0, S_T = 1, S_QUOTE = 2, S_IF = 3, S_COND = 4, S_LAMBDA = 5
+const S_DEFINE = 6, S_LET = 7, S_SETQ = 8, S_PROGN = 9, S_AND = 10
+const S_OR = 11, S_DEFMACRO = 12, S_CLOSURE = 13, S_SUBR = 14
+const S_MACRO = 15, S_DOT = 16, S_ELSE = 17
+
+const NIL = 3 * S_NIL - 1, TRUE = 3 * S_T - 1
+const Y_CLOSURE = 3 * S_CLOSURE - 1, Y_SUBR = 3 * S_SUBR - 1
+const Y_MACRO = 3 * S_MACRO - 1, Y_DOT = 3 * S_DOT - 1
+const Y_ELSE = 3 * S_ELSE - 1, Y_QUOTE = 3 * S_QUOTE - 1
+const Y_DEFINE = 3 * S_DEFINE - 1, Y_DEFMACRO = 3 * S_DEFMACRO - 1
+const UNBOUND = 0
+
+global car_[HEAP], cdr_[HEAP], mark_[HEAP], mstack[MARKSTACK]
+global freelist := 0, nfree := 0, ngc := 0, nconses := 0
+global symname[MAXSYM], symval[MAXSYM], nsyms := 0
+global pool[POOL], poolfree := 0
+global toplevel[3]
+global peekc := -2
+global tok[300]
+global primtab[100], nprims := 0
+global echo := true
+global nevals := 0
+
+-- ---------------------------------------------------------------------
+-- representation
+-- ---------------------------------------------------------------------
+inline proc tag(v) = xtr(v, 0, 1)
+inline proc mkint(n) = 3 * n + 1
+inline proc ival(v) = (v - 1) / 3
+inline proc mksym(j) = 3 * j - 1
+inline proc symidx(v) = (v + 1) / 3
+inline proc isnum(v) = tag(v) = 1
+inline proc iscons(v) = tag(v) = 0
+inline proc issym(v) = tag(v) = -1
+inline proc lbool(c) = c -> TRUE, NIL
+
+proc lerror(msg, v)
+begin
+  prints("*** ERROR: "); prints(msg)
+  if v <> UNBOUND then begin prints(": "); lprint(v) end
+  newline()
+  throw(toplevel, 1)
+end
+
+inline proc car(v) = iscons(v) -> car_[v / 3], car_slow(v)
+inline proc cdr(v) = iscons(v) -> cdr_[v / 3], cdr_slow(v)
+
+proc car_slow(v)
+begin
+  if iscons(v) then return car_[v / 3]
+  if v = NIL then return NIL
+  lerror("CAR OF AN ATOM", v)
+end
+
+proc cdr_slow(v)
+begin
+  if iscons(v) then return cdr_[v / 3]
+  if v = NIL then return NIL
+  lerror("CDR OF AN ATOM", v)
+end
+
+proc num(v)
+begin
+  if isnum(v) then return ival(v)
+  lerror("NOT A NUMBER", v)
+end
+
+-- ---------------------------------------------------------------------
+-- storage
+-- ---------------------------------------------------------------------
+proc markval(v)
+begin
+  var sp := 0, i, a
+  if tag(v) <> 0 or v <= 0 or v >= 3 * HEAP then return 0
+  mstack[0] := v
+  sp := 1
+  while sp > 0 do begin
+    sp := sp - 1
+    v := mstack[sp]
+    while tag(v) = 0 and v > 0 and v < 3 * HEAP do begin
+      i := v / 3
+      if mark_[i] = 1 then break
+      mark_[i] := 1
+      a := car_[i]
+      if tag(a) = 0 and a > 0 and a < 3 * HEAP then
+        if mark_[a / 3] = 0 then begin
+          if sp >= MARKSTACK then begin
+            prints("*** MARK STACK OVERFLOW\n")
+            exit(98)
+          end
+          mstack[sp] := a
+          sp := sp + 1
+        end
+      v := cdr_[i]
+    end
+  end
+end
+
+proc gc()
+begin
+  ngc := ngc + 1
+  for j := 0 to nsyms - 1 do markval(symval[j])
+  -- every word on the machine stack that looks like a cons is a root
+  for a := stackptr() to STACKTOP do markval(peek(a))
+  freelist := 0
+  nfree := 0
+  -- sweep, clearing the marks as we go
+  for i := HEAP - 1 to 1 by -1 do
+    if mark_[i] = 0 then begin
+      car_[i] := NIL
+      cdr_[i] := freelist
+      freelist := i
+      nfree := nfree + 1
+    end else mark_[i] := 0
+end
+
+proc cons(a, d)
+begin
+  var i
+  if freelist = 0 then begin
+    gc()
+    if nfree < HEAP / 20 then lerror("STORAGE EXHAUSTED", UNBOUND)
+  end
+  i := freelist
+  freelist := cdr_[i]
+  car_[i] := a
+  cdr_[i] := d
+  nfree := nfree - 1
+  nconses := nconses + 1
+  return 3 * i
+end
+
+proc list2(a, b) = cons(a, cons(b, NIL))
+
+-- ---------------------------------------------------------------------
+-- symbols
+-- ---------------------------------------------------------------------
+proc intern(name)
+begin
+  var p
+  for j := 0 to nsyms - 1 do
+    if streq(symname[j], name) then return mksym(j)
+  if nsyms >= MAXSYM or poolfree + name[0] + 1 > POOL then begin
+    prints("*** SYMBOL TABLE FULL\n")
+    exit(97)
+  end
+  p := pool + poolfree
+  for i := 0 to name[0] do p[i] := name[i]
+  poolfree := poolfree + name[0] + 1
+  symname[nsyms] := p
+  symval[nsyms] := UNBOUND
+  nsyms := nsyms + 1
+  return mksym(nsyms - 1)
+end
+
+proc defprim(name, fn)
+begin
+  var s := intern(name)
+  primtab[nprims] := fn
+  symval[symidx(s)] := cons(Y_SUBR, mkint(nprims))
+  nprims := nprims + 1
+end
+
+-- ---------------------------------------------------------------------
+-- the reader
+-- ---------------------------------------------------------------------
+proc peekch()
+begin
+  if peekc = -2 then peekc := getc()
+  return peekc
+end
+
+proc nextch()
+begin
+  var c := peekch()
+  peekc := -2
+  return c
+end
+
+proc delim(c) = c <= ' ' or c = '(' or c = ')' or c = '\'' or c = ';' or c = '"'
+
+proc skipws()
+begin
+  var c
+  while true do begin
+    c := peekch()
+    if c = ';' then
+      while c >= 0 and c <> '\n' do c := nextch()
+    else if c >= 0 and c <= ' ' then nextch()
+    else return 0
+  end
+end
+
+proc readatom()
+begin
+  var c, n := 0, v := 0, neg := false, isn := true, start := 1
+  while not delim(peekch()) and n < 290 do begin
+    c := nextch()
+    if c >= 'a' and c <= 'z' then c := c - 32
+    n := n + 1
+    tok[n] := c
+  end
+  tok[0] := n
+  if tok[1] = '-' or tok[1] = '+' then begin
+    neg := tok[1] = '-'
+    start := 2
+    if n = 1 then isn := false
+  end
+  for i := start to n do
+    if tok[i] < '0' or tok[i] > '9' then isn := false
+  if isn then begin
+    for i := start to n do v := v * 10 + tok[i] - '0'
+    return mkint(neg -> -v, v)
+  end
+  return intern(tok)
+end
+
+-- a "string" is a symbol that evaluates to itself
+proc readstring()
+begin
+  var c, n := 0, s
+  nextch()
+  c := nextch()
+  while c >= 0 and c <> '"' and n < 290 do begin
+    n := n + 1
+    tok[n] := c
+    c := nextch()
+  end
+  tok[0] := n
+  s := intern(tok)
+  symval[symidx(s)] := s
+  return s
+end
+
+proc lread()
+begin
+  var c
+  skipws()
+  c := peekch()
+  if c < 0 then return UNBOUND
+  if c = '(' then begin nextch(); return readlist() end
+  if c = ')' then begin nextch(); lerror("UNEXPECTED )", UNBOUND) end
+  if c = '\'' then begin nextch(); return list2(Y_QUOTE, lread()) end
+  if c = '"' then return readstring()
+  return readatom()
+end
+
+proc readlist()
+begin
+  var head := NIL, tail := NIL, x, cell
+  while true do begin
+    skipws()
+    if peekch() = ')' then begin nextch(); return head end
+    if peekch() < 0 then lerror("END OF CARDS INSIDE A LIST", UNBOUND)
+    x := lread()
+    if x = Y_DOT then begin
+      x := lread()
+      if tail = NIL then lerror("BAD DOTTED PAIR", UNBOUND)
+      cdr_[tail / 3] := x
+      skipws()
+      if nextch() <> ')' then lerror("BAD DOTTED PAIR", UNBOUND)
+      return head
+    end
+    cell := cons(x, NIL)
+    if head = NIL then head := cell else cdr_[tail / 3] := cell
+    tail := cell
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- the printer
+-- ---------------------------------------------------------------------
+proc lprint(v)
+begin
+  sign tag(v) of
+    +: print(ival(v))
+    -: prints(symname[symidx(v)])
+    0: begin
+      if v = UNBOUND then begin prints("#<UNBOUND>"); return 0 end
+      if car_[v / 3] = Y_CLOSURE then begin prints("#<CLOSURE>"); return 0 end
+      if car_[v / 3] = Y_MACRO then begin prints("#<MACRO>"); return 0 end
+      if car_[v / 3] = Y_SUBR then begin prints("#<SUBR>"); return 0 end
+      putc('(')
+      while true do begin
+        lprint(car_[v / 3])
+        v := cdr_[v / 3]
+        if v = NIL then break
+        if not iscons(v) then begin prints(" . "); lprint(v); break end
+        putc(' ')
+      end
+      putc(')')
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- the evaluator
+-- ---------------------------------------------------------------------
+proc lookup(s, env)
+begin
+  var b, v
+  while env <> NIL do begin
+    b := car_[env / 3]
+    if car_[b / 3] = s then return cdr_[b / 3]
+    env := cdr_[env / 3]
+  end
+  v := symval[symidx(s)]
+  if v = UNBOUND then lerror("UNBOUND VARIABLE", s)
+  return v
+end
+
+proc bind(params, args, env)
+begin
+  while params <> NIL do begin
+    if issym(params) then return cons(cons(params, args), env)
+    env := cons(cons(car(params), car(args)), env)
+    params := cdr(params)
+    args := cdr(args)
+  end
+  return env
+end
+
+proc evlis(l, env)
+begin
+  var head := NIL, tail := NIL, c
+  while l <> NIL do begin
+    c := cons(eval(car(l), env), NIL)
+    if head = NIL then head := c else cdr_[tail / 3] := c
+    tail := c
+    l := cdr(l)
+  end
+  return head
+end
+
+-- evaluate all but the last form; return the last, unevaluated
+proc progn_tail(body, env)
+begin
+  if body = NIL then return NIL
+  while cdr(body) <> NIL do begin
+    eval(car(body), env)
+    body := cdr(body)
+  end
+  return car(body)
+end
+
+proc progn(body, env)
+begin
+  var v := NIL
+  while body <> NIL do begin
+    v := eval(car(body), env)
+    body := cdr(body)
+  end
+  return v
+end
+
+proc callprim(n, args)
+begin
+  var f := primtab[n]
+  return f(args)
+end
+
+proc apply(f, args)
+begin
+  var k, cl
+  if not iscons(f) then lerror("NOT A FUNCTION", f)
+  k := car_[f / 3]
+  if k = Y_SUBR then return callprim(ival(cdr(f)), args)
+  if k = Y_CLOSURE or k = Y_MACRO then begin
+    cl := cdr(f)
+    return progn(car(cdr(cl)), bind(car(cl), args, car(cdr(cdr(cl)))))
+  end
+  lerror("NOT A FUNCTION", f)
+end
+
+proc make_closure(kind, params, body, env) =
+  cons(kind, cons(params, cons(body, cons(env, NIL))))
+
+proc eval(x, env)
+begin
+  var op, f, args, j, cl, c, v, b, found
+  while true do begin
+    nevals := nevals + 1
+    sign tag(x) of
+      +: return x
+      -: return lookup(x, env)
+    end
+    op := car_[x / 3]
+    j := symidx(op)
+    if issym(op) and j >= S_QUOTE and j <= S_DEFMACRO then begin
+      if j = S_QUOTE then return car(cdr(x))
+      if j = S_IF then begin
+        if eval(car(cdr(x)), env) <> NIL then x := car(cdr(cdr(x)))
+        else x := car(cdr(cdr(cdr(x))))
+        next
+      end
+      if j = S_COND then begin
+        cl := cdr(x)
+        found := false
+        while cl <> NIL do begin
+          c := car(cl)
+          if car(c) = Y_ELSE then v := TRUE else v := eval(car(c), env)
+          if v <> NIL then begin found := true; break end
+          cl := cdr(cl)
+        end
+        if found = false then return NIL
+        if cdr(c) = NIL then return v
+        x := progn_tail(cdr(c), env)
+        next
+      end
+      if j = S_LAMBDA then
+        return make_closure(Y_CLOSURE, car(cdr(x)), cdr(cdr(x)), env)
+      if j = S_DEFINE or j = S_DEFMACRO then begin
+        f := car(cdr(x))
+        if iscons(f) then begin
+          v := make_closure(j = S_DEFINE -> Y_CLOSURE, Y_MACRO,
+                            cdr(f), cdr(cdr(x)), env)
+          f := car(f)
+        end else
+          v := eval(car(cdr(cdr(x))), env)
+        symval[symidx(f)] := v
+        return f
+      end
+      if j = S_LET then begin
+        b := NIL
+        cl := car(cdr(x))
+        while cl <> NIL do begin
+          b := cons(cons(car(car(cl)), eval(car(cdr(car(cl))), env)), b)
+          cl := cdr(cl)
+        end
+        while b <> NIL do begin
+          env := cons(car(b), env)
+          b := cdr(b)
+        end
+        x := progn_tail(cdr(cdr(x)), env)
+        next
+      end
+      if j = S_SETQ then begin
+        v := eval(car(cdr(cdr(x))), env)
+        f := car(cdr(x))
+        b := env
+        while b <> NIL do begin
+          if car(car(b)) = f then begin
+            cdr_[car(b) / 3] := v
+            return v
+          end
+          b := cdr(b)
+        end
+        symval[symidx(f)] := v
+        return v
+      end
+      if j = S_PROGN then begin
+        x := progn_tail(cdr(x), env)
+        next
+      end
+      if j = S_AND then begin
+        cl := cdr(x)
+        if cl = NIL then return TRUE
+        while cdr(cl) <> NIL do begin
+          if eval(car(cl), env) = NIL then return NIL
+          cl := cdr(cl)
+        end
+        x := car(cl)
+        next
+      end
+      if j = S_OR then begin
+        cl := cdr(x)
+        while cdr(cl) <> NIL do begin
+          v := eval(car(cl), env)
+          if v <> NIL then return v
+          cl := cdr(cl)
+        end
+        x := car(cl)
+        next
+      end
+    end
+    -- application
+    f := eval(op, env)
+    if not iscons(f) then lerror("NOT A FUNCTION", f)
+    if car_[f / 3] = Y_MACRO then begin
+      x := apply(f, cdr(x))
+      next
+    end
+    args := evlis(cdr(x), env)
+    if car_[f / 3] = Y_SUBR then return callprim(ival(cdr_[f / 3]), args)
+    if car_[f / 3] <> Y_CLOSURE then lerror("NOT A FUNCTION", f)
+    cl := cdr(f)
+    env := bind(car(cl), args, car(cdr(cdr(cl))))
+    x := progn_tail(car(cdr(cl)), env)
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- primitives: each takes its (evaluated) argument list
+-- ---------------------------------------------------------------------
+inline proc arg1(a) = car(a)
+inline proc arg2(a) = car(cdr(a))
+
+proc p_car(a) = car(arg1(a))
+proc p_cdr(a) = cdr(arg1(a))
+proc p_cons(a) = cons(arg1(a), arg2(a))
+proc p_atom(a) = lbool(not iscons(arg1(a)))
+proc p_eq(a) = lbool(arg1(a) = arg2(a))
+proc p_null(a) = lbool(arg1(a) = NIL)
+proc p_numberp(a) = lbool(isnum(arg1(a)))
+proc p_symbolp(a) = lbool(issym(arg1(a)))
+proc p_consp(a) = lbool(iscons(arg1(a)))
+proc p_list(a) = a
+
+proc p_add(a)
+begin
+  var s := 0
+  while a <> NIL do begin s := s + num(car(a)); a := cdr(a) end
+  return mkint(s)
+end
+
+proc p_mul(a)
+begin
+  var s := 1
+  while a <> NIL do begin s := s * num(car(a)); a := cdr(a) end
+  return mkint(s)
+end
+
+proc p_sub(a)
+begin
+  var s := num(car(a))
+  a := cdr(a)
+  if a = NIL then return mkint(-s)
+  while a <> NIL do begin s := s - num(car(a)); a := cdr(a) end
+  return mkint(s)
+end
+
+proc p_div(a)
+begin
+  var d := num(arg2(a))
+  if d = 0 then lerror("DIVISION BY ZERO", UNBOUND)
+  return mkint(num(arg1(a)) / d)
+end
+
+proc p_mod(a)
+begin
+  var d := num(arg2(a))
+  if d = 0 then lerror("DIVISION BY ZERO", UNBOUND)
+  return mkint(num(arg1(a)) mod d)
+end
+
+proc p_lt(a) = lbool(num(arg1(a)) < num(arg2(a)))
+proc p_gt(a) = lbool(num(arg1(a)) > num(arg2(a)))
+proc p_le(a) = lbool(num(arg1(a)) <= num(arg2(a)))
+proc p_ge(a) = lbool(num(arg1(a)) >= num(arg2(a)))
+proc p_numeq(a) = lbool(num(arg1(a)) = num(arg2(a)))
+
+proc lequal(x, y)
+begin
+  while true do begin
+    if x = y then return true
+    if not iscons(x) or not iscons(y) then return false
+    if lequal(car_[x / 3], car_[y / 3]) <> true then return false
+    x := cdr_[x / 3]
+    y := cdr_[y / 3]
+  end
+end
+
+proc p_equal(a) = lbool(lequal(arg1(a), arg2(a)))
+
+proc p_print(a)
+begin
+  lprint(arg1(a))
+  newline()
+  return arg1(a)
+end
+
+proc p_prin1(a)
+begin
+  lprint(arg1(a))
+  return arg1(a)
+end
+
+proc p_terpri(a)
+begin
+  newline()
+  return NIL
+end
+
+proc p_rplaca(a)
+begin
+  if not iscons(arg1(a)) then lerror("RPLACA OF AN ATOM", arg1(a))
+  car_[arg1(a) / 3] := arg2(a)
+  return arg1(a)
+end
+
+proc p_rplacd(a)
+begin
+  if not iscons(arg1(a)) then lerror("RPLACD OF AN ATOM", arg1(a))
+  cdr_[arg1(a) / 3] := arg2(a)
+  return arg1(a)
+end
+
+proc p_apply(a) = apply(arg1(a), arg2(a))
+proc p_eval(a) = eval(arg1(a), NIL)
+proc p_error(a) = lerror("USER ERROR", arg1(a))
+
+proc p_set(a)
+begin
+  if not issym(arg1(a)) then lerror("SET OF A NON-SYMBOL", arg1(a))
+  symval[symidx(arg1(a))] := arg2(a)
+  return arg2(a)
+end
+
+-- looking beneath the language: the raw word, its tag trit, core itself
+proc p_word(a) = mkint(arg1(a))
+proc p_tag(a) = mkint(tag(arg1(a)))
+proc p_peek(a) = mkint(peek(num(arg1(a))))
+proc p_poke(a)
+begin
+  poke(num(arg1(a)), num(arg2(a)))
+  return arg2(a)
+end
+proc p_clock(a) = mkint(clock())
+proc p_evals(a) = mkint(nevals)
+
+proc p_gc(a)
+begin
+  gc()
+  return mkint(nfree)
+end
+
+proc p_tprint(a)
+begin
+  printt(num(arg1(a)))
+  return arg1(a)
+end
+
+proc p_echo(a)
+begin
+  echo := arg1(a) <> NIL
+  return arg1(a)
+end
+
+proc p_length(a)
+begin
+  var n := 0, l := arg1(a)
+  while iscons(l) do begin n := n + 1; l := cdr_[l / 3] end
+  return mkint(n)
+end
+
+proc p_explode(a)
+begin
+  var s := arg1(a), name, head := NIL, one[2]
+  if not issym(s) then lerror("EXPLODE OF A NON-SYMBOL", s)
+  name := symname[symidx(s)]
+  one[0] := 1
+  for i := name[0] to 1 by -1 do begin
+    one[1] := name[i]
+    head := cons(intern(one), head)
+  end
+  return head
+end
+
+proc p_implode(a)
+begin
+  var l := arg1(a), n := 0, s
+  while iscons(l) do begin
+    s := symname[symidx(car(l))]
+    for i := 1 to s[0] do begin n := n + 1; tok[n] := s[i] end
+    l := cdr(l)
+  end
+  tok[0] := n
+  return intern(tok)
+end
+
+-- ---------------------------------------------------------------------
+proc init()
+begin
+  for i := HEAP - 1 to 1 by -1 do begin
+    car_[i] := NIL
+    cdr_[i] := freelist
+    freelist := i
+  end
+  nfree := HEAP - 1
+  intern("NIL"); intern("T"); intern("QUOTE"); intern("IF"); intern("COND")
+  intern("LAMBDA"); intern("DEFINE"); intern("LET"); intern("SETQ")
+  intern("PROGN"); intern("AND"); intern("OR"); intern("DEFMACRO")
+  intern("%CLOSURE"); intern("%SUBR"); intern("%MACRO"); intern(".")
+  intern("ELSE")
+  symval[S_NIL] := NIL
+  symval[S_T] := TRUE
+  defprim("CAR", p_car); defprim("CDR", p_cdr); defprim("CONS", p_cons)
+  defprim("ATOM", p_atom); defprim("EQ", p_eq); defprim("NULL", p_null)
+  defprim("NOT", p_null); defprim("NUMBERP", p_numberp)
+  defprim("SYMBOLP", p_symbolp); defprim("CONSP", p_consp)
+  defprim("LIST", p_list); defprim("+", p_add); defprim("-", p_sub)
+  defprim("*", p_mul); defprim("/", p_div); defprim("MOD", p_mod)
+  defprim("<", p_lt); defprim(">", p_gt); defprim("<=", p_le)
+  defprim(">=", p_ge); defprim("=", p_numeq); defprim("EQUAL", p_equal)
+  defprim("PRINT", p_print); defprim("PRIN1", p_prin1)
+  defprim("TERPRI", p_terpri); defprim("RPLACA", p_rplaca)
+  defprim("RPLACD", p_rplacd); defprim("APPLY", p_apply)
+  defprim("EVAL", p_eval); defprim("ERROR", p_error); defprim("SET", p_set)
+  defprim("WORD", p_word); defprim("TAG", p_tag); defprim("PEEK", p_peek)
+  defprim("POKE", p_poke); defprim("CLOCK", p_clock)
+  defprim("EVALS", p_evals); defprim("GC", p_gc); defprim("TPRINT", p_tprint)
+  defprim("ECHO", p_echo); defprim("LENGTH", p_length)
+  defprim("EXPLODE", p_explode); defprim("IMPLODE", p_implode)
+end
+
+proc main()
+begin
+  var x, v, r
+  init()
+  prints("TRILISP 1.0 ON THE DUWAMISH.  ")
+  print(nfree); prints(" FREE CELLS, ")
+  print(nprims); prints(" PRIMITIVES.\n\n")
+  while true do begin
+    r := catchpoint(toplevel)
+    x := lread()
+    if x = UNBOUND then break
+    if echo then begin
+      prints("* ")
+      if iscons(x) and (car(x) = Y_DEFINE or car(x) = Y_DEFMACRO) then begin
+        prints("("); lprint(car(x)); prints(" "); lprint(car(cdr(x)))
+        prints(" ...)")
+      end else lprint(x)
+      newline()
+    end
+    v := eval(x, NIL)
+    if echo then begin prints("  "); lprint(v); newline() end
+  end
+  prints("\nEND OF CARDS.  ")
+  print(nevals); prints(" EVALUATIONS, ")
+  print(nconses); prints(" CONSES, ")
+  print(ngc); prints(" GARBAGE COLLECTIONS.\n")
+  return 0
+end

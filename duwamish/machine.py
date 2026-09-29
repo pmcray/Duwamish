@@ -60,6 +60,19 @@ def alu_trit(a, pos):
     return t.trit_at(a, pos) if 0 <= pos < 27 else 0
 
 
+# operand-fetch flags per opcode (index op + 121 is not needed: only the
+# factory opcodes 1..40 run on the hardwired path)
+_NEEDS_EA = [False] * 243
+_NEEDS_VAL = [False] * 243
+for _op, _name, _form, _ in isa.OPCODES:
+    if _form in ("RE", "E") or _name in ("SVC",):
+        _NEEDS_EA[_op] = True
+        _NEEDS_VAL[_op] = _name not in ("ST", "LEA", "JMP", "JN", "JZ", "JP",
+                                        "JNN", "JNZ", "JNP", "J3", "CALL",
+                                        "JSR")
+_ZERO_TALLY = [0] * MEM_SIZE
+
+
 class Trap(Exception):
     def __init__(self, code, arg=0):
         super().__init__(code, arg)
@@ -89,7 +102,7 @@ class Machine:
         self.clock = 0
         self.icount = 0
         self.timer = 0
-        self.tally = {}
+        self.tally = [0] * MEM_SIZE
         self.cs = [list(p) for p in self.mp.cs]
         self.cs += [[0, 0] for _ in range(microasm.CS_SIZE - len(self.cs))]
         self.ucode = [microasm.decode(a, b) for a, b in self.cs]
@@ -144,6 +157,20 @@ class Machine:
         items = image.items() if isinstance(image, dict) else image
         for a, w in items:
             self.poke(a, w)
+
+    # ------------------------------------------------------------------
+    # the Beer monitor: execution tallies
+    # ------------------------------------------------------------------
+    def tally_get(self, a):
+        return self.tally[a + MEM_OFF] if -MEM_MAX <= a <= MEM_MAX else 0
+
+    def tally_clear(self):
+        self.tally[:] = _ZERO_TALLY
+
+    def tally_items(self):
+        """(address, count) for every word executed at least once."""
+        tl = self.tally
+        return [(i - MEM_OFF, c) for i, c in enumerate(tl) if c]
 
     # ------------------------------------------------------------------
     # peripherals
@@ -366,9 +393,9 @@ class Machine:
         elif sp == 13:
             self.map_write(ea, self.rf[r])
         elif sp == -1:
-            val = self.tally.get(ea, 0)
+            val = self.tally_get(ea)
         elif sp == -2:
-            self.tally.clear()
+            self.tally_clear()
         elif sp == -3:
             val = t.wrap(self.clock)
         else:
@@ -388,7 +415,8 @@ class Machine:
             if (self.mode < 0 and self.timer
                     and self.clock >= self.timer):
                 raise Trap(isa.TRAP_TIME, 0)
-            self.tally[pc] = self.tally.get(pc, 0) + 1
+            if -MEM_MAX <= pc <= MEM_MAX:
+                self.tally[pc + MEM_OFF] += 1
             self.icount += 1
             if self.trace:
                 self.trace(self, pc)
@@ -465,6 +493,9 @@ class Machine:
     # Model 90: the hardwired engine
     # ------------------------------------------------------------------
     def _run_fast(self, max_instr):
+        """Execute up to max_instr instructions directly.  The trap-free
+        path is kept flat and local for speed; anything unusual raises
+        Trap, which is handled exactly as the micro-engine handles it."""
         rf = self.rf
         ur = self.ur
         mem = self.mem
@@ -472,27 +503,35 @@ class Machine:
         tally = self.tally
         load = self.load
         store = self.store
+        needs_ea = _NEEDS_EA
+        needs_val = _NEEDS_VAL
+        off = MEM_OFF
+        size = MEM_SIZE
+        dcache = isa._decode_cache
         n = 0
         while n < max_instr and not self.halted:
             n += 1
             pc = ur[PC]
             try:
                 self.ipc = pc
-                if self.mode < 0 and self.timer and self.clock >= self.timer:
+                if self.timer and self.mode < 0 and self.clock >= self.timer:
                     raise Trap(isa.TRAP_TIME, 0)
-                tally[pc] = tally.get(pc, 0) + 1
+                i = pc + off
+                if 0 <= i < size:
+                    tally[i] += 1
                 self.icount += 1
                 if self.trace:
                     self.trace(self, pc)
-                ur[PC] = _wrap(pc + 1)
+                ur[PC] = pc + 1 if pc < WMAX else _wrap(pc + 1)
                 if pc < 0 and self.mode < 0:
                     raise Trap(isa.TRAP_PROTECT, pc)
-                i = pc + MEM_OFF
-                if not 0 <= i < MEM_SIZE:
+                if not 0 <= i < size:
                     raise Trap(isa.TRAP_ADDRESS, pc)
                 w = mem[i]
                 pc = ur[PC]
-                f = decode(w)
+                f = dcache.get(w)
+                if f is None:
+                    f = decode(w)
                 op, r, x, m, addr = f
                 if not native[op + 121]:
                     ur[IR] = ur[MDR] = w
@@ -502,25 +541,25 @@ class Machine:
                     continue
                 self.clock += FAST_CYCLES
                 # ---- effective address / operand ----
-                if op <= 18 or 20 <= op <= 28 or op == 32 or op == 33 or op == 35 or op == 36:
+                if needs_ea[op]:
                     ea = addr + rf[x] if x else addr
                     if ea > WMAX or ea < -WMAX:
                         ea = _wrap(ea)
                     if m == 0:
-                        if op in (2, 3) or 20 <= op <= 28 or op == 32:
-                            v = 0
-                        else:
-                            v = load(ea)
-                    elif m == -1:
-                        ea = load(ea)
-                        if op in (2, 3) or 20 <= op <= 28 or op == 32:
-                            v = 0
-                        else:
-                            v = load(ea)
+                        if needs_val[op]:
+                            j = ea + off
+                            if ea >= 0 and j < size:
+                                v = mem[j]
+                            else:
+                                v = load(ea)
                     elif m == 1:
-                        if op in (2, 3) or 20 <= op <= 28 or op == 32:
+                        if not needs_val[op]:
                             raise Trap(isa.TRAP_ILLEGAL, w)
                         v = ea
+                    elif m == -1:
+                        ea = load(ea)
+                        if needs_val[op]:
+                            v = load(ea)
                     else:
                         raise Trap(isa.TRAP_ILLEGAL, m)
                 # ---- execute ----
@@ -529,7 +568,11 @@ class Machine:
                         rf[r] = v
                     self.c = (v > 0) - (v < 0)
                 elif op == 2:                                 # ST
-                    store(ea, rf[r])
+                    j = ea + off
+                    if ea >= 0 and j < size:
+                        mem[j] = rf[r]
+                    else:
+                        store(ea, rf[r])
                 elif op == 4:                                 # ADD
                     v = rf[r] + v
                     if v > WMAX or v < -WMAX:
@@ -549,6 +592,23 @@ class Machine:
                         ur[PC] = ea
                     elif op == 27:
                         ur[PC] = _wrap(ea + c)
+                elif op == 30:                                # PUSH
+                    sp = rf[8] - 1
+                    rf[8] = sp
+                    j = sp + off
+                    if sp >= 0 and j < size:
+                        mem[j] = rf[r]
+                    else:
+                        rf[8] = sp = _wrap(sp)
+                        store(sp, rf[r])
+                elif op == 31:                                # POP
+                    sp = rf[8]
+                    j = sp + off
+                    v = mem[j] if sp >= 0 and j < size else load(sp)
+                    rf[8] = _wrap(sp + 1)
+                    if r:
+                        rf[r] = v
+                    self.c = (v > 0) - (v < 0)
                 elif op == 5:                                 # SUB
                     v = rf[r] - v
                     if v > WMAX or v < -WMAX:
@@ -556,16 +616,9 @@ class Machine:
                     if r:
                         rf[r] = v
                     self.c = (v > 0) - (v < 0)
-                elif op == 30:                                # PUSH
-                    sp = _wrap(rf[8] - 1)
-                    rf[8] = sp
-                    store(sp, rf[r])
-                elif op == 31:                                # POP
-                    v = load(rf[8])
-                    rf[8] = _wrap(rf[8] + 1)
+                elif op == 3:                                 # LEA
                     if r:
-                        rf[r] = v
-                    self.c = (v > 0) - (v < 0)
+                        rf[r] = ea
                 elif op == 28:                                # CALL
                     sp = _wrap(rf[8] - 1)
                     rf[8] = sp
@@ -575,9 +628,6 @@ class Machine:
                     v = load(rf[8])
                     ur[PC] = v
                     rf[8] = _wrap(rf[8] + addr + 1)
-                elif op == 3:                                 # LEA
-                    if r:
-                        rf[r] = ea
                 elif op == 18:                                # SEL
                     v = t.trit_at(v, self.c + 1)
                     if r:
@@ -585,8 +635,18 @@ class Machine:
                     self.c = v
                 elif op == 11:                                # TST
                     self.c = (v > 0) - (v < 0)
+                elif op == 16:                                # XTR
+                    if v == 27:                               # low trit
+                        v = rf[r] % 3
+                        if v == 2:
+                            v = -1
+                    else:
+                        v = alu_xtr(rf[r], v)
+                    if r:
+                        rf[r] = v
+                    self.c = (v > 0) - (v < 0)
                 elif op == 6 or op == 7 or op == 8 or op == 9 or \
-                        12 <= op <= 16:
+                        12 <= op <= 15:
                     a = rf[r]
                     if op == 6:
                         v = _wrap(a * v)
@@ -602,10 +662,8 @@ class Machine:
                         v = t.tmax(a, v)
                     elif op == 14:
                         v = t.teqv(a, v)
-                    elif op == 15:
-                        v = t.shift(a, v)
                     else:
-                        v = alu_xtr(a, v)
+                        v = t.shift(a, v)
                     if r:
                         rf[r] = v
                     self.c = (v > 0) - (v < 0)
@@ -642,11 +700,11 @@ class Machine:
                     if r:
                         rf[r] = t.wrap(self.clock)
                 elif op == 39:                                # TAL
-                    ea = _wrap(addr + rf[x])
                     if r:
-                        rf[r] = tally.get(ea, 0)
+                        rf[r] = self.tally_get(_wrap(addr + rf[x]))
                 elif op == 40:                                # TCL
-                    tally.clear()
+                    self.tally_clear()
+                    tally = self.tally
                 else:
                     raise Trap(isa.TRAP_ILLEGAL, op)
             except Trap as tr:

@@ -249,7 +249,7 @@ class Satellite:
         m.load_image(step.obj.image())
         m.reader = step.data
         m.reader_pos = 0
-        m.tally.clear()
+        m.tally_clear()
         step.out_start = len(m.printer)
         step.i0 = m.icount
         step.t0 = time.time()
