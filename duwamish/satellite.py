@@ -7,7 +7,8 @@ printer, and feeds job steps to the Duwamish Executive over a channel.
 
 A job deck is a sequence of cards (lines).  Control cards begin with //:
 
-    //JOB name [TIME=cycles]        start a job
+    //JOB name [TIME=cycles] [KEY=WCS]  start a job (KEY=WCS: the job
+                                    needs the writable control store)
     //SALISH [FROM=path] [LIST]     compile SALISH (the following cards, or a
                                     file); LIST prints the TRIAD listing
     //TRIAD [FROM=path] [LIST]      assemble TRIAD source
@@ -157,6 +158,10 @@ class Satellite:
                 job = Job(args[0] if args else "NONAME", opts)
                 self.jobs.append(job)
                 pending_obj = None
+                if opts.get("KEY", "").upper() == "WCS" and not self.wcs:
+                    job.log.append("*** JOB NEEDS THE CONTROL-STORE KEY AT WCS "
+                                   "ENABLE (run with --wcs); job flushed")
+                    job.failed = True
                 continue
             if job is None:
                 job = Job("NONAME", {})

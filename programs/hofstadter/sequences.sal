@@ -1,0 +1,81 @@
+bloop
+-- =====================================================================
+--  SEQUENCES: Hofstadter's recursive sequences, computed in BlooP.
+--
+--  Goedel, Escher, Bach, chapter V, defines sequences by tangled
+--  recursions: G(n) = n - G(G(n-1)), the "married" F and M that call
+--  each other, and the chaotic Q(n) = Q(n - Q(n-1)) + Q(n - Q(n-2)).
+--  Their definitions are recursive, but every one can be computed with
+--  loops whose bounds are fixed in advance.
+--
+--  The word "bloop" at the top asks the compiler to prove it: it
+--  accepts the program only if nothing main can reach contains an
+--  unbounded loop, recursion, or a call through a variable.  The job log
+--  prints the certificate.  (Chapter XIII: BlooP, FlooP and GlooP.)
+-- =====================================================================
+
+const N = 60
+
+global g[N + 1], h[N + 1], f[N + 1], m[N + 1], q[N + 1]
+global r[N + 1], sq[3 * N]
+
+proc isqrt(x)
+begin
+  var lo := 0, hi := 1000000, mid
+  for i := 1 to 45 do
+    if lo < hi then begin
+      mid := (lo + hi + 1) / 2
+      if mid * mid <= x then lo := mid else hi := mid - 1
+    end
+  return lo
+end
+
+proc show(name, v, first, n)
+begin
+  prints(name)
+  for i := first to n do begin print(v[i]); space() end
+  newline()
+end
+
+proc main()
+begin
+  var s5, gold, ok := true, next_s
+  g[0] := 0; h[0] := 0; f[0] := 1; m[0] := 0
+  for n := 1 to N do begin
+    g[n] := n - g[g[n - 1]]
+    h[n] := n - h[h[h[n - 1]]]
+    f[n] := n - m[f[n - 1]]
+    m[n] := n - f[m[n - 1]]
+  end
+  q[1] := 1; q[2] := 1
+  for n := 3 to N do q[n] := q[n - q[n - 1]] + q[n - q[n - 2]]
+
+  -- Figure-Figure: R(n) = R(n-1) + S(n-1), where S is everything not in R
+  r[1] := 1
+  next_s := 2
+  for n := 2 to N do begin
+    r[n] := r[n - 1] + next_s
+    -- the next S is the next number not in R
+    next_s := next_s + 1
+    for k := 1 to n do
+      if next_s = r[k] then next_s := next_s + 1
+  end
+
+  prints("SEQUENCES from Goedel, Escher, Bach, chapter V\n\n")
+  show("G  n - G(G(n-1))      ", g, 1, 30)
+  show("H  n - H(H(H(n-1)))   ", h, 1, 30)
+  show("F  n - M(F(n-1))      ", f, 0, 25)
+  show("M  n - F(M(n-1))      ", m, 0, 25)
+  show("Q  Q(n-Q(n-1))+...    ", q, 1, 30)
+  show("R  Figure-Figure      ", r, 1, 16)
+
+  -- G has a closed form: G(n) = floor((n + 1) / phi)
+  s5 := isqrt(50000000000)                -- sqrt(5) * 10^5
+  for n := 0 to N do begin
+    gold := (n + 1) * (s5 - 100000) / 200000
+    if gold <> g[n] then ok := false
+  end
+  prints("\nG(n) = floor((n+1)/phi) for n <= "); print(N); prints(": ")
+  prints(ok -> "confirmed\n", "FAILED\n")
+  return 0
+end

@@ -1,0 +1,13 @@
+//JOB BLOOP    -- Hofstadter's BlooP and FlooP (GEB, chapter XIII)
+--
+-- Step 1: the Hofstadter sequences, certified by the compiler to halt.
+//SALISH FROM=../programs/hofstadter/sequences.sal
+//EXEC
+//JOB FLOOPASBLOOP   -- ask the compiler to certify the wondrous numbers
+//SALISH
+bloop
+get "../programs/hofstadter/floop"
+//EXEC
+//JOB FLOOP    -- run them anyway, as FlooP, with no guarantee
+//SALISH FROM=../programs/hofstadter/floop.sal
+//EXEC

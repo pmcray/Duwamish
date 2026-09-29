@@ -1,0 +1,141 @@
+-- =====================================================================
+--  MIU: the first puzzle of Goedel, Escher, Bach.
+--
+--  Start from the axiom MI and apply the rules:
+--     I.   xI  -> xIU          III.  xIIIy -> xUy
+--     II.  Mx  -> Mxx          IV.   xUUy  -> xy
+--  Can you make MU?
+--
+--  Working *inside* the system (the "mechanical mode"), the machine
+--  derives theorems breadth first and never finds MU -- but it cannot
+--  know that it never will.  Stepping *outside* the system (Hofstadter's
+--  "intelligent mode") we notice an invariant: the number of I's is never
+--  a multiple of 3.  Rule II doubles it, rule III takes 3 away, and
+--  doubling a number that is not a multiple of 3 never makes one.  MI
+--  has one I; MU has none; so MU is not a theorem.
+--
+--  On a balanced-ternary machine, "a multiple of 3" is simply "the last
+--  trit is 0".  The machine checks the invariant on every theorem it
+--  finds, by looking at one trit.
+-- =====================================================================
+
+const MAXLEN = 12, MAXTHM = 4000, HSIZE = 6561, SHOW = 40
+
+global pool[60000], pooltop := 0
+global thm[MAXTHM], nthm := 0
+global hset[HSIZE]
+global buf[40]
+global derived_by[MAXTHM], parent[MAXTHM]
+
+proc hash(s)
+begin
+  var h := 0
+  for i := 1 to s[0] do h := (h * 3 + s[i]) mod HSIZE
+  return h
+end
+
+-- add buf as a theorem unless already known; returns its number or -1
+proc add(rule, from)
+begin
+  var h := hash(buf), p
+  if buf[0] > MAXLEN or nthm >= MAXTHM then return -1
+  for probe := 1 to HSIZE do begin
+    if hset[h] = 0 then begin
+      p := pool + pooltop
+      for i := 0 to buf[0] do p[i] := buf[i]
+      pooltop := pooltop + buf[0] + 1
+      hset[h] := nthm + 1
+      thm[nthm] := p
+      derived_by[nthm] := rule
+      parent[nthm] := from
+      nthm := nthm + 1
+      return nthm - 1
+    end
+    if streq(thm[hset[h] - 1], buf) then return -1
+    h := (h + 1) mod HSIZE
+  end
+  return -1
+end
+
+proc setbuf(s)
+begin
+  for i := 0 to s[0] do buf[i] := s[i]
+end
+
+proc count_i(s)
+begin
+  var n := 0
+  for i := 1 to s[0] do if s[i] = 'I' then n := n + 1
+  return n
+end
+
+proc derive(k)
+begin
+  var s := thm[k], n := s[0]
+  -- rule I:  xI -> xIU
+  if s[n] = 'I' then begin
+    setbuf(s); buf[0] := n + 1; buf[n + 1] := 'U'; add(1, k)
+  end
+  -- rule II:  Mx -> Mxx
+  setbuf(s)
+  for i := 2 to n do buf[n + i - 1] := s[i]
+  buf[0] := 2 * n - 1
+  add(2, k)
+  -- rule III:  III -> U, at every position
+  for i := 1 to n - 2 do
+    if s[i] = 'I' and s[i + 1] = 'I' and s[i + 2] = 'I' then begin
+      for j := 1 to i - 1 do buf[j] := s[j]
+      buf[i] := 'U'
+      for j := i + 3 to n do buf[j - 2] := s[j]
+      buf[0] := n - 2
+      add(3, k)
+    end
+  -- rule IV:  UU -> nothing, at every position
+  for i := 1 to n - 1 do
+    if s[i] = 'U' and s[i + 1] = 'U' then begin
+      for j := 1 to i - 1 do buf[j] := s[j]
+      for j := i + 2 to n do buf[j - 2] := s[j]
+      buf[0] := n - 2
+      add(4, k)
+    end
+end
+
+global roman := table("", "I", "II", "III", "IV")
+
+proc main()
+begin
+  var k := 0, ni, violations := 0, mu := false
+  prints("MIU -- the mechanical mode and the intelligent mode\n\n")
+  buf[0] := 2; buf[1] := 'M'; buf[2] := 'I'
+  add(0, -1)
+  while k < nthm do begin
+    derive(k)
+    k := k + 1
+  end
+  prints("mechanical mode: every theorem of length <= "); print(MAXLEN)
+  prints(" reachable without longer\nintermediate strings -- ")
+  print(nthm); prints(" of them.  The first "); print(SHOW); prints(":\n\n")
+  prints("   #  theorem        rule  from   I's  I's in ternary  last trit\n")
+  for t := 0 to nthm - 1 do begin
+    ni := count_i(thm[t])
+    if trit(ni, 0) = 0 then violations := violations + 1
+    if thm[t][0] = 2 and thm[t][1] = 'M' and thm[t][2] = 'U' then mu := true
+    if t < SHOW then begin
+      printw(t, 4); spaces(2); printsw(thm[t], 15)
+      printsw(roman[derived_by[t]], 6)
+      if parent[t] >= 0 then printw(parent[t], 4) else prints("  --")
+      printw(ni, 6); spaces(4); printtw(ni, 4); spaces(10)
+      putc(tritchar(trit(ni, 0))); newline()
+    end
+  end
+  prints("\nMU found?  "); prints(mu -> "yes", "no")
+  prints(" -- but the mechanical mode can only ever say 'not yet'.\n\n")
+  prints("intelligent mode: the last trit of the count of I's was 0 in ")
+  print(violations); prints(" of ")
+  print(nthm); prints(" theorems.\n")
+  prints("The count starts at 1; rule II doubles it; rule III subtracts 3;\n")
+  prints("neither can make a multiple of 3 from a non-multiple.  MU has 0 I's,\n")
+  prints("whose last trit is 0.  So MU is not a theorem -- a fact about the\n")
+  prints("system that no amount of working within the system reveals.\n")
+  return 0
+end

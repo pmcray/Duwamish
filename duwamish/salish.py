@@ -528,7 +528,7 @@ INTRINSICS = {
     "xtr": 3, "trit": 2, "clock": 0, "tally": 1, "tclear": 0,
     "rcs": 1, "wcs": 2, "rks": 1, "wks": 2, "rmap": 1, "wmap": 2,
     "heapbase": 0, "stackptr": 0, "svc": 2, "codebase": 0,
-    "catchpoint": 1, "throw": 2,
+    "catchpoint": 1, "throw": 2, "codeend": 0,
 }
 
 
@@ -714,6 +714,7 @@ class Compiler:
             self.gen_global(d)
         for p in self.procs.values():
             self.gen_proc(p)
+        self.out.append("CODE_END:")
         self.out += self.data
         self.bloop_report = self.check_bloop()
         return "\n".join(self.out) + "\n"
@@ -1336,6 +1337,8 @@ class Compiler:
             self.emit("LD   R1, #END_OF_PROGRAM")
         elif name == "codebase":
             self.emit("LD   R1, #START")
+        elif name == "codeend":
+            self.emit("LD   R1, #CODE_END")
         elif name == "stackptr":
             self.emit("LD   R1, #0(SP)")
         elif name == "catchpoint":
@@ -1379,8 +1382,8 @@ class Compiler:
                     visit(m, path + [m])
             state[n] = 2
 
-        roots = [p.name for p in self.procs.values()
-                 if p.module in self.bloop_modules]
+        # "bloop" certifies the whole program: everything main can reach
+        roots = ["main"]
         reach = set()
         stack = list(roots)
         while stack:

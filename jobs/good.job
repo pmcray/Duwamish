@@ -1,0 +1,10 @@
+//JOB BANBURISMUS                -- weight of evidence in decibans
+//SALISH FROM=../programs/good/banburismus.sal
+//EXEC
+//JOB GOODTURING                 -- the probability of the unseen
+//SALISH FROM=../programs/good/goodturing.sal
+//EXEC
+//DATA FROM=../data/genesis.txt
+//JOB EXPLOSION KEY=WCS          -- the machine that improves itself
+//SALISH FROM=../programs/good/explosion.sal
+//EXEC

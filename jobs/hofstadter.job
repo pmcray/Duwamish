@@ -1,0 +1,24 @@
+//JOB SELFREF                    -- Goedel's diagonal lemma, executed
+//SALISH FROM=../programs/hofstadter/selfref.sal
+//EXEC
+//JOB QUINE                      -- a program that prints itself
+//SALISH FROM=../programs/hofstadter/quine.sal
+//EXEC
+//JOB MIU                        -- the MU puzzle, and the invariant trit
+//SALISH FROM=../programs/hofstadter/miu.sal
+//EXEC
+//JOB BLOOP                      -- sequences, certified to terminate
+//SALISH FROM=../programs/hofstadter/sequences.sal
+//EXEC
+//JOB FLOOPASBLOOP               -- asking to certify the wondrous numbers
+//SALISH
+bloop
+get "../programs/hofstadter/floop"
+//EXEC
+//JOB FLOOP                      -- ... which run anyway, as FlooP
+//SALISH FROM=../programs/hofstadter/floop.sal
+//EXEC
+//JOB CONTRACROSTIPUNCTUS        -- the record the oracle cannot play
+//EXEC TRILISP
+//DATA FROM=../programs/hofstadter/mceval.lsp
+//DATA FROM=../programs/hofstadter/diagonal.lsp
