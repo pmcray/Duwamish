@@ -1,0 +1,232 @@
+-- =====================================================================
+--  EXPLOSION: a machine that improves the machine that improves it.
+--
+--  I. J. Good, "Speculations Concerning the First Ultraintelligent
+--  Machine" (1965): "an ultraintelligent machine could design even better
+--  machines; there would then unquestionably be an 'intelligence
+--  explosion'."
+--
+--  This program is a working miniature of that argument.  Each generation:
+--
+--   1. PROFILE.  It runs its own work *and its own improver*, while the
+--      Beer monitor (the hardware tally) counts how often every word of
+--      core is executed.
+--   2. DESIGN.   It finds the straight-line run of its own code whose
+--      instruction fetches cost the most, and designs a new machine
+--      instruction that does the whole run: it writes microcode into the
+--      writable control store and the run's words into the constant store.
+--   3. BUILD.    It claims an unused (negative) opcode, points the dispatch
+--      map at the new microcode, and patches its own code to use it.
+--
+--  Because the improver's own inner loops are in the profile, later
+--  generations improve faster: the designer is part of the design.
+--
+--  Run on the Model 30 with the control-store key turned:
+--      python -m duwamish go programs/good/explosion.sal --wcs
+-- =====================================================================
+get "microkit"
+get "disasm"
+
+const GENERATIONS = 12
+const MAXBLOCK = 24          -- longest run fused into one instruction
+const SIEVE_N = 1500
+
+global kfree := 0            -- next free constant-store slot
+global ufree := UC_FREE      -- next free control-store word
+global nextop := -1          -- next unused opcode (the negative half)
+global illop                 -- where undefined opcodes dispatch
+global sieve[SIEVE_N + 1]
+global work_result
+global best_at, best_n, best_count, last_gen := 1
+
+-- ---------------------------------------------------------------------
+-- The work the machine exists to do: a sieve and a little number theory.
+-- ---------------------------------------------------------------------
+proc sieve_count(n)
+begin
+  var count := 0
+  for i := 2 to n do sieve[i] := 1
+  for i := 2 to n do
+    if sieve[i] = 1 then begin
+      count := count + 1
+      for j := i * i to n by i do sieve[j] := 0
+    end
+  return count
+end
+
+proc collatz_steps(n)
+begin
+  var steps := 0, m := n
+  while m <> 1 do begin
+    m := m mod 2 = 0 -> m / 2, 3 * m + 1
+    steps := steps + 1
+  end
+  return steps
+end
+
+proc workload()
+begin
+  var total := 0
+  total := sieve_count(SIEVE_N)
+  for k := 1 to 60 do total := total + collatz_steps(k)
+  work_result := total
+end
+
+-- ---------------------------------------------------------------------
+-- The improver.
+-- ---------------------------------------------------------------------
+
+-- Look through all of our own code for the most valuable straight-line
+-- run.  A run is consecutive words with equal, non-zero tallies, none of
+-- which (save the last) transfers control.  Fusing n words saves n-1
+-- instruction fetches every time the run executes.
+proc find_best_run(lo, hi)
+begin
+  var a := lo, best := 0
+  best_at := 0; best_n := 0; best_count := 0
+  while a < hi do begin
+    var c := tally(a), w := peek(a)
+    if c = 0 or w_op(w) <= 0 then a := a + 1
+    else begin
+      var b := a
+      while b + 1 < hi and b - a + 1 < MAXBLOCK and not ends_block(peek(b)) and
+            tally(b + 1) = c and w_op(peek(b + 1)) > 0 do
+        b := b + 1
+      var gain := (b - a) * c
+      if gain > best then begin
+        best := gain; best_at := a; best_n := b - a + 1; best_count := c
+      end
+      a := b + 1
+    end
+  end
+  return best
+end
+
+-- One microinstruction:  IR <- K[k], [PC+1], DISP next
+-- It loads a remembered instruction word into the instruction register
+-- and dispatches on it, as if it had just been fetched -- but without
+-- the core-memory cycle of a fetch.
+proc micro_load_dispatch(k, pcinc, target)
+begin
+  var half_a := (US_KS << UA_A_POS) + (UALU_PASS << UA_ALU_POS) +
+                (UD_IR << UA_D_POS) + (pcinc << UA_PCINC_POS) +
+                (k << UA_LIT_POS)
+  var half_b := (USEQ_DISP << UB_SEQ_POS) + (target << UB_TARGET_POS)
+  wcs(2 * ufree, half_a)
+  wcs(2 * ufree + 1, half_b)
+  -- read it back: the machine checks its own work
+  if rcs(2 * ufree) <> half_a or rcs(2 * ufree + 1) <> half_b then begin
+    prints("*** CONTROL STORE DID NOT TAKE THE WORD\n")
+    exit(3)
+  end
+  ufree := ufree + 1
+end
+
+proc invent(at, n)
+begin
+  var op := nextop, entry := ufree, k0 := kfree
+  if kfree + n > UK_SIZE or ufree + n > UC_SIZE or op < -121 then
+    return false
+  -- remember the run's words in the constant store
+  for j := 0 to n - 1 do wks(k0 + j, peek(at + j))
+  -- microcode: one microinstruction per original instruction
+  for j := 0 to n - 1 do
+    micro_load_dispatch(k0 + j, j > 0 -> 1, 0,
+                        j = n - 1 -> UC_FETCH, entry + j + 1)
+  kfree := kfree + n
+  wmap(op, entry)                    -- the new opcode now exists
+  poke(at, op << I_OP_POS)           -- and we use it, in place
+  nextop := nextop - 1
+  prints("   invented OP"); print(op); prints(": ")
+  print(n); prints(" instructions at "); print(at)
+  prints(", run "); print(best_count); prints(" times; microcode at ")
+  print(entry); newline()
+  for j := 0 to n - 1 do begin
+    prints("      "); printw(at + j, 6); prints("   ")
+    disasm(rks(k0 + j)); newline()
+  end
+  return true
+end
+
+proc timed_work()
+begin
+  var t0 := clock()
+  workload()
+  return clock() - t0
+end
+
+proc bar(t, scale)
+begin
+  for i := 1 to t / scale do putc('#')
+end
+
+global times[GENERATIONS + 1], itimes[GENERATIONS + 1]
+
+proc main()
+begin
+  var lo := codebase(), hi := heapbase(), expected, t, t0
+  illop := rmap(nextop)
+  prints("EXPLOSION -- a demonstration of I. J. Good's intelligence explosion\n")
+  prints("program occupies words "); print(lo); prints(" to "); print(hi - 1)
+  prints("; free control store from "); print(ufree); newline()
+  prints("sieve of "); print(SIEVE_N); prints(" + Collatz 1..60\n\n")
+
+  times[0] := timed_work()
+  t := times[0]
+  expected := work_result
+  itimes[0] := 0
+  prints("generation 0 (as built): work takes "); print(times[0])
+  prints(" cycles, answer "); print(expected); newline()
+
+  for g := 1 to GENERATIONS do begin
+    newline()
+    prints("generation "); print(g); prints(":\n")
+    t0 := clock()
+    -- profile the work AND the improver's own search
+    tclear()
+    workload()
+    find_best_run(lo, hi)            -- a practice search, so that the
+                                     -- search itself is in the profile
+    if find_best_run(lo, hi) <= 0 then begin
+      prints("   nothing left worth fusing: a fixed point.\n")
+      break
+    end
+    if not invent(best_at, best_n) then begin
+      prints("   out of control store.\n")
+      break
+    end
+    itimes[g] := clock() - t0
+    last_gen := g
+    times[g] := timed_work()
+    t := times[g]
+    if work_result <> expected then begin
+      prints("*** THE IMPROVED MACHINE GIVES A DIFFERENT ANSWER\n")
+      exit(2)
+    end
+    prints("   work: "); print(times[g]); prints(" cycles (answer unchanged);")
+    prints("  improver: "); print(itimes[g]); prints(" cycles\n")
+  end
+
+  newline()
+  prints("gen     work cycles                                       improver cycles\n")
+  for g := 0 to GENERATIONS do
+    if times[g] > 0 then begin
+      printw(g, 3); printw(times[g], 10); prints(" "); bar(times[g], 40000)
+      spaces(34 - times[g] / 40000)
+      if g > 0 then begin
+        printw(itimes[g], 10); prints(" "); bar(itimes[g], 200000)
+      end
+      newline()
+    end
+  prints("\nthe work now runs "); printfix(100 * times[0] / t, 2)
+  prints(" times faster than as built; the improver runs ")
+  printfix(100 * itimes[1] / itimes[last_gen], 2)
+  prints(" times faster\nthan it did at its first step.  Every answer was checked against the\n")
+  prints("original machine's.\n\n")
+  prints("Why no explosion?  Each invention removes instruction fetches from one\n")
+  prints("straight-line run, and there are only so many runs: the improvement\n")
+  prints("operator converges to a fixed point.  Good's argument needs each\n")
+  prints("generation to enlarge the space of designs open to the next one --\n")
+  prints("to improve not just the machine, but the way it improves.\n")
+  return 0
+end

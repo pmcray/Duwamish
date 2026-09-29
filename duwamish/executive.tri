@@ -1,0 +1,228 @@
+; =====================================================================
+;   DUWAMISH EXECUTIVE  --  resident monitor, release 1.0
+;
+;   Lives in the negative (protected) half of core.  It asks the
+;   satellite computer for the next job step, starts it in user mode,
+;   services its supervisor calls, and reports how it ended -- by EXIT,
+;   or by a program check -- together with the cycles it consumed.
+;
+;   Supervisor calls (operation in the SVC operand, argument in R1):
+;       SVC 0   EXIT       R1 = completion code
+;       SVC 1   PUTC       R1 = character, to the line printer
+;       SVC 2   GETC       R1 <- next character from the card reader
+;                          (10 at the end of each card, -1 at end of deck)
+;       SVC 3   TTYC       R1 = character, to the operator's console
+;
+;   Channel protocol with the satellite (device 5):
+;       OUT 1            request the next job step; then
+;       IN  -> entry     (-1: no more work), IN -> stack top,
+;       IN  -> time limit in micro-cycles (0: none)
+;       OUT 2, how, value, location, cycles    report the end of a step
+;           how = 0 for EXIT (value = code), else the trap code
+; =====================================================================
+
+TRAPPC   = -1
+TRAPCODE = -2
+TRAPMODE = -3
+TRAPC    = -4
+TRAPVEC  = -5
+TRAPARG  = -6
+TRAPIPC  = -7
+SATL     = 5
+PRINTER  = 3
+TTY      = 1
+READER   = 2
+TIMER    = 4
+
+         ORG  -60000
+         ENTRY BOOT
+
+BOOT:    LD   SP, #-100
+         LD   R1, #TRAP
+         ST   R1, TRAPVEC
+         LD   R1, #HELLO
+         JSR  R6, TTYSTR
+
+; ---------------------------------------------------------------------
+; Job step loop
+; ---------------------------------------------------------------------
+NEXT:    LD   SP, #-100
+         LD   R1, #1
+         OUT  R1, #SATL          ; request next job step
+         IN   R1, #SATL          ; entry point
+         JN   SHUTDN
+         ST   R1, TRAPPC
+         IN   R2, #SATL          ; initial stack pointer
+         ST   R2, USTACK
+         IN   R3, #SATL          ; time limit
+         TIM  R4
+         ST   R4, TSTART
+         TST  #0(R3)
+         JZ   NOLIM
+         ADD  R4, #0(R3)
+         OUT  R4, #TIMER
+         JMP  GO
+NOLIM:   OUT  R0, #TIMER
+GO:      LD   R1, #-1
+         ST   R1, TRAPMODE       ; resume in user mode
+         ST   R0, TRAPC
+         LD   R1, #0
+         LD   R2, #0
+         LD   R3, #0
+         LD   R4, #0
+         LD   R5, #0
+         LD   R6, #0
+         LD   R7, #0
+         LD   SP, USTACK
+         RTI                     ; into the user program
+
+SHUTDN:  LD   R1, #BYE
+         JSR  R6, TTYSTR
+         HLT
+         JMP  SHUTDN
+
+; ---------------------------------------------------------------------
+; Trap entry: every SVC and every program check arrives here.
+; ---------------------------------------------------------------------
+TRAP:    ST   R1, SAVE1
+         ST   R2, SAVE2
+         ST   R3, SAVE3
+         ST   R4, SAVE4
+         ST   R5, SAVE5
+         ST   R6, SAVE6
+         ST   R7, SAVE7
+         ST   SP, SAVE8
+         LD   SP, #-100
+         LD   R1, TRAPCODE
+         CMP  R1, #6
+         JNZ  FAULT
+         LD   R2, TRAPARG        ; the SVC number
+         CMP  R2, #1
+         JZ   SVPUTC
+         CMP  R2, #2
+         JZ   SVGETC
+         CMP  R2, #0
+         JZ   SVEXIT
+         CMP  R2, #3
+         JZ   SVTTY
+         JMP  FAULT              ; unknown service: a program check
+
+SVPUTC:  LD   R1, SAVE1
+         OUT  R1, #PRINTER
+         JMP  RESUME
+
+SVTTY:   LD   R1, SAVE1
+         OUT  R1, #TTY
+         JMP  RESUME
+
+SVGETC:  IN   R1, #READER
+         ST   R1, SAVE1
+
+RESUME:  LD   R1, SAVE1
+         LD   R2, SAVE2
+         LD   R3, SAVE3
+         LD   R4, SAVE4
+         LD   R5, SAVE5
+         LD   R6, SAVE6
+         LD   R7, SAVE7
+         LD   SP, SAVE8
+         RTI
+
+; ---------------------------------------------------------------------
+; End of a job step
+; ---------------------------------------------------------------------
+SVEXIT:  LD   R1, #0
+         LD   R2, SAVE1
+         JMP  REPORT
+
+FAULT:   LD   R1, #FLTMSG        ; "*** PROGRAM CHECK "
+         JSR  R6, PRSTR
+         LD   R1, TRAPCODE
+         JSR  R6, PRNUM
+         LD   R1, #ATMSG
+         JSR  R6, PRSTR
+         LD   R1, TRAPIPC
+         JSR  R6, PRNUM
+         LD   R1, #ARGMSG
+         JSR  R6, PRSTR
+         LD   R1, TRAPARG
+         JSR  R6, PRNUM
+         LD   R1, #10
+         OUT  R1, #PRINTER
+         LD   R1, TRAPCODE
+         LD   R2, TRAPARG
+
+; R1 = how (0 exit, else trap code), R2 = value
+REPORT:  OUT  R0, #TIMER
+         TIM  R4
+         SUB  R4, TSTART
+         LD   R3, #2
+         OUT  R3, #SATL
+         OUT  R1, #SATL
+         OUT  R2, #SATL
+         LD   R3, TRAPIPC
+         OUT  R3, #SATL
+         OUT  R4, #SATL
+         JMP  NEXT
+
+; ---------------------------------------------------------------------
+; Utilities (link register R6)
+; ---------------------------------------------------------------------
+; PRSTR: print the length-prefixed string at R1 on the printer
+PRSTR:   LD   R2, 0(R1)          ; length
+         TST  #0(R2)
+         JNP  PRSX
+PRSL:    ADD  R1, #1
+         LD   R3, 0(R1)
+         OUT  R3, #PRINTER
+         SUB  R2, #1
+         JP   PRSL
+PRSX:    JMP  0(R6)
+
+; TTYSTR: the same, on the console typewriter
+TTYSTR:  LD   R2, 0(R1)
+         TST  #0(R2)
+         JNP  TTYX
+TTYL:    ADD  R1, #1
+         LD   R3, 0(R1)
+         OUT  R3, #TTY
+         SUB  R2, #1
+         JP   TTYL
+TTYX:    JMP  0(R6)
+
+; PRNUM: print R1 in decimal on the printer
+PRNUM:   LD   R4, #0             ; digit count
+         TST  #0(R1)
+         JNN  PRN1
+         LD   R2, #'-'
+         OUT  R2, #PRINTER
+         NEG  R1, #0(R1)
+PRN1:    LD   R2, #0(R1)
+         MOD  R2, #10
+         ADD  R2, #'0'
+         PUSH R2
+         ADD  R4, #1
+         DIV  R1, #10
+         JNZ  PRN1
+PRN2:    POP  R2
+         OUT  R2, #PRINTER
+         SUB  R4, #1
+         JP   PRN2
+         JMP  0(R6)
+
+; ---------------------------------------------------------------------
+USTACK:  DATA 0
+TSTART:  DATA 0
+SAVE1:   DATA 0
+SAVE2:   DATA 0
+SAVE3:   DATA 0
+SAVE4:   DATA 0
+SAVE5:   DATA 0
+SAVE6:   DATA 0
+SAVE7:   DATA 0
+SAVE8:   DATA 0
+HELLO:   STR  "DUWAMISH EXECUTIVE 1.0 READY\n"
+BYE:     STR  "DUWAMISH EXECUTIVE: NO MORE WORK. HALT.\n"
+FLTMSG:  STR  "\n*** PROGRAM CHECK "
+ATMSG:   STR  " AT LOCATION "
+ARGMSG:  STR  ", ARGUMENT "

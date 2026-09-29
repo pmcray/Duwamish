@@ -1,0 +1,248 @@
+; =====================================================================
+;   DUWAMISH MODEL 30  --  MICROPROGRAM, RELEASE 1.0
+;   Universal Entropics, Seattle.  Control store: 2187 words x 54 trits.
+;
+;   One line is one microinstruction, executed in one 200 ns micro-cycle.
+;   A READ or WRITE adds four cycles of core-memory wait (1 us core).
+;   Everything to the right of a semicolon is commentary.
+;
+;   Sources: 0 PC IR MAR MDR T U EA CNT R X SP ADDR #lit K[n] CV OPC IPC
+;            (R and X are the registers named by the r and x fields of IR;
+;             ADDR is IR's 16-trit address field; CV is the condition trit)
+;   CASE M L    -- three-way branch on IR's addressing mode:
+;                  L-1 indirect, L direct, L+1 immediate
+;   CASE C L    -- three-way branch on the condition trit
+;   DISP L      -- jump through the dispatch map on IR's opcode, and
+;                  make L the continuation that ENDI returns to
+; =====================================================================
+
+; ---------------------------------------------------------------------
+; Instruction fetch.  Must stay at micro-address 0.
+; ---------------------------------------------------------------------
+FETCH:  MAR<-PC, READ, PC+1, IFETCH
+        IR<-MDR, DISP FETCH
+
+; ---------------------------------------------------------------------
+; OPND: operand to MDR, effective address to EA.
+; ---------------------------------------------------------------------
+OPND:   EA<-ADDR+X, CASE M OPND0
+        MAR<-EA, READ, GOTO OPNDI       ; -1: indirect
+OPND0:  MAR<-EA, READ, RET              ;  0: direct
+        MDR<-EA, RET                    ; +1: immediate
+OPNDI:  EA<-MDR
+        MAR<-EA, READ, RET
+
+; ---------------------------------------------------------------------
+; EAC: effective address only (store and jump instructions).
+; ---------------------------------------------------------------------
+EAC:    EA<-ADDR+X, CASE M EAC0
+        MAR<-EA, READ, GOTO EACI        ; -1: indirect
+EAC0:   RET                             ;  0: direct
+        TRAP 1                          ; +1: an immediate has no address
+EACI:   EA<-MDR, RET
+
+; Every opcode without a routine dispatches here.
+ILLOP:  TRAP 1
+
+; ---------------------------------------------------------------------
+; Data movement and arithmetic
+; ---------------------------------------------------------------------
+LD:     CALL OPND
+        R<-MDR, SETC, ENDI
+
+ST:     CALL EAC
+        MAR<-EA
+        MDR<-R, WRITE, ENDI
+
+LEA:    CALL EAC
+        R<-EA, ENDI
+
+ADD:    CALL OPND
+        R<-R+MDR, SETC, ENDI
+
+SUB:    CALL OPND
+        R<-R-MDR, SETC, ENDI
+
+DIV:    CALL OPND
+        R<-R DIV MDR, SETC, ENDI
+
+MOD:    CALL OPND
+        R<-R MOD MDR, SETC, ENDI
+
+NEG:    CALL OPND
+        R<-NEG MDR, SETC, ENDI
+
+CMP:    CALL OPND
+        NUL<-R CMP MDR, SETC, ENDI
+
+TST:    CALL OPND
+        NUL<-MDR, SETC, ENDI
+
+AND:    CALL OPND
+        R<-R MIN MDR, SETC, ENDI
+
+OR:     CALL OPND
+        R<-R MAX MDR, SETC, ENDI
+
+EQV:    CALL OPND
+        R<-R EQV MDR, SETC, ENDI
+
+SHF:    CALL OPND
+        R<-R SHF MDR, SETC, ENDI
+
+XTR:    CALL OPND
+        R<-R XTR MDR, SETC, ENDI
+
+TRT:    CALL OPND
+        NUL<-R TRIT MDR, SETC, ENDI
+
+SEL:    CALL OPND
+        R<-SEL MDR, SETC, ENDI
+
+NOP:    ENDI
+
+; ---------------------------------------------------------------------
+; MUL: balanced-ternary multiplication, one multiplier trit per pass.
+; Each trit of the multiplier is -1, 0 or +1, so each pass subtracts,
+; skips or adds the multiplicand: no Booth recoding is ever needed.
+; The loop stops as soon as the remaining multiplier is zero.
+;   CNT = remaining multiplier, U = multiplicand * 3^k, T = product
+; ---------------------------------------------------------------------
+MUL:    CALL OPND
+        U<-MDR
+        T<-0
+        CNT<-R, SETC, CASE C MULGO
+        NUL<-LST CNT, SETC, CASE C MULADD       ; C=-1: more to do
+MULGO:  R<-T, SETC, ENDI                        ; C= 0: finished
+        NUL<-LST CNT, SETC, CASE C MULADD       ; C=+1: more to do
+        T<-T-U                                  ; trit -1: subtract
+MULADD: CNT<-SHR CNT, SETC, GOTO MULSH2         ; trit  0: skip
+        T<-T+U                                  ; trit +1: add
+        CNT<-SHR CNT, SETC
+MULSH2: U<-SHL U, CASE C MULGO
+
+; ---------------------------------------------------------------------
+; Jumps.  Each conditional jump is a three-way CASE on the condition
+; trit whose three arms either take the jump or end the instruction.
+; ---------------------------------------------------------------------
+JMP:    CALL EAC
+        PC<-EA, ENDI
+
+JN:     CALL EAC
+        CASE C JNX
+        PC<-EA, ENDI
+JNX:    ENDI
+        ENDI
+
+JZ:     CALL EAC
+        CASE C JZX
+        ENDI
+JZX:    PC<-EA, ENDI
+        ENDI
+
+JP:     CALL EAC
+        CASE C JPX
+        ENDI
+JPX:    ENDI
+        PC<-EA, ENDI
+
+JNN:    CALL EAC
+        CASE C JNNX
+        ENDI
+JNNX:   PC<-EA, ENDI
+        PC<-EA, ENDI
+
+JNZ:    CALL EAC
+        CASE C JNZX
+        PC<-EA, ENDI
+JNZX:   ENDI
+        PC<-EA, ENDI
+
+JNP:    CALL EAC
+        CASE C JNPX
+        PC<-EA, ENDI
+JNPX:   PC<-EA, ENDI
+        ENDI
+
+J3:     CALL EAC
+        PC<-EA+CV, ENDI
+
+; ---------------------------------------------------------------------
+; Subroutines and the stack (SP is R8; the stack grows downward)
+; ---------------------------------------------------------------------
+CALL:   CALL EAC
+        SP<-SP-#1
+        MAR<-SP
+        MDR<-PC, WRITE
+        PC<-EA, ENDI
+
+RET:    MAR<-SP, READ
+        PC<-MDR
+        SP<-SP+ADDR
+        SP<-SP+#1, ENDI
+
+PUSH:   SP<-SP-#1
+        MAR<-SP
+        MDR<-R, WRITE, ENDI
+
+POP:    MAR<-SP, READ
+        SP<-SP+#1
+        R<-MDR, SETC, ENDI
+
+JSR:    CALL EAC
+        R<-PC
+        PC<-EA, ENDI
+
+; ---------------------------------------------------------------------
+; Supervisor and input/output
+; ---------------------------------------------------------------------
+SVC:    CALL OPND
+        TRAP 6
+
+RTI:    CHKSUP
+        RTI, ENDI
+
+IN:     CALL OPND
+        CHKSUP
+        IOIN, ENDI
+
+OUT:    CALL OPND
+        CHKSUP
+        IOOUT, ENDI
+
+HLT:    CHKSUP
+        HALT, ENDI
+
+; ---------------------------------------------------------------------
+; The Beer monitor: clock and per-word execution tallies
+; ---------------------------------------------------------------------
+TIM:    TIM, ENDI
+
+TAL:    EA<-ADDR+X
+        TAL, ENDI
+
+TCL:    TCL, ENDI
+
+; ---------------------------------------------------------------------
+; Writable control store.  The machine may read and rewrite its own
+; microprogram, constant store and dispatch map -- when the front-panel
+; key is turned to WCS ENABLE.  Half-word EA of the control store is
+; microword EA/2, half A if EA is even, half B if odd.
+; ---------------------------------------------------------------------
+RCS:    EA<-ADDR+X
+        RCS, ENDI
+
+WCS:    EA<-ADDR+X
+        WCS, ENDI
+
+RKS:    EA<-ADDR+X
+        RKS, ENDI
+
+WKS:    EA<-ADDR+X
+        WKS, ENDI
+
+RMAP:   EA<-ADDR+X
+        RMAP, ENDI
+
+WMAP:   EA<-ADDR+X
+        WMAP, ENDI

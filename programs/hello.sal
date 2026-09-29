@@ -1,0 +1,14 @@
+-- The first program ever run on the Duwamish.
+proc main()
+begin
+  prints("HELLO FROM THE DUWAMISH, A BALANCED-TERNARY COMPUTER\n")
+  for n := -13 to 13 do begin
+    printw(n, 4); prints("  "); printtw(n, 4); prints("  "); printh(n)
+    newline()
+  end
+  var f := 1
+  for i := 1 to 15 do f := f * i
+  prints("15! = "); print(f); prints(" = "); printt(f); newline()
+  prints("Kleene: unknown and true = "); truthname(unknown & true); newline()
+  return 0
+end
