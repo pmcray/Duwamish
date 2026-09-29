@@ -33,8 +33,46 @@ python -m duwamish run jobs/chess.job --model 90       # Los Alamos chess (about
 python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
 python -m duwamish go programs/hello.sal               # run one program
-python -m unittest discover -s tests -t .              # 35 tests
+python -m unittest discover -s tests -t .              # 40 tests
 ```
+
+## Inside the machine: the front-panel notebook
+
+![The Duwamish front panel](docs/images/front-panel.png)
+
+[`notebooks/duwamish.ipynb`](notebooks/duwamish.ipynb) opens up the machine.
+It runs the real Model 30 micro-engine one micro-cycle at a time, records
+everything the console would show, and replays it on an animated front
+panel.
+* **Lamps:** a ternary lamp for every trit of every register (amber +1,
+  blue −1, dark 0), plus the condition trit, the mode, the
+  micro-program counter and the control lines.
+* **Datapath:** a diagram showing which registers drive the buses each
+  cycle.
+* **Listings:** the microprogram and the program, with the current line
+  highlighted.
+* **Core map:** flashes each word as it is fetched, read or written.
+* **Controls:** run, pause, step one micro-cycle, step one instruction,
+  scrub, and speed from 1 to 10,000 cycles a second.
+
+Because it is a recording, the lamps light in exactly the order the
+machine lit them. The notebook walks through:
+1. trits and words;
+2. the instruction format;
+3. a ternary multiplication, microstep by microstep;
+4. the layout of core;
+5. a whole job, from Executive boot through supervisor calls and traps;
+6. the two models and the Beer monitor;
+7. the machine writing new microcode for itself;
+8. a cell to load and watch your own program.
+
+```
+pip install notebook          # or jupyterlab; nothing else is needed
+jupyter notebook notebooks/duwamish.ipynb
+```
+
+From Python, `duwamish.panel.save_html(recording, "panel.html")` writes a
+front panel that opens in any browser.
 
 ## The demonstrations
 
@@ -92,13 +130,16 @@ shows, and what it does not.
 ```
 duwamish/            the machine: ternary.py isa.py microasm.py machine.py
                      triad.py salish.py satellite.py executive.tri profile.py
+                     panel.py (the recorder and animated front panel)
+notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal
 programs/            SALISH and TRILISP programs (good/, hofstadter/, trilisp/)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing
 tests/               unittest suite
-tools/make_quine.py  how the quine was built
+tools/               make_quine.py (how the quine was built),
+                     make_notebook.py (how the notebook is generated)
 ```
 
 *The committee and its report are fiction. The ideas credited to each
