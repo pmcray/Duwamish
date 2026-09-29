@@ -1,0 +1,193 @@
+-- =====================================================================
+--  GOOD-TURING: how likely is the next word to be one never seen before?
+--
+--  I. J. Good, "The population frequencies of species and the estimation
+--  of population parameters", Biometrika 40 (1953) -- an idea he
+--  credited to Turing at Bletchley.  If a sample of N words contains N1
+--  words seen exactly once, then
+--
+--        P(the next word is new)  ~  N1 / N
+--
+--  and a word seen r times deserves the adjusted count
+--
+--        r*  =  (r + 1) N(r+1) / N(r)
+--
+--  where N(r) is the number of distinct words seen exactly r times.  The
+--  raw count r overstates every seen word, because some probability must
+--  be saved for the words not yet seen.
+--
+--  Part 1 draws a sample from a population of "species" whose true
+--  frequencies the machine knows, so the estimates can be checked
+--  exactly.  Part 2 reads a text from the card reader, learns from the
+--  odd cards and tests on the even cards it held back.
+-- =====================================================================
+
+const HSIZE = 2187            -- 3^7 hash buckets
+const MAXR = 8
+
+global hkey[HSIZE], hcount[HSIZE], htest[HSIZE]
+global chars[20000], nchars := 0
+global nr[MAXR + 2]
+global ntrain := 0, ntest := 0, nnew := 0, ndistinct := 0
+
+proc hash(w)
+begin
+  var h := 0
+  for i := 1 to w[0] do h := (h * 31 + w[i]) mod HSIZE
+  return h
+end
+
+-- find (or, if make, create) the slot for word w
+proc slot(w, make)
+begin
+  var h := hash(w)
+  for probe := 1 to HSIZE do begin
+    if hkey[h] = 0 then begin
+      if not make then return -1
+      hkey[h] := chars + nchars
+      for i := 0 to w[0] do chars[nchars + i] := w[i]
+      nchars := nchars + w[0] + 1
+      ndistinct := ndistinct + 1
+      return h
+    end
+    if streq(hkey[h], w) then return h
+    h := (h + 1) mod HSIZE
+  end
+  return -1
+end
+
+-- ---------------------------------------------------------------------
+-- Part 1: a population with known frequencies (Zipf's law: the k-th
+-- commonest species has weight 1/k), as with Good's butterflies.
+-- ---------------------------------------------------------------------
+const SPECIES = 2000, DRAWS = 1500
+global weight[SPECIES + 1], cum[SPECIES + 1], seen[SPECIES + 1]
+global seed := 1953
+
+-- Park and Miller's minimal standard generator, by Schrage's method
+proc random31()
+begin
+  var hi := seed / 44488, lo := seed mod 44488
+  seed := 48271 * lo - 3399 * hi
+  if seed <= 0 then seed := seed + 2147483647
+  return seed
+end
+
+proc draw(total)
+begin
+  var x := random31() mod total, lo := 1, hi := SPECIES, mid
+  for step := 1 to 20 do
+    if lo < hi then begin
+      mid := (lo + hi) / 2
+      if cum[mid] > x then hi := mid else lo := mid + 1
+    end
+  return lo
+end
+
+proc part1()
+begin
+  var total := 0, unseen := 0, mass, n, rstar100
+  for k := 1 to SPECIES do begin
+    weight[k] := 1000000 / k
+    total := total + weight[k]
+    cum[k] := total
+  end
+  for i := 1 to DRAWS do begin
+    n := draw(total)
+    seen[n] := seen[n] + 1
+  end
+  for r := 0 to MAXR + 1 do nr[r] := 0
+  for k := 1 to SPECIES do begin
+    if seen[k] = 0 then unseen := unseen + weight[k]
+    if seen[k] >= 1 and seen[k] <= MAXR + 1 then nr[seen[k]] := nr[seen[k]] + 1
+  end
+  prints("PART 1.  "); print(DRAWS); prints(" specimens drawn from "); print(SPECIES)
+  prints(" species with Zipf frequencies\n\n")
+  prints("P(next specimen is a new species):\n")
+  prints("   Good-Turing estimate N1/N         = "); print(nr[1]); prints("/")
+  print(DRAWS); prints(" = "); printfix(10000 * nr[1] / DRAWS, 4); newline()
+  prints("   the truth (unseen species' mass)  = ")
+  printfix(10000 * unseen / total, 4); newline()
+  prints("   the naive estimate                = 0\n\n")
+  prints("   r   N(r)   raw count r   Good-Turing r*   true expected count\n")
+  for r := 1 to 5 do
+    if nr[r] > 0 then begin
+      mass := 0
+      for k := 1 to SPECIES do if seen[k] = r then mass := mass + weight[k]
+      rstar100 := 100 * (r + 1) * nr[r + 1] / nr[r]
+      printw(r, 4); printw(nr[r], 7); printw(r, 14)
+      spaces(10); printfix(rstar100, 2)
+      spaces(12); printfix(100 * mass * DRAWS / (total * nr[r]), 2)
+      newline()
+    end
+  prints("\nThe raw count r overstates every species seen; Good's r* is close to\n")
+  prints("the truth, and the probability it takes from them is just what the\n")
+  prints("unseen species need.  For larger r the counts N(r) grow small and\n")
+  prints("noisy, which is why Good smoothed them before using the formula.\n\n")
+end
+
+-- ---------------------------------------------------------------------
+-- Part 2: words in a text
+-- ---------------------------------------------------------------------
+global wordbuf[40]
+
+-- the next word on the current card; false at the end of the card
+global card[200], cpos := 1
+proc nextword()
+begin
+  var n := 0, c
+  while cpos <= card[0] do begin
+    c := card[cpos]
+    cpos := cpos + 1
+    if c >= 'A' and c <= 'Z' then c := c + 32
+    if c >= 'a' and c <= 'z' then begin
+      n := n + 1
+      wordbuf[n] := c
+    end else if n > 0 then break
+  end
+  wordbuf[0] := n
+  return n > 0
+end
+
+proc main()
+begin
+  var lineno := 0, h
+  prints("GOOD-TURING frequency estimation, after Turing and Good (1953)\n\n")
+  part1()
+  while readline(card, 199) do begin
+    lineno := lineno + 1
+    cpos := 1
+    while nextword() do
+      if lineno mod 2 = 1 then begin
+        h := slot(wordbuf, true)
+        hcount[h] := hcount[h] + 1
+        ntrain := ntrain + 1
+      end else begin
+        ntest := ntest + 1
+        h := slot(wordbuf, false)
+        if h < 0 then nnew := nnew + 1 else htest[h] := htest[h] + 1
+      end
+  end
+  for r := 0 to MAXR + 1 do nr[r] := 0
+  for i := 0 to HSIZE - 1 do
+    if hkey[i] <> 0 and hcount[i] <= MAXR + 1 then
+      nr[hcount[i]] := nr[hcount[i]] + 1
+
+  prints("PART 2.  Words: learned from "); print(ntrain)
+  prints(" words on the odd cards ("); print(ndistinct)
+  prints(" distinct),\n         tested on the "); print(ntest)
+  prints(" words of the even cards\n\n")
+  prints("P(next word is new):  Good-Turing N1/N = "); print(nr[1])
+  prints("/"); print(ntrain); prints(" = "); printfix(10000 * nr[1] / ntrain, 4)
+  newline()
+  prints("                      actually new on the held-out cards = ")
+  print(nnew); prints("/"); print(ntest); prints(" = ")
+  printfix(10000 * nnew / ntest, 4)
+  newline()
+  prints("\nHere the estimate falls short, and instructively so.  Good-Turing\n")
+  prints("assumes the sample comes from one fixed population.  A narrative does\n")
+  prints("not: each verse brings new things (whales, cattle, herbs) into the\n")
+  prints("world, so the held-out cards meet more novelty than the odd cards\n")
+  prints("can predict.  The estimate is still far better than the naive zero.\n")
+  return 0
+end
