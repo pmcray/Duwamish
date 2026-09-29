@@ -29,9 +29,11 @@ python -m duwamish run jobs/hofstadter.job --model 90  # Goedel, quines, MIU, Bl
 python -m duwamish run jobs/good.job --wcs             # evidence, Good-Turing, the explosion
 python -m duwamish run jobs/go.job --model 90          # go, learned by self-play (about two minutes)
 python -m duwamish run jobs/draughts.job --model 90    # Samuel's draughts learner (about four minutes)
+python -m duwamish run jobs/chess.job --model 90       # Los Alamos chess (about a minute)
+python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
 python -m duwamish go programs/hello.sal               # run one program
-python -m unittest discover -s tests -t .              # 33 tests
+python -m unittest discover -s tests -t .              # 35 tests
 ```
 
 ## The demonstrations
@@ -53,6 +55,12 @@ shows, and what it does not.
   evaluation polynomial that learns by self-play, using Samuel's
   "generalization" and Alpha/Beta scheme. It discovers for itself which
   positional terms matter.
+* `chess.sal`: Los Alamos chess (6×6, no bishops), as MANIAC I played it
+  in 1956. It counts minimax against alpha-beta (85% saved at four plies,
+  same answer), and a three-ply searcher mates a one-ply player.
+* `backgammon.sal`: a game of chance, learned by temporal-difference
+  self-play with a single layer of ten weights. It goes from 0 to 7 wins
+  in 16 against a hand-written evaluation.
 * `banburismus.sal`: Turing and Good's weight of evidence in decibans, in a
   sequential test for messages "in depth"; the machine computes its own
   logarithms.

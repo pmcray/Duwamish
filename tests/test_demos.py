@@ -82,6 +82,27 @@ class TestGood(unittest.TestCase):
         self.assertIn("settled judgement", out)
         self.assertRegex(out, r"won \d+, drew \d+, lost \d+")
 
+    def test_chess_move_generation_perft(self):
+        import re
+        from tests.helpers import run_salish
+        with open(os.path.join(ROOT, "programs/good/chess.sal")) as f:
+            src = f.read()
+        src = re.sub(r"const PERFT = 0 ", "const PERFT = 3 ", src)
+        out, res = run_salish(src)
+        # checked against an independent implementation of the rules
+        self.assertIn("perft 1 10\nperft 2 100\nperft 3 1212\n", out)
+
+    def test_backgammon_learns_and_reports(self):
+        import re
+        from tests.helpers import run_salish
+        with open(os.path.join(ROOT, "programs/good/backgammon.sal")) as f:
+            src = f.read()
+        src = re.sub(r"const TRAIN = 30, EVERY = 15, TEST = 8",
+                     "const TRAIN = 2, EVERY = 2, TEST = 1", src)
+        out, res = run_salish(src)
+        self.assertEqual(res[0], 0, out[-500:])
+        self.assertIn("what it learned", out)
+
     def test_explosion_needs_the_key(self):
         sat = run_job("//JOB E KEY=WCS\n//SALISH FROM=programs/good/"
                       "explosion.sal\n//EXEC\n")
