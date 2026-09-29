@@ -43,6 +43,25 @@ class TestHofstadter(unittest.TestCase):
         self.assertIn("  127\n", out)
 
 
+class TestLivermore(unittest.TestCase):
+    def test_answers_match_double_precision(self):
+        import sys
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        from livermore_reference import reference
+        out, res = run_file("programs/livermore.sal")
+        self.assertEqual(res[0], 0, out[-500:])
+        ref = reference()
+        seen = 0
+        for line in out.splitlines():
+            if line.startswith(" kernel") and "fixed" in line and "float" in line:
+                parts = line.split()
+                k, fixed, flt = int(parts[1]), int(parts[3]), int(parts[5])
+                self.assertLessEqual(abs(fixed - ref[k]), 30, (k, fixed, ref[k]))
+                self.assertLessEqual(abs(flt - ref[k]), 2, (k, flt, ref[k]))
+                seen += 1
+        self.assertEqual(seen, 6)
+
+
 class TestGood(unittest.TestCase):
     def test_goodturing_estimate_is_close(self):
         out, _ = run_file("programs/good/goodturing.sal", data="data/genesis.txt")

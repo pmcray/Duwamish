@@ -287,3 +287,89 @@ The simulator runs the Model 90 at about 1.2 million instructions a
 second, and the Model 30 at about 3 million micro-cycles a second. A typical
 SALISH instruction costs 12–15 micro-cycles on the Model 30 (2.5–3 µs of
 1967 time). A TRILISP evaluation costs 300–400 instructions.
+
+## 12. Against the CDC 7600
+
+How does the Duwamish compare with the fastest production computer of the
+early 1970s, Seymour Cray's CDC 7600 (1969)? The Duwamish figures below are
+**measured** on the simulator's cycle-exact Model 30. The Model 90's timing
+is nominal (one instruction per 1 µs core cycle). They are design
+parameters of an imaginary machine, not an engineered circuit; a real 1967
+ternary machine would very likely have been slower. The 7600 figures are
+commonly published values from memory, not checked against sources here.
+
+### The machines
+
+| | Duwamish Model 30 | Duwamish Model 90 | CDC 7600 |
+|---|---|---|---|
+| Cycle | 200 ns micro-cycle (5 MHz) | 1 µs per instruction (nominal) | 27.5 ns (36.4 MHz) |
+| Organisation | microprogrammed, one micro-step at a time | hardwired, one instruction at a time | pipelined independent functional units, instruction buffer |
+| Register add | 10 cycles = 2.0 µs | 1 µs | about 2 clocks, overlapped |
+| Add from core | 14 cycles = 2.8 µs | 1 µs | overlapped |
+| Full-width multiply | 102 cycles = 20.4 µs (microcoded, one trit per pass) | 1 µs | floating multiply in about 5 clocks, one started per clock |
+| Typical instruction rate | about 0.4 MIPS (`hello.sal`: 47,329 instructions in 604,075 cycles) | about 1 MIPS | up to one instruction per clock |
+| Floating point | **none**: software only (below) | none | 60-bit hardware, 48-bit mantissa; about 36 MFLOPS peak |
+| Word | 27 trits, about 42.8 bits of information | same | 60 bits |
+| Main memory | 531,441 words, about 22.7 Mbit | same | 65K words of small core plus 512K words of large core, about 34.4 Mbit |
+
+### The Livermore loops
+
+`programs/livermore.sal` runs six of McMahon's Livermore Fortran Kernels
+(1, 3, 5, 7, 11 and 12, with n = 100). These are the loops by which the
+7600 and its successors were judged. Having no floating-point hardware, the
+Duwamish runs each kernel two ways:
+
+* **Fixed point**, with numbers scaled by 3¹². A product is rescaled by
+  one ternary shift, which rounds correctly. This is what a programmer of
+  an integer machine would really do.
+* **Software floating point** (`duwamish/lib/tfloat.sal`). A 5-trit
+  exponent and a 22-trit mantissa are packed in one word; the balanced
+  fields need no sign bits or bias, and the XTR instruction unpacks them.
+  Products are formed from 11-trit halves so no partial product overflows.
+
+Each loop is timed by the machine's own clock. The answers are checked
+against double precision (`tools/livermore_reference.py`): the software
+float agrees to one unit in 3⁻¹², and fixed point to within about ten.
+
+| kernel | flops | Model 30 fixed | Model 30 float | Model 90 fixed | Model 90 float |
+|---|---:|---:|---:|---:|---:|
+| 1 hydro fragment | 500 | 0.0363 | 0.0030 | 0.1160 | 0.0080 |
+| 3 inner product | 200 | 0.0287 | 0.0031 | 0.0865 | 0.0082 |
+| 5 tri-diagonal elimination | 198 | 0.0227 | 0.0026 | 0.0664 | 0.0070 |
+| 7 equation of state | 1,600 | 0.0485 | 0.0031 | 0.1582 | 0.0083 |
+| 11 first sum | 99 | 0.0173 | 0.0028 | 0.0452 | 0.0073 |
+| 12 first difference | 100 | 0.0173 | 0.0023 | 0.0452 | 0.0059 |
+| **harmonic mean** | | **0.0247** | **0.0027** | **0.0699** | **0.0073** |
+
+(MFLOPS; for fixed point, arithmetic operations per microsecond counted as
+the kernel's floating-point operations.)
+
+### What the numbers say
+
+* **Against the 7600's peak of 36 MFLOPS**, the Model 30 is about 1,500
+  times slower in fixed point and about 13,000 times slower in software
+  floating point. The Model 90 narrows this to about 500 and 5,000 times.
+  Sustained 7600 performance on real codes was typically quoted at a
+  fraction of its peak, perhaps 10 MFLOPS, which divides these ratios by
+  three or four.
+* **Where the time goes.** On the Model 30 a fixed-point multiply-add
+  costs about 100 cycles (20 µs). Most of that is the microcoded ternary
+  multiply, which takes up to 102 cycles for a full word, and the SALISH
+  compiler's plain array indexing. A software floating-point operation
+  costs about 1,500 cycles (300 µs). The 7600 finished a floating
+  multiply in about five of its 27.5 ns clocks, and started a new one
+  every clock.
+* **Why.** The 7600 was built for exactly these loops: independent
+  pipelined functional units, and an instruction buffer that held a whole
+  inner loop so it ran without fetching instructions from memory. The
+  Duwamish was built for other things: symbolic computation (TRILISP),
+  statistics in integers (decibans), games, and a writable control store
+  that lets programs invent their own instructions. The explosion
+  demonstration's fused instructions are a small version of the 7600's
+  instruction buffer. They save fetches, but not the arithmetic.
+* **What would close the gap.** A hardware floating-point unit would gain
+  a factor of a hundred or more on the float column. A multiplier array in
+  place of the trit-serial loop would gain up to ten on multiplies. So
+  would overlapping fetch with execution, as the IBM 360/91 and the 7600
+  did. None of these touches what the machine is for, which is the point
+  of the committee's choices.

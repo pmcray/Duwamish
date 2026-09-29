@@ -1,0 +1,79 @@
+-- tfloat: balanced-ternary floating point, in software.
+--
+-- The Duwamish has no floating-point hardware.  A number is packed into
+-- one word, and because the fields are balanced they need no sign bits,
+-- no bias and no complement:
+--
+--      | exponent : 5 trits | mantissa : 22 trits |
+--
+--   value = m * 3^(e - 21),  with -121 <= e <= 121
+--
+-- A normalised mantissa has a non-zero trit in position 21, so
+-- (3^21 - 1)/2 < |m| <= (3^22 - 1)/2.  That is 22 trits, about 34.9 bits
+-- (the CDC 7600's mantissa has 48).  The fields are unpacked with the
+-- XTR instruction; negation is negating the mantissa.  Truncating trits
+-- rounds to nearest, so every shift here rounds correctly for free.
+
+const TF_P22 = 31381059609        -- 3^22
+const TF_MHI = 15690529804        -- (3^22 - 1) / 2
+const TF_MLO = 5230176601         -- (3^21 - 1) / 2
+
+inline proc tf_mant(a) = xtr(a, 0, 22)
+inline proc tf_exp(a) = xtr(a, 22, 5)
+
+-- the float m * 3^(e - 21), normalised
+proc tf_norm(m, e)
+begin
+  if m = 0 then return 0
+  for i := 1 to 30 do
+    if m > TF_MHI or m < -TF_MHI then begin m := m >> 1; e := e + 1 end
+    else break
+  for i := 1 to 45 do
+    if m <= TF_MLO and m >= -TF_MLO then begin m := m << 1; e := e - 1 end
+    else break
+  if e < -121 then return 0                    -- underflow: zero
+  if e > 121 then e := 121                     -- overflow: saturate
+  return e * TF_P22 + m
+end
+
+proc tf_from_int(n) = tf_norm(n, 21)
+
+-- p / q, for |p| below about 6000
+proc tf_from_ratio(p, q) = tf_norm(p * 1162261467 / q, 2)     -- 3^19
+
+proc tf_neg(a) = a - 2 * tf_mant(a)
+
+proc tf_add(a, b)
+begin
+  var ma := tf_mant(a), mb := tf_mant(b), ea, eb, d, t
+  if ma = 0 then return b
+  if mb = 0 then return a
+  ea := tf_exp(a)
+  eb := tf_exp(b)
+  if ea < eb then begin
+    t := ma; ma := mb; mb := t
+    t := ea; ea := eb; eb := t
+  end
+  d := ea - eb
+  if d > 23 then return ea * TF_P22 + ma
+  return tf_norm(ma + (mb >> d), ea)
+end
+
+proc tf_sub(a, b) = tf_add(a, tf_neg(b))
+
+-- the 44-trit product of two 22-trit mantissas, formed from 11-trit halves
+-- so that no partial product overflows a word
+proc tf_mul(a, b)
+begin
+  var ma := tf_mant(a), mb := tf_mant(b), a1, a0, b1, b0, p
+  if ma = 0 or mb = 0 then return 0
+  a1 := ma >> 11
+  a0 := ma - (a1 << 11)
+  b1 := mb >> 11
+  b0 := mb - (b1 << 11)
+  p := 3 * a1 * b1 + ((a1 * b0 + a0 * b1) >> 10) + ((a0 * b0) >> 21)
+  return tf_norm(p, tf_exp(a) + tf_exp(b))
+end
+
+-- the value times 3^places, as an integer (rounded)
+proc tf_to_fixed(a, places) = tf_mant(a) << (tf_exp(a) - 21 + places)

@@ -1,0 +1,3 @@
+//JOB LIVERMORE                  -- six Livermore kernels, fixed point and software float
+//SALISH FROM=../programs/livermore.sal  -- a few seconds; run with --model 30 for exact timing
+//EXEC

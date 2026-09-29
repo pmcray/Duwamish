@@ -1,0 +1,206 @@
+-- =====================================================================
+--  LIVERMORE LOOPS: six of the Lawrence Livermore kernels on the Duwamish
+--
+--  Frank McMahon's Livermore Fortran Kernels were the loops that the
+--  national laboratories' physics codes spent their time in, and the
+--  yardstick by which the CDC 7600 and its successors were measured.
+--  Here are six of them, n = 100:
+--
+--     1  hydro fragment            x(k) = q + y(k)*(r*z(k+10) + t*z(k+11))
+--     3  inner product             q = q + z(k)*x(k)
+--     5  tri-diagonal elimination  x(i) = z(i)*(y(i) - x(i-1))
+--     7  equation of state         a 16-operation polynomial in u, y, z
+--    11  first sum                 x(k) = x(k-1) + y(k)
+--    12  first difference          x(k) = y(k+1) - y(k)
+--
+--  The Duwamish has no floating-point hardware, so every kernel is run
+--  twice:
+--
+--    FIXED POINT     numbers scaled by 3^12; a product is rescaled by one
+--                    ternary shift, which rounds correctly.  This is what
+--                    a programmer of an integer machine would really do.
+--    SOFTWARE FLOAT  22-trit ternary floating point (lib/tfloat.sal).
+--
+--  Each loop is timed by the machine's own clock.  One cycle is 200 ns,
+--  so MFLOPS = operations * 5 / cycles.  On the Model 30 the clock is
+--  exact; on the Model 90 it is nominal (one instruction per microsecond).
+--  A checksum of each result lets the test suite compare the answers
+--  against double-precision arithmetic.
+-- =====================================================================
+get "tfloat"
+
+const N = 100, M = N + 12
+const SH = 12                     -- fixed point: values times 3^12
+
+global x[M], y[M], z[M], u[M]
+global fx[M], fy[M], fz[M], fu[M]
+global q, r, t, fq, fr, ft
+global cyc_fixed[13], cyc_float[13], sum_fixed[13], sum_float[13]
+global flops[13]
+
+inline proc fm(a, b) = (a * b) >> SH
+
+-- the test data: n/729 for a scrambled n in -364..364, exact in both forms
+proc datum(k) = (k * 7919) mod 729 - 364
+
+proc setup()
+begin
+  for k := 0 to M - 1 do begin
+    y[k] := datum(k) * 729
+    z[k] := datum(k + 37) * 729
+    u[k] := datum(k + 101) * 729
+    x[k] := 0
+    fy[k] := tf_norm(datum(k), 15)
+    fz[k] := tf_norm(datum(k + 37), 15)
+    fu[k] := tf_norm(datum(k + 101), 15)
+    fx[k] := 0
+  end
+  q := 250 * 729; r := 170 * 729; t := 100 * 729
+  fq := tf_norm(250, 15); fr := tf_norm(170, 15); ft := tf_norm(100, 15)
+end
+
+proc checksum_fixed()
+begin
+  var s := 0
+  for k := 0 to N - 1 do s := s + x[k]
+  return s
+end
+
+proc checksum_float()
+begin
+  var s := 0
+  for k := 0 to N - 1 do s := tf_add(s, fx[k])
+  return tf_to_fixed(s, SH)
+end
+
+-- ---------------------------------------------------------------------
+proc fixed_kernels()
+begin
+  var c0, s
+  c0 := clock()
+  for k := 0 to N - 1 do x[k] := q + fm(y[k], fm(r, z[k + 10]) + fm(t, z[k + 11]))
+  cyc_fixed[1] := clock() - c0
+  sum_fixed[1] := checksum_fixed()
+
+  c0 := clock()
+  s := 0
+  for k := 0 to N - 1 do s := s + fm(z[k], y[k])
+  cyc_fixed[3] := clock() - c0
+  sum_fixed[3] := s
+
+  x[0] := y[0]
+  c0 := clock()
+  for i := 1 to N - 1 do x[i] := fm(z[i], y[i] - x[i - 1])
+  cyc_fixed[5] := clock() - c0
+  sum_fixed[5] := checksum_fixed()
+
+  c0 := clock()
+  for k := 0 to N - 1 do
+    x[k] := u[k] + fm(r, z[k] + fm(r, y[k])) +
+            fm(t, u[k + 3] + fm(r, u[k + 2] + fm(r, u[k + 1])) +
+                  fm(t, u[k + 6] + fm(q, u[k + 5] + fm(q, u[k + 4]))))
+  cyc_fixed[7] := clock() - c0
+  sum_fixed[7] := checksum_fixed()
+
+  x[0] := y[0]
+  c0 := clock()
+  for k := 1 to N - 1 do x[k] := x[k - 1] + y[k]
+  cyc_fixed[11] := clock() - c0
+  sum_fixed[11] := checksum_fixed()
+
+  c0 := clock()
+  for k := 0 to N - 1 do x[k] := y[k + 1] - y[k]
+  cyc_fixed[12] := clock() - c0
+  sum_fixed[12] := checksum_fixed()
+end
+
+proc float_kernels()
+begin
+  var c0, s
+  c0 := clock()
+  for k := 0 to N - 1 do
+    fx[k] := tf_add(fq, tf_mul(fy[k], tf_add(tf_mul(fr, fz[k + 10]),
+                                             tf_mul(ft, fz[k + 11]))))
+  cyc_float[1] := clock() - c0
+  sum_float[1] := checksum_float()
+
+  c0 := clock()
+  s := 0
+  for k := 0 to N - 1 do s := tf_add(s, tf_mul(fz[k], fy[k]))
+  cyc_float[3] := clock() - c0
+  sum_float[3] := tf_to_fixed(s, SH)
+
+  fx[0] := fy[0]
+  c0 := clock()
+  for i := 1 to N - 1 do fx[i] := tf_mul(fz[i], tf_sub(fy[i], fx[i - 1]))
+  cyc_float[5] := clock() - c0
+  sum_float[5] := checksum_float()
+
+  c0 := clock()
+  for k := 0 to N - 1 do
+    fx[k] := tf_add(tf_add(fu[k], tf_mul(fr, tf_add(fz[k], tf_mul(fr, fy[k])))),
+               tf_mul(ft, tf_add(tf_add(fu[k + 3],
+                 tf_mul(fr, tf_add(fu[k + 2], tf_mul(fr, fu[k + 1])))),
+                 tf_mul(ft, tf_add(fu[k + 6],
+                   tf_mul(fq, tf_add(fu[k + 5], tf_mul(fq, fu[k + 4]))))))))
+  cyc_float[7] := clock() - c0
+  sum_float[7] := checksum_float()
+
+  fx[0] := fy[0]
+  c0 := clock()
+  for k := 1 to N - 1 do fx[k] := tf_add(fx[k - 1], fy[k])
+  cyc_float[11] := clock() - c0
+  sum_float[11] := checksum_float()
+
+  c0 := clock()
+  for k := 0 to N - 1 do fx[k] := tf_sub(fy[k + 1], fy[k])
+  cyc_float[12] := clock() - c0
+  sum_float[12] := checksum_float()
+end
+
+-- ---------------------------------------------------------------------
+global kname := table("", "hydro fragment", "", "inner product", "",
+                      "tri-diagonal elim.", "", "equation of state", "", "",
+                      "", "first sum", "first difference")
+global klist := table(1, 3, 5, 7, 11, 12)
+
+-- ten-thousandths of a MFLOPS: ops * 5 / cycles MFLOPS
+proc kflops(ops, cycles) = ops * 50000 / cycles
+
+proc main()
+begin
+  var k, ops, a, b, hm_a := 0, hm_b := 0
+  flops[1] := 5 * N; flops[3] := 2 * N; flops[5] := 2 * (N - 1)
+  flops[7] := 16 * N; flops[11] := N - 1; flops[12] := N
+  setup()
+  fixed_kernels()
+  float_kernels()
+  prints("LIVERMORE LOOPS on the Duwamish, n = 100\n\n")
+  prints("                                 fixed point (3^12)       software float (22 trits)\n")
+  prints(" kernel                  flops   cycles     MFLOPS        cycles     MFLOPS\n")
+  for i := 0 to 5 do begin
+    k := klist[i]
+    ops := flops[k]
+    a := kflops(ops, cyc_fixed[k])
+    b := kflops(ops, cyc_float[k])
+    printw(k, 3); spaces(2); printsw(kname[k], 20); printw(ops, 6)
+    printw(cyc_fixed[k], 9); spaces(4); printfix(a, 4)
+    printw(cyc_float[k], 14); spaces(4); printfix(b, 4)
+    newline()
+    hm_a := hm_a + 1000000000 / a
+    hm_b := hm_b + 1000000000 / b
+  end
+  prints("\n harmonic mean MFLOPS            fixed: ")
+  printfix(6 * 1000000000 / hm_a, 4)
+  prints("      float: "); printfix(6 * 1000000000 / hm_b, 4)
+  newline()
+  prints("\n checksums (sum of results x 3^12)\n")
+  for i := 0 to 5 do begin
+    k := klist[i]
+    prints(" kernel "); printw(k, 2); prints("  fixed "); printw(sum_fixed[k], 14)
+    prints("   float "); printw(sum_float[k], 14); newline()
+  end
+  prints("\n The CDC 7600's peak was about 36 MFLOPS in 60-bit hardware floating\n")
+  prints(" point, with a 48-bit mantissa.  One cycle here is 200 ns.\n")
+  return 0
+end

@@ -32,8 +32,9 @@ python -m duwamish run jobs/draughts.job --model 90    # Samuel's draughts learn
 python -m duwamish run jobs/chess.job --model 90       # Los Alamos chess (about a minute)
 python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
+python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
 python -m duwamish go programs/hello.sal               # run one program
-python -m unittest discover -s tests -t .              # 40 tests
+python -m unittest discover -s tests -t .              # 41 tests
 ```
 
 ## Inside the machine: the front-panel notebook
@@ -115,6 +116,17 @@ shows, and what it does not.
 * `metacircular.lsp`: a tower of interpreters with a strange loop at the top.
 * `diagonal.lsp`: Contracrostipunctus. A halting oracle and the record it
   cannot play.
+
+## How fast is it?
+
+`programs/livermore.sal` runs six of the Livermore Fortran Kernels, the
+loops by which the CDC 7600 was judged. The Duwamish has no floating-point
+hardware, so it runs them in fixed point and in a software ternary
+floating point (`duwamish/lib/tfloat.sal`), with answers checked against
+double precision. On the Model 30 the harmonic mean is 0.025 MFLOPS in
+fixed point and 0.0027 in software float. The 7600's peak was about 36
+MFLOPS. See [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) for the full
+comparison.
 
 ## Documentation
 

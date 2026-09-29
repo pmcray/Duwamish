@@ -109,7 +109,10 @@ and `not 0` is `0` (unknown). Test pointers with `p <> 0`.
 `streq(a, b)`, `readline(buf, max)`. Every routine is written with bounded
 loops, so BlooP programs may call them.
 
-Other libraries: `disasm` (read and disassemble machine code), `isakit`
+Other libraries: `tfloat` (ternary floating point in software: a 5-trit
+exponent and 22-trit mantissa in one word, with `tf_add`, `tf_sub`,
+`tf_mul`, `tf_norm`, `tf_from_int`, `tf_from_ratio`, `tf_to_fixed`),
+`disasm` (read and disassemble machine code), `isakit`
 (the instruction set as constants and tables) and `microkit` (the
 microword format). The last two are generated from the assembler's own
 tables at compile time.
