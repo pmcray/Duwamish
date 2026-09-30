@@ -3,6 +3,7 @@
     python -m duwamish run JOBDECK...        run job decks through the satellite
     python -m duwamish go FILE [--data F]    compile/assemble one program, run it
     python -m duwamish compile FILE.sal      show the TRIAD code SALISH produces
+    python -m duwamish compile FILE.ftn      ... or TRI-TRAN (without its library)
     python -m duwamish asm FILE.tri          assemble and list
     python -m duwamish micro                 list the Model 30 microprogram
     python -m duwamish microkit              print the microkit include file
@@ -18,7 +19,7 @@ limit, go only)
 import argparse
 import sys
 
-from . import microasm, salish, satellite, triad
+from . import microasm, salish, satellite, triad, tritran
 
 
 def main(argv=None):
@@ -58,6 +59,10 @@ def main(argv=None):
                               time_limit=args.time, fpu=args.fpu,
                               optimise=args.opt,
                               lookahead=args.lookahead)
+    elif args.cmd == "compile" and args.file.endswith((".ftn", ".f")):
+        with open(args.file) as f:
+            asm, comp = tritran.compile_source(f.read(), args.file)
+        sys.stdout.write(asm.split("; SALISH compiler output")[0])
     elif args.cmd == "compile":
         with open(args.file) as f:
             asm, comp = salish.compile_source(f.read(), args.file,

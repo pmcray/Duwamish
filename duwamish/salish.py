@@ -686,7 +686,7 @@ class Compiler:
                     ">": a > b, ">=": a >= b}[e[2]] and 1 or -1
         return None
 
-    def compile(self, text, fname="<source>"):
+    def compile(self, text, fname="<source>", library=False):
         items = []
         self.included.add(os.path.abspath(fname) if os.path.exists(fname)
                           else fname)
@@ -721,13 +721,14 @@ class Compiler:
                 self.procs[name] = ProcInfo(name, d[3], d[4], d[1], fname_,
                                             fname_)
                 self.procs[name].inline = len(d) > 6 and d[6]
-        if "main" not in self.procs:
+        if "main" not in self.procs and not library:
             raise CompileError("no proc main")
 
         self.out = ["; SALISH compiler output" +
-                    (" (optimised)" if self.optimise else ""),
-                    "        ENTRY START",
-                    "START:  CALL P_main", "        SVC  0"]
+                    (" (optimised)" if self.optimise else "")]
+        if not library:
+            self.out += ["        ENTRY START",
+                         "START:  CALL P_main", "        SVC  0"]
         if self.optimise:
             self.static_vecs = opt.static_vectors(gdecls, self.procs)
         for fname_, d in gdecls:
@@ -1746,9 +1747,10 @@ def isakit_source():
 
 
 def compile_source(text, fname="<source>", include_path=None,
-                   optimise=False):
+                   optimise=False, library=False):
     """Compile SALISH text to TRIAD assembly.  Returns (asm_text, compiler).
-    optimise=True runs SALISH/O: see duwamish/optimise.py."""
+    optimise=True runs SALISH/O: see duwamish/optimise.py.  library=True
+    compiles procedures for another program to call: no main, no entry."""
     c = Compiler(include_path, optimise)
-    asm = c.compile(text, fname)
+    asm = c.compile(text, fname, library)
     return asm, c

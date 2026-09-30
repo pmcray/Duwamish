@@ -184,6 +184,7 @@ Executive (`duwamish/satellite.py`):
 ```
 //JOB  name  TIME=cycles
 //SALISH [FROM=file] [LIST] [OPT]  compile the cards that follow (or a file)
+//TRITRAN [FROM=file] [LIST]    compile TRI-TRAN, the Duwamish FORTRAN
 //TRIAD  [FROM=file] [LIST]      assemble
 //TRIAD  PUNCHED [LIST]          assemble the cards the last step punched
 //EXEC   [TRILISP]               run what was just translated, or a catalogued program
@@ -364,6 +365,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
 | SALISH/S | the SALISH compiler written in SALISH, with the optimiser; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compilers, with or without OPT | `programs/selfhost/salish.sal` |
 | TRILISP | LISP 1.5-style interpreter written in SALISH, ternary-tagged | [TRILISP.md](TRILISP.md) |
+| TRI-TRAN | FORTRAN (1966) with three-valued LOGICAL, the arithmetic IF as one J3, DO indices in index registers as in FORTRAN I; its FORMAT and mathematical library written in SALISH | `duwamish/tritran.py`, [TRITRAN.md](TRITRAN.md) |
 
 ## 11. Speed
 
@@ -461,6 +463,23 @@ identical.
 
 Plainly compiled code gains little from the stack: 0.065 → 0.075 with the
 FPU. Its loops are about 20 instructions, mostly core references.
+
+**TRI-TRAN** (`programs/livermore.ftn`: the same kernels in FORTRAN, with
+checksums identical to the trit to the hardware column above)
+
+| kernel | flops | M30 + FPU | M90 FPU | M90 FPU + look-ahead |
+|---|---:|---:|---:|---:|
+| 1 hydro fragment | 500 | 0.1306 | 0.2900 | 0.3364 |
+| 3 inner product | 200 | 0.0993 | 0.2309 | 0.2826 |
+| 5 tri-diagonal elimination | 198 | 0.0995 | 0.2315 | 0.2834 |
+| 7 equation of state | 1,600 | 0.1885 | 0.4016 | 0.4363 |
+| 11 first sum | 99 | 0.0614 | 0.1506 | 0.1978 |
+| 12 first difference | 100 | 0.0614 | 0.1506 | 0.1978 |
+| **harmonic mean** | | **0.0914** | **0.2153** | **0.2673** |
+
+FORTRAN I's index registers alone bring the language within 1% of
+SALISH/O on the Model 90. With the look-ahead unit it falls behind, because
+its sums stay in core ([TRITRAN.md](TRITRAN.md)).
 
 (MFLOPS; for fixed point, arithmetic operations per microsecond counted as
 the kernel's floating-point operations. Run `python -m duwamish run

@@ -19,6 +19,7 @@ python -m duwamish run jobs/copycat.job --model 90   # Copycat's analogies (abou
 python -m duwamish run jobs/bootstrap.job --model 90 # the compiler compiles itself (a minute and a half)
 python -m duwamish run jobs/improve.job --model 90   # ... and makes a faster copy of itself (four minutes)
 python -m duwamish run jobs/tour.job           # the machine and its languages
+python -m duwamish run jobs/tritran.job --model 90   # FORTRAN, and Good's prime-factor FFT (about half a minute)
 ```
 
 Add `--model 90` for the fast hardwired model (the explosion needs the
@@ -291,11 +292,47 @@ once. A species seen *r* times deserves the adjusted count
   fixed population. This is kept in deliberately. Knowing when an
   estimator's assumptions fail is part of Good's lesson.
 
+### 9. The interaction algorithm — `programs/good/pfa.ftn`
+
+A Fourier transform of length *N* = *N*₁*N*₂, with *N*₁ and *N*₂ prime to
+each other, is a two-dimensional transform of *N*₁ by *N*₂, provided the
+data are taken in the right order. This was Good's observation in "The
+interaction algorithm and practical Fourier analysis" (1958). The order
+going in is *n* = *N*₂*n*₁ + *N*₁*n*₂ (mod *N*); coming out, *k* is read by
+the Chinese remainder theorem. The two sets of short transforms then need
+nothing between them. Cooley and Tukey (1965) cited the paper. Their
+method works for any factors, but pays "twiddle factors" to join the
+pieces.
+
+The program is written in TRI-TRAN ([TRITRAN.md](TRITRAN.md)). A ternary
+machine's own fast transform is radix 3, with the data in trit-reversed
+order, so the program transforms a signal of length 108 = 27 × 4 three
+ways. It counts the real multiplications and times each way by the clock:
+
+| method | multiplications | cycles (Model 90) |
+|---|---:|---:|
+| the direct sum | 46,656 | 3,536,148 |
+| Cooley–Tukey, 27 × 4, with twiddles | 1,192 | 177,119 |
+| Good, 27 × 4, no twiddles | 880 | 172,701 |
+
+All three agree to about 2×10⁻⁸ on values of 54, and the spectrum is
+exactly where the two tones put it.
+
+**What it shows:** the idea, and the machine doing Good's arithmetic.
+Good's maps save 312 multiplications, 26% of them. **What it does not:**
+that this matters much here. The same maps save only 2.5% of the time.
+In 1958 the multiplications were the work, done on desk calculators. On a
+machine with a floating-point unit, moving and indexing the data cost more
+than multiplying it. The program works this out from its own counts and
+clock and prints it. The fast transforms themselves, not Good's refinement
+of them, are what take the time from 3.5 million cycles to under 0.2
+million.
+
 ---
 
 ## Douglas Hofstadter
 
-### 9. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
+### 10. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
 
 Gödel's diagonal lemma says that a sentence can state a property of its
 *own* Gödel number. The program's "sentence" is its own machine code.
@@ -311,7 +348,7 @@ claim is false. The program then
 
 Nothing is assumed: the true self-description is *computed*, as Gödel's is.
 
-### 10. Quining — `programs/hofstadter/quine.sal`
+### 11. Quining — `programs/hofstadter/quine.sal`
 
 A SALISH program whose output is exactly its own source text, byte for
 byte. The test suite checks this on every run. It follows Hofstadter's
@@ -319,7 +356,7 @@ byte. The test suite checks this on every run. It follows Hofstadter's
 using it. `tools/make_quine.py` shows how the text was constructed. TRILISP's
 tour includes the LISP version, checked in-machine by `(equal (eval q) q)`.
 
-### 11. The MU puzzle — `programs/hofstadter/miu.sal`
+### 12. The MU puzzle — `programs/hofstadter/miu.sal`
 
 This separates Hofstadter's **mechanical mode** from his **intelligent
 mode**. Working inside the MIU system, the machine derives all 216
@@ -330,7 +367,7 @@ last trit is 0", and the machine checks that trit on every theorem it
 derives. The table shows the count of I's in balanced ternary: the last
 trit is always 1 or T.
 
-### 12. Copycat: analogy as perception — `programs/hofstadter/copycat.sal`
+### 13. Copycat: analogy as perception — `programs/hofstadter/copycat.sal`
 
 "If abc changes to abd, what does ijk change to?" Hofstadter and Melanie
 Mitchell's Copycat (1988–1993; *Fluid Concepts and Creative Analogies*,
@@ -377,7 +414,7 @@ is honest to record: in Mitchell's runs xyd was far commoner than wyz.
 Here wyz comes up more often than that, though still less often than xyd,
 and still at the lowest temperature.
 
-### 13. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
+### 14. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
 
 With the word `bloop`, the SALISH compiler *certifies termination*. It
 accepts only bounded `for` loops, no recursion and no indirect calls, and
@@ -388,7 +425,7 @@ wondrous-numbers (Collatz) program is **refused** certification, with each
 unbounded loop named, and then runs as FlooP. Whether *every* number is
 wondrous is a GlooP question that no bounded loop can answer.
 
-### 14. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
+### 15. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
 
 The tower of interpreters: Python → microcode → TRIAD → SALISH (the TRILISP
 interpreter) → M-EVAL, McCarthy's LISP-in-LISP → M-EVAL again, running its
@@ -398,7 +435,7 @@ Each costs about 100–160 times the level below. The top interpreter is the
 same *text* as the one below it, read as data: the program has become its
 own subject.
 
-### 15. The compiler that compiles itself, and improves itself once — `programs/selfhost/salish.sal`
+### 16. The compiler that compiles itself, and improves itself once — `programs/selfhost/salish.sal`
 
 SALISH/S is the SALISH compiler written in SALISH: about 2,800 lines,
 following the satellite's compilers part for part. It reads a program from
@@ -418,7 +455,7 @@ job deck can feed a compiler's output to the next step.
 Because generation 0 reproduces exactly the code it was made from,
 generation 1 *is* generation 0. The loop closes on itself at once, a
 **fixed point** of compilation. It is the strange loop in its most literal
-form: a program whose output, one level up, is itself. (The quine, §10,
+form: a program whose output, one level up, is itself. (The quine, §11,
 does it at one level; this does it across two.)
 
 **The improvement** (`jobs/improve.job`, about four minutes). SALISH/S
@@ -452,7 +489,7 @@ Python one: removing an unused label did not count as a change, so a
 procedure could stop one step short of its best form, depending on what
 its neighbours were doing. Both are now fixed the same way.
 
-### 16. Contracrostipunctus — `diagonal.lsp`
+### 17. Contracrostipunctus — `diagonal.lsp`
 
 The Crab's record players and the Tortoise's records. `HALTS?` is an honest
 would-be oracle: it runs a program in M-EVAL with a step budget. It is right
@@ -461,7 +498,7 @@ about *itself* and does the opposite. The oracle says "runs forever";
 `CONTRARY` then halts. Raising the budget changes nothing. This is Turing's
 halting theorem, the engine of Gödel's.
 
-### 17. The tangled hierarchy — the machine as a whole
+### 18. The tangled hierarchy — the machine as a whole
 
 The deepest Hofstadterian feature is architectural. The writable control
 store lets software rewrite the microcode that runs it (§1). TRILISP can

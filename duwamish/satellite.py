@@ -13,6 +13,9 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
                                     compile SALISH (the following cards, or a
                                     file); LIST prints the TRIAD listing,
                                     OPT runs the optimising compiler
+    //TRITRAN [FROM=path] [LIST]    compile TRI-TRAN, the Duwamish FORTRAN;
+                                    LIST prints the TRIAD code of the
+                                    program (without its library)
     //TRIAD [FROM=path] [LIST]      assemble TRIAD source
     //TRIAD PUNCHED [LIST]          assemble the cards punched by the job's
                                     last step (SVC 5), when this step runs:
@@ -35,6 +38,7 @@ from . import isa
 from . import machine as mach
 from . import salish
 from . import triad
+from . import tritran
 
 HERE = os.path.dirname(__file__)
 EXECUTIVE_SRC = os.path.join(HERE, "executive.tri")
@@ -54,6 +58,12 @@ class JobError(Exception):
 def assemble_executive():
     with open(EXECUTIVE_SRC) as f:
         return triad.assemble(f.read())
+
+
+def translate_tritran(text, fname):
+    asm, comp = tritran.compile_source(text, fname)
+    obj = triad.assemble(asm, origin=USER_ORIGIN)
+    return obj, asm, comp
 
 
 def translate_salish(text, fname, include_path=None, optimise=False):
@@ -190,7 +200,7 @@ class Satellite:
             if job.failed:
                 continue
             try:
-                if verb in ("SALISH", "TRIAD"):
+                if verb in ("SALISH", "TRIAD", "TRITRAN"):
                     if verb == "TRIAD" and "PUNCHED" in args:
                         if not job.steps:
                             raise JobError("//TRIAD PUNCHED before any //EXEC")
@@ -221,6 +231,22 @@ class Satellite:
                             job.log.append(comp.bloop_report)
                         if "LIST" in args or self.listing:
                             job.log.append(pending_obj.listing_text())
+                    elif verb == "TRITRAN":
+                        pending_obj, asm, comp = translate_tritran(src, path)
+                        job.translations.append((sname, asm))
+                        units = len(comp.units)
+                        job.log.append(
+                            f"TRI-TRAN: {sname}: {len(pending_obj.words)} "
+                            f"words with its library, {units} program "
+                            f"unit{'s' if units != 1 else ''}")
+                        if not self.fpu:
+                            job.log.append(
+                                "TRI-TRAN: note: this machine has no "
+                                "floating-point unit, and REAL arithmetic "
+                                "will stop the job")
+                        if "LIST" in args or self.listing:
+                            job.log.append(asm.split(
+                                "; SALISH compiler output")[0].rstrip())
                     else:
                         pending_obj = triad.assemble(src, origin=USER_ORIGIN)
                         job.log.append(f"TRIAD: {sname}: "
@@ -251,8 +277,8 @@ class Satellite:
                     job = None
                 else:
                     raise JobError(f"unknown control card //{verb}")
-            except (salish.CompileError, triad.AsmError, JobError,
-                    OSError) as e:
+            except (salish.CompileError, tritran.CompileError,
+                    triad.AsmError, JobError, OSError) as e:
                 job.log.append(f"*** {verb} FAILED: {e}")
                 job.failed = True
                 self.queue = [(j, s) for j, s in self.queue if j is not job]
@@ -421,7 +447,8 @@ def run_program(path, data=None, model=30, wcs=False, listing=False,
                 time_limit=0, out=None, fpu=None, optimise=False,
                 lookahead=False):
     """Convenience: wrap one SALISH/TRIAD source file into a job."""
-    kind = "TRIAD" if path.endswith(".tri") else "SALISH"
+    kind = ("TRIAD" if path.endswith(".tri") else
+            "TRITRAN" if path.endswith((".ftn", ".f")) else "SALISH")
     name = re.sub(r"\W", "", os.path.splitext(os.path.basename(path))[0])
     deck = [f"//JOB {name.upper()} TIME={time_limit}",
             f"//{kind} FROM={os.path.abspath(path)}"
