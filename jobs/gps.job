@@ -1,0 +1,5 @@
+//JOB GPS                        -- the General Problem Solver on the Tower of Hanoi
+//EXEC TRILISP
+//DATA FROM=../programs/ai/prelude.lsp
+//DATA FROM=../programs/ai/gps.lsp
+//END

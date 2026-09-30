@@ -531,7 +531,7 @@ INTRINSICS = {
     "heapbase": 0, "stackptr": 0, "svc": 2, "codebase": 0,
     "catchpoint": 1, "throw": 2, "codeend": 0,
     "fadd": 2, "fsub": 2, "fmul": 2, "fdiv": 2, "float": 1, "fix": 1,
-    "fcmp": 2, "hasfpu": 0, "punch": 1,
+    "fcmp": 2, "hasfpu": 0, "punch": 1, "eqv": 2,
 }
 
 
@@ -1616,15 +1616,15 @@ class Compiler:
             self.emit("LD   R1, #START")
         elif name == "codeend":
             self.emit("LD   R1, #CODE_END")
-        elif name in ("fadd", "fsub", "fmul", "fdiv", "fcmp"):
+        elif name in ("fadd", "fsub", "fmul", "fdiv", "fcmp", "eqv"):
             ins = {"fadd": "FAD", "fsub": "FSB", "fmul": "FMP",
-                   "fdiv": "FDV", "fcmp": "FCM"}[name]
+                   "fdiv": "FDV", "fcmp": "FCM", "eqv": "EQV"}[name]
             bop = self.simple(args[1], scope)
             aop = self.simple(args[0], scope)
             if bop is not None:
                 self.gen_expr(args[0], scope)
                 self.emit(f"{ins:4} R1, {bop}")
-            elif aop is not None and name in ("fadd", "fmul"):
+            elif aop is not None and name in ("fadd", "fmul", "eqv"):
                 # commutative: evaluate the complex side, use the simple one
                 self.gen_expr(args[1], scope)
                 self.emit(f"{ins:4} R1, {aop}")

@@ -1,0 +1,204 @@
+C ======================================================================
+C     RADIX 2 OR RADIX 3?  TWO FAST FOURIER TRANSFORMS, MEASURED
+C
+C     IT IS OFTEN SAID THAT A TERNARY MACHINE SHOULD USE A RADIX-3
+C     FAST FOURIER TRANSFORM.  THIS PROGRAM TRANSFORMS A SIGNAL OF
+C     256 = 2**8 POINTS BY RADIX 2 AND ONE OF 243 = 3**5 POINTS BY
+C     RADIX 3, COUNTS THE REAL MULTIPLICATIONS, TIMES EACH BY THE CLOCK,
+C     AND DIVIDES BOTH BY N LOG2 N, THE WORK ANY FFT OF N POINTS MUST DO.
+C     EACH SIGNAL IS TWO TONES, WHOSE SPECTRUM IS KNOWN EXACTLY, SO THE
+C     ERRORS ARE MEASURED TOO.
+C
+C     A RADIX-2 BUTTERFLY TAKES ONE COMPLEX MULTIPLICATION FOR TWO POINTS
+C     AND ONE BIT OF LOG N.  A RADIX-3 BUTTERFLY TAKES TWO COMPLEX
+C     MULTIPLICATIONS AND FOUR REAL ONES FOR THREE POINTS AND LOG2 3 =
+C     1.585 BITS.  SO RADIX 3 SHOULD NEED ABOUT A QUARTER MORE.
+C ======================================================================
+      COMMON /R2/ W2R(256), W2I(256)
+      COMMON /R3/ W3R(243), W3I(243)
+      COMMON /COUNT/ NMUL
+      COMMON /REV/ IRV2(256), IRV3(243)
+      DIMENSION AR(256), AI(256)
+      INTEGER NS(2), MULS(2), CYC(2)
+      DIMENSION ERR(2), WORK(2)
+      TWOPI = 8.0 * ATAN(1.0)
+      DO 10 J = 1, 256
+        A = TWOPI * FLOAT(J - 1) / 256.0
+        W2R(J) = COS(A)
+        W2I(J) = -SIN(A)
+   10 CONTINUE
+      DO 20 J = 1, 243
+        A = TWOPI * FLOAT(J - 1) / 243.0
+        W3R(J) = COS(A)
+        W3I(J) = -SIN(A)
+   20 CONTINUE
+C     THE DIGIT-REVERSED ORDERS ARE TABLES, MADE BEFORE THE CLOCK STARTS
+      DO 25 J = 1, 256
+   25 IRV2(J) = IREV(J - 1, 256, 2) + 1
+      DO 26 J = 1, 243
+   26 IRV3(J) = IREV(J - 1, 243, 3) + 1
+      NS(1) = 256
+      NS(2) = 243
+C
+      DO 60 IR = 1, 2
+        N = NS(IR)
+C       THE SIGNAL: COS(5T) + 0.5 SIN(9T); ITS SPECTRUM IS N/2 AT +-5
+C       AND -+ I N/4 AT +-9, AND ZERO ELSEWHERE
+        DO 30 J = 1, N
+          A = TWOPI * FLOAT(J - 1) / FLOAT(N)
+          AR(J) = COS(5.0*A) + 0.5*SIN(9.0*A)
+          AI(J) = 0.0
+   30   CONTINUE
+        NMUL = 0
+        IC = ICLOCK()
+        IF (IR .EQ. 1) CALL FFT2(AR, AI, N)
+        IF (IR .EQ. 2) CALL FFT3(AR, AI, N)
+        CYC(IR) = ICLOCK() - IC
+        MULS(IR) = NMUL
+        H = FLOAT(N) / 2.0
+        Q = FLOAT(N) / 4.0
+        E = 0.0
+        DO 40 K = 1, N
+          ER = 0.0
+          EI = 0.0
+          IF (K .EQ. 6 .OR. K .EQ. N - 4) ER = H
+          IF (K .EQ. 10) EI = -Q
+          IF (K .EQ. N - 8) EI = Q
+          E = AMAX1(E, ABS(AR(K) - ER), ABS(AI(K) - EI))
+   40   CONTINUE
+        ERR(IR) = E
+        WORK(IR) = FLOAT(N) * ALOG(FLOAT(N)) / ALOG(2.0)
+   60 CONTINUE
+C
+      PRINT 900
+  900 FORMAT ('1RADIX 2 OR RADIX 3?' //
+     1  '   RADIX     N   REAL MULTS   PER N LOG2 N      CYCLES',
+     2  '   PER N LOG2 N   LARGEST ERROR')
+      DO 70 IR = 1, 2
+        PRINT 901, IR + 1, NS(IR), MULS(IR), FLOAT(MULS(IR)) / WORK(IR),
+     1    CYC(IR), FLOAT(CYC(IR)) / WORK(IR), ERR(IR)
+   70 CONTINUE
+  901 FORMAT (1X, I6, I8, I11, F13.3, I14, F13.1, E17.3)
+      R = (FLOAT(MULS(2)) / WORK(2)) / (FLOAT(MULS(1)) / WORK(1))
+      S = (FLOAT(CYC(2)) / WORK(2)) / (FLOAT(CYC(1)) / WORK(1))
+      PRINT 902, R, S
+  902 FORMAT ('0   FOR THE SAME WORK, RADIX 3 TAKES', F6.2,
+     1  ' TIMES THE MULTIPLICATIONS OF RADIX 2,' / '    AND', F6.2,
+     2  ' TIMES THE CYCLES.')
+      IF (S .GT. 1.0) PRINT 903
+      IF (S .LE. 1.0) PRINT 904
+  903 FORMAT ('    ON THIS TERNARY MACHINE, RADIX 2 IS THE FASTER FFT.')
+  904 FORMAT ('    ON THIS TERNARY MACHINE, RADIX 3 IS THE FASTER FFT.')
+      END
+C
+C ----------------------------------------------------------------------
+C     RADIX 2, IN PLACE: N = 2**P, DATA IN BIT-REVERSED ORDER FIRST
+      SUBROUTINE FFT2(AR, AI, N)
+      DIMENSION AR(N), AI(N)
+      COMMON /R2/ WR(256), WI(256)
+      COMMON /COUNT/ NMUL
+      COMMON /REV/ IRV2(256), IRV3(243)
+      DO 20 I = 1, N
+        J = IRV2(I)
+        IF (J .LE. I) GO TO 20
+        T = AR(I)
+        AR(I) = AR(J)
+        AR(J) = T
+        T = AI(I)
+        AI(I) = AI(J)
+        AI(J) = T
+   20 CONTINUE
+      M = 1
+   30 IF (M .GE. N) RETURN
+      M2 = 2*M
+      DO 50 J = 1, M
+        JJ = J - 1
+        K = JJ*(N/M2) + 1
+        DO 40 I = J, N, M2
+          I1 = I + M
+          IF (JJ .EQ. 0) GO TO 35
+          TR = AR(I1)*WR(K) - AI(I1)*WI(K)
+          TI = AR(I1)*WI(K) + AI(I1)*WR(K)
+          NMUL = NMUL + 4
+          GO TO 36
+   35     TR = AR(I1)
+          TI = AI(I1)
+   36     AR(I1) = AR(I) - TR
+          AI(I1) = AI(I) - TI
+          AR(I) = AR(I) + TR
+          AI(I) = AI(I) + TI
+   40   CONTINUE
+   50 CONTINUE
+      M = M2
+      GO TO 30
+      END
+C
+C ----------------------------------------------------------------------
+C     RADIX 3, IN PLACE: N = 3**P, DATA IN TRIT-REVERSED ORDER FIRST
+      SUBROUTINE FFT3(AR, AI, N)
+      DIMENSION AR(N), AI(N)
+      COMMON /R3/ WR(243), WI(243)
+      COMMON /COUNT/ NMUL
+      COMMON /REV/ IRV2(256), IRV3(243)
+      DATA S3 /0.8660254038/
+      DO 20 I = 1, N
+        J = IRV3(I)
+        IF (J .LE. I) GO TO 20
+        T = AR(I)
+        AR(I) = AR(J)
+        AR(J) = T
+        T = AI(I)
+        AI(I) = AI(J)
+        AI(J) = T
+   20 CONTINUE
+      M = 1
+   30 IF (M .GE. N) RETURN
+      M3 = 3*M
+      DO 50 J = 1, M
+        JJ = J - 1
+        K1 = JJ*(N/M3) + 1
+        K2 = 2*JJ*(N/M3) + 1
+        DO 40 I = J, N, M3
+          I1 = I + M
+          I2 = I1 + M
+          IF (JJ .EQ. 0) GO TO 35
+          B1R = AR(I1)*WR(K1) - AI(I1)*WI(K1)
+          B1I = AR(I1)*WI(K1) + AI(I1)*WR(K1)
+          B2R = AR(I2)*WR(K2) - AI(I2)*WI(K2)
+          B2I = AR(I2)*WI(K2) + AI(I2)*WR(K2)
+          NMUL = NMUL + 8
+          GO TO 36
+   35     B1R = AR(I1)
+          B1I = AI(I1)
+          B2R = AR(I2)
+          B2I = AI(I2)
+   36     SR = B1R + B2R
+          SI = B1I + B2I
+          DR = S3*(B1R - B2R)
+          DI = S3*(B1I - B2I)
+          TR = AR(I) - 0.5*SR
+          TI = AI(I) - 0.5*SI
+          AR(I) = AR(I) + SR
+          AI(I) = AI(I) + SI
+          AR(I1) = TR + DI
+          AI(I1) = TI - DR
+          AR(I2) = TR - DI
+          AI(I2) = TI + DR
+          NMUL = NMUL + 4
+   40   CONTINUE
+   50 CONTINUE
+      M = M3
+      GO TO 30
+      END
+C
+C     K WITH ITS DIGITS IN BASE IB REVERSED, WITHIN THE DIGITS OF N
+      INTEGER FUNCTION IREV(K, N, IB)
+      IREV = 0
+      KK = K
+      NN = N
+   10 IF (NN .LE. 1) RETURN
+      IREV = IB*IREV + MOD(KK, IB)
+      KK = KK/IB
+      NN = NN/IB
+      GO TO 10
+      END

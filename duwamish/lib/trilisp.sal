@@ -255,9 +255,12 @@ begin
   return s
 end
 
+global bare                           -- the last thing read was a bare atom
+
 proc lread()
 begin
   var c
+  bare := false
   skipws()
   c := peekch()
   if c < 0 then return UNBOUND
@@ -265,6 +268,7 @@ begin
   if c = ')' then begin nextch(); lerror("UNEXPECTED )", UNBOUND) end
   if c = '\'' then begin nextch(); return list2(Y_QUOTE, lread()) end
   if c = '"' then return readstring()
+  bare := true
   return readatom()
 end
 
@@ -276,7 +280,7 @@ begin
     if peekch() = ')' then begin nextch(); return head end
     if peekch() < 0 then lerror("END OF CARDS INSIDE A LIST", UNBOUND)
     x := lread()
-    if x = Y_DOT then begin
+    if x = Y_DOT and bare then begin       -- a "." in quotes is no dot
       x := lread()
       if tail = NIL then lerror("BAD DOTTED PAIR", UNBOUND)
       cdr_[tail / 3] := x

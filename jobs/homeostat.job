@@ -1,0 +1,4 @@
+//JOB HOMEOSTAT                  -- Ashby's homeostat: ultrastability
+//SALISH FROM=../programs/ashby/homeostat.sal OPT
+//EXEC
+//END

@@ -1,0 +1,5 @@
+//JOB STRIPS                     -- STRIPS plans for Shakey the robot
+//EXEC TRILISP
+//DATA FROM=../programs/ai/prelude.lsp
+//DATA FROM=../programs/ai/strips.lsp
+//END

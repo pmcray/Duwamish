@@ -1,0 +1,5 @@
+//JOB PROLOG                     -- a three-valued Prolog
+//EXEC TRILISP
+//DATA FROM=../programs/ai/prelude.lsp
+//DATA FROM=../programs/ai/prolog.lsp
+//END

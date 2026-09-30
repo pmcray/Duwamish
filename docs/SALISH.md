@@ -70,6 +70,7 @@ condition succeeds **only when its value is positive**.
 | `<< >>` | multiply / divide by a power of **3** (ternary shift) |
 | `= <> < <= > >=` | comparisons, yielding `true` or `false` (one CMP and one SEL) |
 | `&` `\|` | tritwise min / max: **Kleene's** strong *and* / *or* |
+| `eqv(a, b)` | tritwise product: Kleene's equivalence (a built-in, one EQV instruction) |
 | `and` `or` | **McCarthy's** sequential connectives: the left operand decides first, and an `unknown` there stays unknown |
 | `not e`, `-e` | negation (the same thing in balanced ternary) |
 | `c -> a, b` | conditional expression |

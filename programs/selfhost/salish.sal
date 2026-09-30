@@ -112,10 +112,10 @@ global innames := table("peek", "poke", "putc", "getc", "exit", "ttyc",
                         "wcs", "rks", "wks", "rmap", "wmap", "heapbase",
                         "stackptr", "svc", "codebase", "catchpoint", "throw",
                         "codeend", "fadd", "fsub", "fmul", "fdiv", "float",
-                        "fix", "fcmp", "hasfpu", "punch")
+                        "fix", "fcmp", "hasfpu", "punch", "eqv")
 global inargs := table(1, 2, 1, 0, 1, 1, 3, 2, 0, 1, 0, 1, 2, 1, 2, 1, 2, 0,
-                       0, 2, 0, 1, 2, 0, 2, 2, 2, 2, 1, 1, 2, 0, 1)
-const NINTR = 33
+                       0, 2, 0, 1, 2, 0, 2, 2, 2, 2, 1, 1, 2, 0, 1, 2)
+const NINTR = 34
 const I_PEEK = 32
 const I_POKE = 33
 const I_PUTC = 34
@@ -149,10 +149,11 @@ const I_FIX = 61
 const I_FCMP = 62
 const I_HASFPU = 63
 const I_PUNCH = 64
-const NM_MAIN = 65
-const NM_NEG = 66
-const NM_ZERO = 67
-const NM_POS = 68
+const I_EQV = 65
+const NM_MAIN = 66
+const NM_NEG = 67
+const NM_ZERO = 68
+const NM_POS = 69
 
 -- global symbols
 const SYM_CONST = 1
@@ -1477,15 +1478,16 @@ begin
   end else if name = I_HEAPBASE then insl("LD   R1, #END_OF_PROGRAM")
   else if name = I_CODEBASE then insl("LD   R1, #START")
   else if name = I_CODEEND then insl("LD   R1, #CODE_END")
-  else if name >= I_FADD and name <= I_FDIV or name = I_FCMP then begin
+  else if name >= I_FADD and name <= I_FDIV or name = I_FCMP or name = I_EQV then begin
     s := name = I_FADD -> "FAD ", name = I_FSUB -> "FSB ",
-         name = I_FMUL -> "FMP ", name = I_FDIV -> "FDV ", "FCM "
+         name = I_FMUL -> "FMP ", name = I_FDIV -> "FDV ",
+         name = I_EQV -> "EQV ", "FCM "
     bop := simple(args[2])
     aop := simple(args[1])
     if bop <> 0 then begin
       gen_expr(args[1])
       ins(s); pstr(" R1, "); pop_(bop); pnl()
-    end else if aop <> 0 and (name = I_FADD or name = I_FMUL) then begin
+    end else if aop <> 0 and (name = I_FADD or name = I_FMUL or name = I_EQV) then begin
       gen_expr(args[2])
       ins(s); pstr(" R1, "); pop_(aop); pnl()
     end else begin

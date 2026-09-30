@@ -1,0 +1,5 @@
+//JOB SHRDLU                     -- micro-SHRDLU: the blocks world, after Winograd
+//EXEC TRILISP
+//DATA FROM=../programs/ai/prelude.lsp
+//DATA FROM=../programs/ai/shrdlu.lsp
+//END
