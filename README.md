@@ -16,12 +16,13 @@ This repository contains the whole machine, and software that runs on it:
 |---|---|
 | **Architecture** | 27-trit words; symmetric core of 3¹² words; nine registers; one-trit condition code; three-way `J3` jumps; `SEL` truth-table instruction; Kleene logic in hardware |
 | **Model 30** | microprogrammed: a 156-word horizontal microprogram in a *writable* control store, with ternary micro-branching, cycle-exact timing |
-| **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing; a balanced-ternary **floating-point unit** as standard (a feature on the Model 30) |
+| **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing; a balanced-ternary **floating-point unit** as standard (a feature on the Model 30); an optional **look-ahead unit** with a 32-word instruction stack |
 | **Executive** | a resident monitor in protected core: traps, supervisor calls, time limits, accounting |
-| **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//EXEC`, `//DATA`) |
+| **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//EXEC`, `//DATA`), and a card punch whose decks later steps can assemble (`//TRIAD PUNCHED`) |
 | **TRIAD** | the symbolic assembler |
 | **SALISH** | a BCPL-like language with three-valued logic, three-way `sign … of`, and **BlooP certification** of termination |
 | **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
+| **SALISH/S** | the SALISH compiler written in SALISH: it compiles itself on the Duwamish, card for card identical to the satellite's compiler |
 | **TRILISP** | a LISP 1.5-style interpreter written in SALISH, with one-trit type tags, tail calls and garbage collection |
 
 ## Quick start
@@ -37,6 +38,9 @@ python -m duwamish run jobs/draughts.job --model 90    # Samuel's draughts learn
 python -m duwamish run jobs/chess.job --model 90       # Los Alamos chess (about a minute)
 python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
+python -m duwamish run jobs/bootstrap.job --model 90   # the compiler compiles itself (half a minute)
+python -m duwamish run jobs/copycat.job --model 90     # Copycat's analogies (half a minute)
+python -m duwamish run jobs/fiveyear.job --model 90    # Good's five-year plan v. Shannon (six minutes)
 python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
 python -m duwamish run jobs/livermore.job --model 90   # ... with the floating-point unit
 python -m duwamish compile --opt programs/livermore.sal  # see what the optimiser does
@@ -48,7 +52,8 @@ Options for `run` and `go`: `--model 30|90` (default 30); `--wcs` to turn
 the writable-control-store key; `--fpu` or `--no-fpu` to fit or remove the
 floating-point unit (by default the Model 90 has one and the Model 30 does
 not); `--opt` to compile every SALISH step with the optimising compiler
-(or put `OPT` on a `//SALISH` card); `--list` for listings.
+(or put `OPT` on a `//SALISH` card); `--lookahead` to fit the Model 90's
+look-ahead unit (a 32-word instruction stack); `--list` for listings.
 
 ## Inside the machine: the front-panel notebook
 
@@ -110,6 +115,11 @@ shows, and what it does not.
 * `chess.sal`: Los Alamos chess (6×6, no bishops), as MANIAC I played it
   in 1956. It counts minimax against alpha-beta (85% saved at four plies,
   same answer), and a three-ply searcher mates a one-ply player.
+* `fiveyear.sal`: two proposals from Good's "Five-Year Plan for Automatic
+  Chess" (1968): follow lines by their probability of being played, and
+  back up values allowing for a fallible opponent. Each plays Shannon's
+  full-width search at equal effort. The first scores 3½ of 6, the
+  second 1 of 6.
 * `backgammon.sal`: a game of chance, learned by temporal-difference
   self-play with a single layer of ten weights. It goes from 0 to 7 wins
   in 16 against a hand-written evaluation.
@@ -125,8 +135,16 @@ shows, and what it does not.
   writes and verifies a true statement of its own Gödel number.
 * `quine.sal`: prints its own source, byte for byte.
 * `miu.sal`: the MU puzzle. The invariant is one trit.
+* `copycat.sal`: a cut-down Copycat. Codelets, a slipnet and a
+  temperature answer "abc → abd; ijk → ?". It finds ijl, iijjll, lji and
+  kjh, mrrkkk, and (rarely, but at the lowest temperature) mrrjjjj and
+  wyz.
 * `sequences.sal` / `floop.sal`: BlooP certified, FlooP refused.
 * `metacircular.lsp`: a tower of interpreters with a strange loop at the top.
+* `selfhost/salish.sal`: the SALISH compiler written in SALISH. On the
+  Duwamish it compiles itself and punches 8,813 cards identical to the
+  satellite's own compilation, so the next generation is the same program:
+  the loop closes on itself (`jobs/bootstrap.job`).
 * `diagonal.lsp`: Contracrostipunctus. A halting oracle and the record it
   cannot play.
 
@@ -142,12 +160,15 @@ double precision. The job compiles it twice, plainly and with SALISH/O.
 |---|---:|---:|---:|
 | plain SALISH | 0.070 | 0.0064 | 0.065 |
 | SALISH/O | 0.184 | 0.0078 | 0.216 |
+| SALISH/O, with the look-ahead unit | 0.264 | 0.0078 | 0.315 |
 
 The unit made floating point ten times faster, but under the plain
 compiler no faster than fixed point: the machine was limited by issuing
 one instruction at a time. The optimiser cut the inner product from 20
-instructions a pass to 6, which gains another factor of 3.3. The 7600's
-peak was about 36 MFLOPS, about 170 times faster than the best Duwamish.
+instructions a pass to 6, which gains another factor of 3.3. The
+look-ahead unit's instruction stack, after the CDC 6600, lets such a loop
+run without fetching instructions from core, for another 45%. The 7600's
+peak was about 36 MFLOPS, about 115 times faster than the best Duwamish.
 See [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) for the full
 comparison.
 
@@ -173,7 +194,8 @@ notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
-programs/            SALISH and TRILISP programs (good/, hofstadter/, trilisp/)
+programs/            SALISH and TRILISP programs (good/, hofstadter/, trilisp/,
+                     selfhost/: the compiler in SALISH)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing
 tests/               unittest suite

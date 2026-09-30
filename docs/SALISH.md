@@ -102,6 +102,7 @@ and `not 0` is `0` (unknown). Test pointers with `p <> 0`.
 | `fcmp(a, b)` | −1, 0 or +1 as the float a is less than, equal to or greater than b |
 | `float(n)`, `fix(x)` | integer to float, and float to integer, rounded |
 | `hasfpu()` | +1 if the floating-point unit is fitted, −1 if not (asks the Executive) |
+| `punch(c)` | punch a character on the card punch (10 ends a card); a later `//TRIAD PUNCHED` step assembles the deck |
 | `catchpoint(buf)`, `throw(buf, v)` | non-local exit (setjmp/longjmp); `buf` is 3 words |
 
 ## The runtime library (always included)
@@ -213,3 +214,37 @@ L104: LD R1,-5(FP)  CMP R1,-6(FP)  JP L106  L104: LD   R1, V_fz+0(R3)
 
 See [ARCHITECTURE.md §12](ARCHITECTURE.md) for what that does to the
 benchmark.
+
+## SALISH/S: the compiler written in SALISH
+
+`programs/selfhost/salish.sal` is a SALISH compiler written in SALISH.
+It runs on the Duwamish, reads a program from the card reader, and
+punches TRIAD code on the card punch. Its output is the same, card for
+card, as the satellite's compiler without OPT. It follows that compiler
+part for part:
+
+* a tokenizer that reads the cards as they come, with three characters of
+  lookahead;
+* a recursive-descent parser that builds the tree in the heap;
+* a pass over the declarations;
+* a code generator that punches as it goes. It counts each procedure's
+  frame first, so that no card has to be held back.
+
+The cards are the program followed by `duwamish/lib/runtime.sal`, which
+the satellite's compiler includes by itself. It accepts all of SALISH
+except `get` (the modules come on the cards instead) and `inline`
+procedures. BlooP programs compile, but are not certified.
+
+```
+//JOB SELF
+//SALISH FROM=programs/selfhost/salish.sal
+//EXEC
+//DATA FROM=myprogram.sal
+//DATA FROM=duwamish/lib/runtime.sal
+//TRIAD PUNCHED
+//EXEC
+```
+
+`jobs/bootstrap.job` has it compile itself. The deck it punches is
+identical to the satellite's own compilation, so the next generation is
+the same program: see [DEMONSTRATOR.md](DEMONSTRATOR.md).

@@ -1,0 +1,238 @@
+-- =====================================================================
+--  FIVE-YEAR PLAN: two of I. J. Good's proposals for chess programs,
+--  tried against Shannon's plain plan on the Los Alamos board.
+--
+--  Good's "A Five-Year Plan for Automatic Chess" (Machine Intelligence 2,
+--  1968) did not want a program to look the same number of moves down
+--  every line, as Shannon's type-A program does.  A strong player
+--  follows the lines that are likely to be played, and follows "agitated"
+--  positions -- captures, checks -- until they are quiescent.  Good also
+--  argued that the value of a position is a probability of winning,
+--  judged by a fallible player, and not a certainty that both sides will
+--  find the best move.
+--
+--  This program is our reading of two of those proposals, not a
+--  reconstruction of anything Good wrote as code:
+--
+--    PLAUSIBILITY.  Before looking ahead, every move gets a weight for how
+--    likely a player is to choose it: captures (by the value taken),
+--    promotions, checks and moves to the centre weigh more.  A line is
+--    followed while the product of its moves' probabilities -- the chance
+--    that the game will really go that way -- stays above a threshold.
+--    Likely lines are searched deeply and unlikely ones shallowly.  A side
+--    in check is agitated, and its replies divide the probability less.
+--
+--    FALLIBLE BACKING UP.  Where the opponent replies to the move being
+--    considered, the backed-up value is a mixture: three parts the minimax
+--    value (the opponent's best reply) and one part the average over all
+--    its replies, weighted by their plausibility.  It prefers moves that
+--    give the opponent many ways to go wrong.  (Deeper down, where every
+--    reply would have to be examined to average them, it backs up by
+--    minimax, and alpha-beta can prune.)
+--
+--  The match: from three openings (two random moves each side), each
+--  pair of players plays a game with each colour.  Shannon's player
+--  searches a fixed depth with alpha-beta and captures-only quiescence.
+--  Good's players get about the same number of positions per move, so
+--  the match compares how the thinking is spent, not how much.
+-- =====================================================================
+
+get "chessbase"
+
+const PSCALE = 1000000        -- probabilities in millionths
+const GAMEPLIES = 80           -- adjudicate on material after this many
+const OPENINGS = 3
+const ABDEPTH = 2              -- Shannon's player: two plies, then captures
+const PLIMIT2 = 40000          -- Good's: follow a line while p >= this, to
+const PLIMIT3 = 150000         -- start with; then adjusted, move by move, so
+                               -- the players think about as much as Shannon's
+
+global mw[MAXMV]               -- plausibility weight of each move on the list
+global cutoff[20]              -- lines Good's search left, by ply
+global seed := 1968
+global plimit := PLIMIT2
+global plim := table(0, 0, PLIMIT2, PLIMIT3)
+global blend := false          -- fallible backing up at the opponent's nodes
+global rootcol := 1
+global ptotal[4], pmoves[4]
+global pname := table("", "Shannon", "Good (plausibility)",
+                      "Good (plausibility + fallible)")
+
+proc rnd(n)
+begin
+  seed := (seed * 3125 + 49) mod 1000003
+  return seed mod n
+end
+
+-- how likely is a player to choose move i, before any lookahead?
+proc plausibility(i, col)
+begin
+  var w := 10, r, c
+  if mcap[i] <> 0 then w := w + value[kind(mcap[i])] / 5
+  if mprom[i] > 0 then w := w + 120
+  r := rowof(mto[i])
+  c := colof(mto[i])
+  if r >= 1 and r <= 4 and c >= 1 and c <= 4 then w := w + 4
+  make(i)
+  if in_check(-col) then w := w + 30
+  unmake(i)
+  return w
+end
+
+-- Good's search: follow each line while it is likely to be played
+proc gsearch(col, prob, lo, hi, root, ply)
+begin
+  var start := mtop, n, v, best := -INF, total := 0, p, check, mean := 0,
+      wsum := 0, opp
+  if not root and prob < plimit then begin
+    cutoff[min(ply, 19)] := cutoff[min(ply, 19)] + 1
+    return quiesce(col, lo, hi)
+  end
+  nodes := nodes + 1
+  n := gen(col, false)
+  order(start, n)
+  for i := start to start + n - 1 do begin
+    if kind(mcap[i]) = KING then begin mtop := start; return MATE end
+    mw[i] := plausibility(i, col)
+    total := total + mw[i]
+  end
+  check := in_check(col)
+  opp := blend and ply = 1        -- the opponent's replies to our move
+  for i := start to start + n - 1 do begin
+    make(i)
+    -- an illegal move: at the root, and where replies are averaged, it is
+    -- skipped; elsewhere the king's capture on the next ply scores it
+    if (root or opp) and in_check(col) then v := -INF
+    else begin
+      p := prob / total * mw[i]
+      if check then p := prob - prob / 4           -- agitated: few real choices
+      v := -gsearch(-col, p, (opp -> -INF, -hi), (opp -> INF, -lo), false,
+                    ply + 1)
+      if opp then begin mean := mean + v * mw[i]; wsum := wsum + mw[i] end
+    end
+    unmake(i)
+    if v > best then begin
+      best := v
+      if root then bestmove := i
+    end
+    if not opp then begin
+      if v > lo then lo := v
+      if lo >= hi then break
+    end
+  end
+  mtop := start
+  if best <= -MATE + 1000 and best > -INF then best := best + 1
+  -- the opponent is fallible: mix in the plausible average of its replies
+  if opp and wsum > 0 and best > -MATE + 1000 and best < MATE - 1000 then
+    best := (3 * best + mean / wsum) / 4
+  return best
+end
+
+-- one move for player k (1 Shannon, 2 Good, 3 Good + fallible)
+proc think(k, col)
+begin
+  nodes := 0
+  mtop := 0
+  rootcol := col
+  if k = 1 then search(col, ABDEPTH, -INF, INF, true)
+  else begin
+    blend := k = 3
+    plimit := plim[k]
+    gsearch(col, PSCALE, -INF, INF, true, 0)
+    -- the same thinking time: steer this player's average towards Shannon's
+    if ptotal[k] + nodes > (pmoves[k] + 1) * (pmoves[1] -> ptotal[1] / pmoves[1], 480)
+    then plim[k] := plim[k] + plim[k] / 5
+    else plim[k] := max(1000, plim[k] - plim[k] / 6)
+  end
+  ptotal[k] := ptotal[k] + nodes
+  pmoves[k] := pmoves[k] + 1
+end
+
+-- a random legal move, for the openings
+proc random_move(col)
+begin
+  var start := mtop, n, i
+  n := gen(col, false)
+  repeat
+    i := start + rnd(n)
+    make(i)
+    if in_check(col) then begin unmake(i); i := -1 end
+  until i >= 0
+  mtop := start
+end
+
+-- play one game; returns +1 if White wins, -1 if Black, 0 a draw
+proc play(white, black, opening)
+begin
+  var col := 1, v
+  setup()
+  seed := 1968 + 17 * opening
+  for j := 1 to 4 do begin random_move(col); col := -col end
+  for ply := 1 to GAMEPLIES do begin
+    if not has_legal(col) then return in_check(col) -> -col, 0
+    think(col > 0 -> white, black, col)
+    make(bestmove)
+    col := -col
+  end
+  v := evaluate(1)                        -- adjudicate on material
+  return v > 150 -> 1, v < -150 -> -1, 0
+end
+
+-- player a against player b: a game with each colour from each opening
+proc match(a, b)
+begin
+  var r, wins := 0, draws := 0, losses := 0
+  prints("   "); prints(pname[a]); prints("  v.  "); prints(pname[b]); newline()
+  for o := 1 to OPENINGS do
+    for c := 0 to 1 do begin
+      r := c = 0 -> play(a, b, o), -play(b, a, o)
+      prints("     opening "); print(o)
+      prints(c = 0 -> ", with White:  ", ", with Black:  ")
+      prints(r > 0 -> "won\n", r < 0 -> "lost\n", "drawn\n")
+      if r > 0 then wins := wins + 1
+      else if r < 0 then losses := losses + 1
+      else draws := draws + 1
+    end
+  prints("     result: "); print(wins); prints(" won, "); print(draws)
+  prints(" drawn, "); print(losses); prints(" lost;  score ")
+  printfix(10 * wins + 5 * draws, 1); prints(" of "); print(2 * OPENINGS); newline()
+  newline()
+  return 2 * wins + draws                -- in half points
+end
+
+proc main()
+begin
+  var s2, s3, n := 4 * OPENINGS
+  prints("FIVE-YEAR PLAN -- Good's proposals against Shannon's, on the Los Alamos board\n\n")
+  prints("   Shannon: every line ");
+  print(ABDEPTH); prints(" plies deep, then captures only; alpha-beta.\n")
+  prints("   Good: every line followed while its probability of being played\n")
+  prints("   stays above a threshold, then captures only.  The threshold is\n")
+  prints("   adjusted after every move so that Good's players search as many\n")
+  prints("   positions as Shannon's.\n\n")
+  s2 := match(2, 1)
+  s3 := match(3, 1)
+  prints("   positions searched per move:\n")
+  for k := 1 to 3 do begin
+    prints("     "); printsw(pname[k], 34)
+    printw(pmoves[k] -> ptotal[k] / pmoves[k], 0, 8)
+    prints("   ("); print(pmoves[k]); prints(" moves)\n")
+  end
+  newline()
+  prints("   Following plausible lines deep and implausible ones shallow ")
+  prints(s2 > n / 2 -> "did a\n   little better than",
+         s2 = n / 2 -> "did as\n   well as", "did\n   worse than")
+  prints(" looking the same depth everywhere.  Allowing\n")
+  prints("   for a fallible opponent did ")
+  prints(s3 > s2 -> "better still", s3 = s2 -> "no better", "worse")
+  prints(": ")
+  if s3 < s2 then prints("it chose moves that\n   invite mistakes, and a player that searches every reply does\n   not make them.  ")
+  else prints("the opponent does\n   err.  ")
+  prints("Six games are a small sample -- one game more or less\n")
+  prints("   moves a score by a sixth -- so these are hints, not verdicts.\n\n")
+  prints("   History's verdict came later.  Selective search was the hope of\n")
+  prints("   the 1960s (Greenblatt's MacHack VI pruned by plausibility too).  In\n")
+  prints("   1973 Slate and Atkin's Chess 4.0 went over to full width, and\n")
+  prints("   brute force, made faster by alpha-beta, won the decades after.\n")
+  return 0
+end

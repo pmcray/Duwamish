@@ -531,7 +531,7 @@ INTRINSICS = {
     "heapbase": 0, "stackptr": 0, "svc": 2, "codebase": 0,
     "catchpoint": 1, "throw": 2, "codeend": 0,
     "fadd": 2, "fsub": 2, "fmul": 2, "fdiv": 2, "float": 1, "fix": 1,
-    "fcmp": 2, "hasfpu": 0,
+    "fcmp": 2, "hasfpu": 0, "punch": 1,
 }
 
 
@@ -1567,6 +1567,9 @@ class Compiler:
         elif name == "ttyc":
             self.gen_expr(args[0], scope)
             self.emit("SVC  3")
+        elif name == "punch":
+            self.gen_expr(args[0], scope)
+            self.emit("SVC  5")
         elif name == "svc":
             n = self.fold(args[0], scope)
             if n is None:

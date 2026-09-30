@@ -11,7 +11,16 @@ Two implementations of one architecture, as IBM did with System/360:
             directly; any opcode whose microcode has been rewritten or
             invented falls back to the micro-engine, so the two models
             always compute the same results.  Timing is nominal: one
-            instruction per core cycle.
+            instruction per core cycle (interleaved core lets an operand
+            fetch overlap the next instruction fetch).
+
+            The look-ahead unit (optional, Model 90 only) adds a
+            STACK_WORDS-word instruction stack after the CDC 6600: the
+            words most recently fetched, contiguous.  An instruction found
+            there needs no core fetch, so one that makes no data reference
+            to core runs at the speed of the logic, one 200 ns cycle.  A
+            jump inside the stack stays in it; a jump outside, or a store
+            into it, empties it.  A loop that fits runs from the stack.
 
 Core: 3^12 = 531,441 words, addressed -265,720 .. +265,720.  The negative
 half belongs to the Executive and is protected from user-mode programs.
@@ -30,6 +39,9 @@ MEM_OFF = MEM_MAX
 
 MEM_WAIT = 4           # extra micro-cycles per core reference
 FAST_CYCLES = 5        # nominal Model 90 cycles per instruction
+STACK_WORDS = 32       # the look-ahead unit's instruction stack (the
+                       # 6600's eight 60-bit words held up to 32 orders)
+LOGIC_CYCLES = 1       # an instruction from the stack with no core reference
 
 SUPERVISOR, USER = 1, -1
 
@@ -72,6 +84,9 @@ for _op, _name, _form, _ in isa.OPCODES:
                                         "JNN", "JNZ", "JNP", "J3", "CALL",
                                         "JSR")
 _ZERO_TALLY = [0] * MEM_SIZE
+# orders that reference core for data whatever their addressing mode:
+# ST, CALL, RET, PUSH, POP, SVC, IN, OUT
+_CORE_REF = frozenset((2, 28, 29, 30, 31, 33, 35, 36))
 
 
 class Trap(Exception):
@@ -87,10 +102,16 @@ class MachineCheck(Exception):
 
 class Machine:
     def __init__(self, model=30, microprogram=None, wcs_enabled=False,
-                 satellite=None, fpu=None):
+                 satellite=None, fpu=None, lookahead=False):
         if model not in (30, 90):
             raise ValueError("model must be 30 or 90")
+        if lookahead and model != 90:
+            raise ValueError("the look-ahead unit is a Model 90 feature")
         self.model = model
+        self.lookahead = lookahead
+        self.stack_lo = self.stack_hi = None    # the instruction stack
+        self.stack_hits = 0
+        self.stack_fetches = 0
         # the floating-point unit: standard on the Model 90, optional on 30
         self.fpu = (model == 90) if fpu is None else fpu
         self.mp = microprogram or microasm.default_microprogram()
@@ -123,6 +144,7 @@ class Machine:
         # peripherals
         self.tty = []
         self.printer = []
+        self.punch = []
         self.reader = []
         self.reader_pos = 0
         self.satellite = satellite
@@ -157,6 +179,7 @@ class Machine:
 
     def load_image(self, image):
         """image: dict or iterable of (address, word)."""
+        self.stack_lo = None
         items = image.items() if isinstance(image, dict) else image
         for a, w in items:
             self.poke(a, w)
@@ -196,6 +219,8 @@ class Machine:
             self.tty.append(v)
         elif dev == isa.DEV_PRINTER:
             self.printer.append(v)
+        elif dev == isa.DEV_PUNCH:
+            self.punch.append(v)
         elif dev == isa.DEV_TIMER:
             self.timer = v
         elif dev == isa.DEV_SATELLITE and self.satellite:
@@ -530,6 +555,7 @@ class Machine:
         off = MEM_OFF
         size = MEM_SIZE
         dcache = isa._decode_cache
+        lookahead = self.lookahead
         n = 0
         while n < max_instr and not self.halted:
             n += 1
@@ -559,9 +585,13 @@ class Machine:
                     ur[IR] = ur[MDR] = w
                     ur[MAR] = self.ipc
                     self.ir_f = f
+                    self.stack_lo = None
                     self._micro_instruction()
                     continue
-                self.clock += FAST_CYCLES
+                if lookahead:
+                    self.clock += self._stack_time(self.ipc, op, m)
+                else:
+                    self.clock += FAST_CYCLES
                 # ---- effective address / operand ----
                 if needs_ea[op]:
                     ea = addr + rf[x] if x else addr
@@ -595,6 +625,9 @@ class Machine:
                         mem[j] = rf[r]
                     else:
                         store(ea, rf[r])
+                    if lookahead and self.stack_lo is not None and \
+                            self.stack_lo <= ea <= self.stack_hi:
+                        self.stack_lo = None           # code was rewritten
                 elif op == 4:                                 # ADD
                     v = rf[r] + v
                     if v > WMAX or v < -WMAX:
@@ -736,6 +769,31 @@ class Machine:
         return n
 
     # ------------------------------------------------------------------
+    def _stack_time(self, pc, op, m):
+        """Cycles for one instruction on a Model 90 with the look-ahead
+        unit, and the instruction stack brought up to date."""
+        lo, hi = self.stack_lo, self.stack_hi
+        self.stack_fetches += 1
+        if lo is not None and lo <= pc <= hi:
+            self.stack_hits += 1
+            hit = True
+        else:
+            hit = False
+            if lo is not None and pc == hi + 1:       # the next word in line
+                hi = pc
+                if hi - lo >= STACK_WORDS:
+                    lo = hi - STACK_WORDS + 1
+            else:                                     # a jump away: start over
+                lo = hi = pc
+            self.stack_lo, self.stack_hi = lo, hi
+        if not hit:
+            return FAST_CYCLES
+        # from the stack: a core cycle only for a data reference
+        if op in _CORE_REF or (_NEEDS_EA[op] and
+                               (m == -1 or (m == 0 and _NEEDS_VAL[op]))):
+            return FAST_CYCLES
+        return LOGIC_CYCLES
+
     def run(self, max_cycles=None, max_instructions=None):
         """Run until HLT, a machine check, or a limit.  Returns a reason."""
         try:

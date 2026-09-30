@@ -14,6 +14,9 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
                                     file); LIST prints the TRIAD listing,
                                     OPT runs the optimising compiler
     //TRIAD [FROM=path] [LIST]      assemble TRIAD source
+    //TRIAD PUNCHED [LIST]          assemble the cards punched by the job's
+                                    last step (SVC 5), when this step runs:
+                                    a compiler's output becomes a program
     //EXEC [name]                   run the program just translated, or a
                                     catalogued program (e.g. TRILISP)
     //DATA [FROM=path]              the cards that follow (or a file) are
@@ -76,6 +79,14 @@ def catalogued(name, optimise=False):
     return _catalogue_cache[key]
 
 
+class PunchedDeck:
+    """The object deck a step will punch: assembled only when needed."""
+
+    def __init__(self, source, listing):
+        self.source = source        # the Step whose punched cards these are
+        self.listing = listing
+
+
 class Step:
     def __init__(self, job, kind, name):
         self.job = job
@@ -86,6 +97,7 @@ class Step:
         self.result = None
         self.out_start = 0
         self.messages = []
+        self.punched = ""
 
 
 class Job:
@@ -93,6 +105,7 @@ class Job:
         self.name = name
         self.time_limit = int(opts.get("TIME", "0"))
         self.steps = []
+        self.translations = []     # (source name, TRIAD text) from //SALISH
         self.log = []
         self.failed = False
 
@@ -116,8 +129,9 @@ def parse_control(card):
 class Satellite:
     def __init__(self, decks, model=30, wcs=False, listing=False,
                  out=None, base_dir=None, trace=False, fpu=None,
-                 optimise=False):
+                 optimise=False, lookahead=False):
         self.model = model
+        self.lookahead = lookahead  # the Model 90's look-ahead unit
         self.optimise = optimise    # compile every SALISH step with OPT
         self.wcs = wcs
         self.fpu = (model == 90) if fpu is None else fpu
@@ -177,6 +191,12 @@ class Satellite:
                 continue
             try:
                 if verb in ("SALISH", "TRIAD"):
+                    if verb == "TRIAD" and "PUNCHED" in args:
+                        if not job.steps:
+                            raise JobError("//TRIAD PUNCHED before any //EXEC")
+                        pending_obj = PunchedDeck(job.steps[-1], "LIST" in args
+                                                  or self.listing)
+                        continue
                     if "FROM" in opts:
                         path = self.resolve(opts["FROM"], deck_dir)
                         with open(path) as f:
@@ -191,6 +211,7 @@ class Satellite:
                         o = "OPT" in args or self.optimise
                         pending_obj, asm, comp = translate_salish(
                             src, path, optimise=o)
+                        job.translations.append((sname, asm))
                         msg = (f"SALISH{'/O' if o else ''}: {sname}: "
                                f"{len(pending_obj.words)}"
                                f" words, {len(comp.procs)} procedures")
@@ -258,6 +279,9 @@ class Satellite:
             self.responses = [-1]
             return
         job, step = self.queue.pop(0)
+        if isinstance(step.obj, PunchedDeck) and not self.assemble_punched(
+                job, step):
+            return self.start_next(m)
         self.cur = (job, step)
         mem = m.mem
         for i in range(mach.MEM_OFF, mach.MEM_SIZE):
@@ -267,7 +291,9 @@ class Satellite:
         m.reader_pos = 0
         m.tally_clear()
         step.out_start = len(m.printer)
+        step.punch_start = len(m.punch)
         step.i0 = m.icount
+        step.s0 = (m.stack_hits, m.stack_fetches)
         step.t0 = time.time()
         entry = step.obj.entry if step.obj.entry is not None else USER_ORIGIN
         self.responses = [entry, USER_STACK, job.time_limit]
@@ -277,12 +303,51 @@ class Satellite:
         step.result = (how, value, where, cycles, m.icount - step.i0,
                        time.time() - step.t0)
         step.output = m.text(m.printer[step.out_start:])
+        step.punched = m.text(m.punch[step.punch_start:])
+        step.stack = (m.stack_hits - step.s0[0], m.stack_fetches - step.s0[1])
         self.cur = None
+
+    def assemble_punched(self, job, step):
+        """Assemble the deck an earlier step punched; False if it cannot."""
+        deck = step.obj
+        src = deck.source
+        k = job.steps.index(src) + 1
+        text = src.punched
+        cards = text.count("\n")
+        if src.result is None or not text:
+            step.messages.append(f"TRIAD: step {k} punched no cards; "
+                                 "nothing to run")
+            step.obj = None
+            return False
+        try:
+            obj = triad.assemble(text, origin=USER_ORIGIN)
+        except triad.AsmError as e:
+            step.messages.append(f"*** TRIAD FAILED on the deck punched by "
+                                 f"step {k}: {e}")
+            step.obj = None
+            return False
+        msg = (f"TRIAD: the deck punched by step {k}: {cards:,} cards, "
+               f"{len(obj.words):,} words")
+        for j, other in enumerate(job.steps[:k - 1]):
+            if other.punched == text:
+                msg += f"; identical, card for card, to the deck of step {j + 1}"
+                break
+        for name, asm in job.translations:
+            if asm == text:
+                msg += (f"; identical, card for card, to the satellite's own "
+                        f"compilation of {name}")
+                break
+        step.messages.append(msg)
+        if deck.listing:
+            step.messages.append(obj.listing_text())
+        step.obj = obj
+        return True
 
     # ------------------------------------------------------------------
     def run(self):
         m = mach.Machine(model=self.model, wcs_enabled=self.wcs,
-                         satellite=self, fpu=self.fpu)
+                         satellite=self, fpu=self.fpu,
+                         lookahead=self.lookahead)
         self.machine = m
         ex = assemble_executive()
         self.executive = ex
@@ -297,6 +362,7 @@ class Satellite:
         line = "=" * 72
         w(f"{line}\nDUWAMISH MODEL {self.model}"
           f"{'  WITH FLOATING-POINT UNIT' if self.fpu else ''}"
+          f"{'  AND LOOK-AHEAD UNIT' if self.lookahead else ''}"
           f"{'  (WRITABLE CONTROL STORE ENABLED)' if self.wcs else ''}"
           f"   -- satellite job log\n")
         tty = m.text(m.tty)
@@ -308,6 +374,8 @@ class Satellite:
                 w(f"  {msg}\n")
             for step in job.steps:
                 w(f"{'-' * 72}\nSTEP //EXEC {step.name}\n{'-' * 72}\n")
+                for msg in step.messages:
+                    w(f"  {msg}\n")
                 if step.result is None:
                     w("  (not run)\n")
                     continue
@@ -325,6 +393,13 @@ class Satellite:
                 w(f"END OF STEP: {status}.  {instrs:,} instructions, "
                   f"{cycles:,} cycles = {us / 1000:,.3f} ms of Duwamish "
                   f"time ({secs:.1f} s simulated)\n")
+                if step.punched:
+                    w(f"  punched {step.punched.count(chr(10)):,} cards\n")
+                hits, fetches = getattr(step, "stack", (0, 0))
+                if self.lookahead and fetches:
+                    w(f"  instruction stack: {hits:,} of {fetches:,} "
+                      f"instructions ({100 * hits / fetches:.0f}%) came from "
+                      f"the stack, not from core\n")
         w(f"{line}\n")
         if reason != "halt":
             w(f"MACHINE STOPPED: {reason} "
@@ -342,7 +417,8 @@ def run_decks(paths, **kw):
 
 
 def run_program(path, data=None, model=30, wcs=False, listing=False,
-                time_limit=0, out=None, fpu=None, optimise=False):
+                time_limit=0, out=None, fpu=None, optimise=False,
+                lookahead=False):
     """Convenience: wrap one SALISH/TRIAD source file into a job."""
     kind = "TRIAD" if path.endswith(".tri") else "SALISH"
     name = re.sub(r"\W", "", os.path.splitext(os.path.basename(path))[0])
@@ -353,6 +429,6 @@ def run_program(path, data=None, model=30, wcs=False, listing=False,
     if data:
         deck.append(f"//DATA FROM={os.path.abspath(data)}")
     sat = Satellite([("\n".join(deck), path)], model=model, wcs=wcs, out=out,
-                    fpu=fpu, optimise=optimise)
+                    fpu=fpu, optimise=optimise, lookahead=lookahead)
     sat.run()
     return sat

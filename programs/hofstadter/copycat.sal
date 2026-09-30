@@ -1,0 +1,577 @@
+-- =====================================================================
+--  COPYCAT: a cut-down version of Hofstadter and Mitchell's program for
+--  letter-string analogies (Mitchell & Hofstadter 1990; Hofstadter,
+--  "Fluid Concepts and Creative Analogies", 1995).
+--
+--      "If abc changes to abd, what does ijk change to?"
+--
+--  Hofstadter's claim is that perception and analogy are the same thing,
+--  and that neither is a search through a space fixed in advance.  Many
+--  small, independent agents (codelets) each do a little: notice that two
+--  letters are successors, group jj together, describe the change as
+--  "the rightmost letter became its successor", decide that this string's
+--  rightmost letter corresponds to that one's leftmost.  Which codelets
+--  run is random, weighted by urgency.  Concepts in a network (the
+--  slipnet) grow active as they are used, and the more active and the
+--  deeper a concept, the more it colours what is seen.  A concept may
+--  SLIP into a neighbour -- rightmost into leftmost, successor into
+--  predecessor, letter into group -- when the situation presses it to.
+--  A TEMPERATURE measures how incoherent the current understanding is:
+--  high, and choices are nearly random; low, and they follow the
+--  strongest structures.  An answer the program cannot build (the
+--  successor of z) is a SNAG: the temperature jumps, structures are
+--  broken, and concepts that were idle -- first and last, opposite --
+--  are woken up.
+--
+--  This version keeps those mechanisms and cuts everything else down:
+--  one changed letter in the source, sameness groups only, a slipnet of
+--  eleven concepts.  It is our reconstruction, not Mitchell's code.  Run
+--  on the same problem many times it gives a distribution of answers, and
+--  the average final temperature of each: low means the program found it
+--  coherent.  That pair of numbers is how Mitchell reported Copycat.
+-- =====================================================================
+
+const NCH = 12                 -- letters per string, at most
+const RUNS = 30                -- runs per problem
+const MAXSTEPS = 2500          -- codelets per run before giving up
+const RACK = 60                -- coderack capacity
+
+-- the slipnet: concepts, and their conceptual depths
+const SAME = 1
+const SUCC = 2
+const PRED = 3
+const LEFTMOST = 4
+const RIGHTMOST = 5
+const LETTERCAT = 6            -- "the letter c", literally
+const GROUP = 7
+const LENGTH = 8
+const OPPOSITE = 9
+const FIRSTLAST = 10           -- a is first, z is last
+const LITERAL = 11             -- "change it to d", literally
+global depth := table(0, 80, 60, 60, 40, 40, 20, 80, 90, 90, 90, 20)
+global cname := table("", "sameness", "successor", "predecessor",
+                      "leftmost", "rightmost", "letter", "group", "length",
+                      "opposite", "first/last", "literal")
+global act[12]
+
+-- codelet types
+const BONDSCOUT = 1
+const GROUPSCOUT = 2
+const RULESCOUT = 3
+const CORRSCOUT = 4
+const BUILDER = 5
+const BREAKER = 6
+
+-- the workspace: strings 0 (initial), 1 (modified), 2 (target)
+global ch[36], slen[3]
+global bond[36], bstr[36]      -- bond from letter i to i+1, and its strength
+global gid[36]                 -- the group a letter belongs to (0: none)
+global glo[40], ghi[40], gstr[40], ngroups
+-- target objects: groups, or letters on their own
+global olo[NCH], ohi[NCH], nobj
+-- the rule, from initial to modified
+global r_have, r_desc, r_letter, r_change, r_to, r_str
+-- the correspondence, initial -> target, and the slippages it makes
+global c_have, c_obj, c_side, c_pos, c_chg, c_grp, c_len, c_str
+global temp, clamp, snags, steps, done
+global out[NCH + 2], outlen
+-- the coderack
+global cr_type[RACK], cr_arg[RACK], cr_urg[RACK], ncr
+global cw[16], cv[16], cs[16]
+-- the answers found, over all runs of one problem
+global ans[400], anslen[30], anscount[30], anstemp[30], nans
+global seed := 1995
+global codelets := 0
+
+proc rnd(n)
+begin
+  seed := (seed * 3125 + 49) mod 1000003
+  return seed mod n
+end
+
+proc chance(p) = rnd(100) < p
+
+-- choose one of n weighted alternatives (cw[0..n-1]); the colder the
+-- workspace, the more the heaviest weights dominate
+proc choose(n)
+begin
+  var k := 1 + (100 - temp) / 25, tot := 0, x, v, r
+  for i := 0 to n - 1 do begin
+    v := max(cw[i], 0)
+    x := v
+    for j := 2 to k do x := x * v / 50
+    cw[i] := max(x, v > 0 -> 1, 0)
+    tot := tot + cw[i]
+  end
+  if tot <= 0 then return rnd(n)
+  r := rnd(tot)
+  for i := 0 to n - 1 do begin
+    if r < cw[i] then return i
+    r := r - cw[i]
+  end
+  return n - 1
+end
+
+proc activate(c, amount)
+begin
+  act[c] := min(100, act[c] + amount)
+end
+
+proc post(type, arg, urgency)
+begin
+  if ncr < RACK then begin
+    cr_type[ncr] := type
+    cr_arg[ncr] := arg
+    cr_urg[ncr] := urgency
+    ncr := ncr + 1
+  end
+end
+
+inline proc letter_at(s, i) = ch[s * NCH + i]
+
+-- ---------------------------------------------------------------------
+-- perceiving the strings
+-- ---------------------------------------------------------------------
+proc relation(a, b) = a = b -> SAME, b = a + 1 -> SUCC, b = a - 1 -> PRED, 0
+
+-- a bond scout notices a relation between two neighbouring letters
+proc bond_scout(s)
+begin
+  var i, k, cat, st
+  if slen[s] < 2 then return 0
+  i := rnd(slen[s] - 1)
+  k := s * NCH + i
+  if bond[k] <> 0 then return 0
+  cat := relation(ch[k], ch[k + 1])
+  if cat = 0 then return 0
+  st := depth[cat] + act[cat] / 5
+  if i > 0 and bond[k - 1] = cat then st := st + 15
+  if i < slen[s] - 2 and bond[k + 1] = cat then st := st + 15
+  st := min(st, 100)
+  if chance(st + (50 - st) * temp / 100) then begin
+    bond[k] := cat
+    bstr[k] := st
+    activate(cat, 20)
+    if cat = SAME then post(GROUPSCOUT, s, 30)
+  end
+end
+
+-- a group scout gathers a run of letters bonded by sameness
+proc group_scout(s)
+begin
+  var i, k, lo, hi, st
+  i := rnd(slen[s] - 1)
+  k := s * NCH
+  if bond[k + i] <> SAME or gid[k + i] <> 0 then return 0
+  -- the scout takes in the whole run of alike letters, bonding as it goes
+  lo := i
+  while lo > 0 and ch[k + lo - 1] = ch[k + i] do lo := lo - 1
+  hi := i + 1
+  while hi < slen[s] - 1 and ch[k + hi + 1] = ch[k + i] do hi := hi + 1
+  for j := lo to hi do if gid[k + j] <> 0 then return 0
+  st := min(100, 60 + 10 * (hi - lo) + act[GROUP] / 4 + act[SAME] / 10)
+  if chance(st + (50 - st) * temp / 100) then begin
+    ngroups := ngroups + 1
+    glo[ngroups] := lo
+    ghi[ngroups] := hi
+    gstr[ngroups] := st
+    for j := lo to hi do gid[k + j] := ngroups
+    for j := lo to hi - 1 do
+      if bond[k + j] = 0 then begin bond[k + j] := SAME; bstr[k + j] := st end
+    activate(GROUP, 25)
+  end
+end
+
+-- the target seen as objects: each group, and each letter left over
+proc target_objects()
+begin
+  var i := 0, g
+  nobj := 0
+  while i < slen[2] do begin
+    g := gid[2 * NCH + i]
+    olo[nobj] := i
+    ohi[nobj] := g <> 0 -> ghi[g], i
+    i := ohi[nobj] + 1
+    nobj := nobj + 1
+  end
+end
+
+-- which way does string s run?  successor, predecessor, or neither
+proc direction(s)
+begin
+  var up := 0, down := 0, r, a, b, lo
+  if s = 2 then begin
+    target_objects()
+    for k := 0 to nobj - 2 do begin
+      r := relation(letter_at(2, olo[k]), letter_at(2, olo[k + 1]))
+      if r = SUCC then up := up + 1
+      if r = PRED then down := down + 1
+    end
+  end else
+    for i := 0 to slen[s] - 2 do begin
+      if bond[s * NCH + i] = SUCC then up := up + 1
+      if bond[s * NCH + i] = PRED then down := down + 1
+    end
+  return up > down -> SUCC, down > up -> PRED, 0
+end
+
+-- ---------------------------------------------------------------------
+-- describing the change, and mapping it across
+-- ---------------------------------------------------------------------
+proc rule_scout()
+begin
+  var p := -1, n := 0, d, c, a, b, st, boost
+  for i := 0 to slen[0] - 1 do
+    if letter_at(0, i) <> letter_at(1, i) then p := i
+  if p < 0 then return 0
+  boost := min(50, 25 * snags)          -- a snag makes the literal attractive
+  if p = slen[0] - 1 then begin
+    cw[n] := 60 + act[RIGHTMOST] / 3; cv[n] := RIGHTMOST; n := n + 1
+  end
+  if p = 0 then begin
+    cw[n] := 60 + act[LEFTMOST] / 3; cv[n] := LEFTMOST; n := n + 1
+  end
+  cw[n] := 12 + boost; cv[n] := LETTERCAT; n := n + 1
+  d := cv[choose(n)]
+  a := letter_at(0, p)
+  b := letter_at(1, p)
+  n := 0
+  if b = a + 1 then begin cw[n] := 70 + act[SUCC] / 3; cv[n] := SUCC; n := n + 1 end
+  if b = a - 1 then begin cw[n] := 70 + act[PRED] / 3; cv[n] := PRED; n := n + 1 end
+  cw[n] := 12 + boost; cv[n] := LITERAL; n := n + 1
+  c := cv[choose(n)]
+  st := min(100, (depth[d] + depth[c]) / 2 + 30)
+  if r_have and st < r_str and chance(70) then return 0
+  if chance(st + (50 - st) * temp / 100) then begin
+    r_have := true
+    r_desc := d
+    r_letter := a
+    r_change := c
+    r_to := b
+    r_str := st
+    activate(d, 30)
+    activate(c, 30)
+    post(CORRSCOUT, 0, 40)
+  end
+end
+
+-- a correspondence maps the changed letter of the initial string to an
+-- object in the target, with whatever slippages that takes
+proc corr_scout()
+begin
+  var n := 0, k, dI, dT, opposite, pick, end0, end1, pos, chg, ok, st, lensucc
+  if not r_have then begin post(RULESCOUT, 0, 30); return 0 end
+  target_objects()
+  dI := direction(0)
+  dT := direction(2)
+  opposite := dI <> 0 and dT <> 0 and dI <> dT
+  if opposite then activate(OPPOSITE, 20)
+  if r_desc = LETTERCAT then begin
+    -- literally the letter that changed: find it in the target
+    for j := 0 to nobj - 1 do
+      if letter_at(2, olo[j]) = r_letter and n < 16 then begin
+        cw[n] := 60; cv[n] := j; cs[n] := 0; n := n + 1
+      end
+    if n = 0 then begin
+      -- nothing to map it to: this description is useless here
+      r_have := false
+      clamp := max(clamp, 60)
+      return 0
+    end
+    pick := choose(n)
+    k := cv[pick]
+    pos := false
+    chg := false
+  end else begin
+    end0 := r_desc = RIGHTMOST -> nobj - 1, 0
+    end1 := nobj - 1 - end0
+    -- the four ways to read it: which slippages to make
+    --   0 none; 1 position only; 2 change only; 3 both
+    if opposite then begin
+      -- a string that runs the other way: slip one of the two, but not
+      -- both (kji: lji slips the position, kjh the change)
+      cw[0] := 4; cw[1] := 45 + act[OPPOSITE] / 5; cw[2] := 45 + act[OPPOSITE] / 5
+      cw[3] := 3
+    end else begin
+      cw[0] := 80; cw[1] := 3 + act[OPPOSITE] / 4; cw[2] := 3 + act[OPPOSITE] / 5
+      -- the mirror (a is first, z is last), which each snag makes likelier
+      cw[3] := 1 + act[FIRSTLAST] / 16 + 2 * snags
+    end
+    pick := choose(4)
+    pos := pick = 1 or pick = 3
+    chg := pick = 2 or pick = 3
+    k := pos -> end1, end0
+  end
+  -- coherence: how well the slippages hang together
+  ok := (opposite and (pos <> chg)) or (not opposite and not pos and not chg) or
+        (pos and chg and act[FIRSTLAST] > 40)
+  st := ok -> 85, 40
+  -- a slippage between deep concepts makes a strong correspondence
+  if ok and pos and chg then st := (depth[OPPOSITE] + depth[FIRSTLAST]) / 2 + 10
+  c_grp := ohi[k] > olo[k]                    -- a letter slips to a group
+  if c_grp then st := st - 5
+  -- groups whose lengths run 1, 2, 3 ...: the successor may slip to length
+  lensucc := nobj >= 3
+  for j := 0 to nobj - 2 do
+    if ohi[j + 1] - olo[j + 1] <> ohi[j] - olo[j] + 1 then lensucc := false
+  c_len := false
+  if lensucc then activate(LENGTH, 10)
+  if lensucc and c_grp and (r_change = SUCC or r_change = PRED) and
+     chance(5 + act[LENGTH] / 4) then begin
+    c_len := true
+    st := min(100, st + 10)
+  end
+  if c_have and st < c_str and chance(70) then return 0
+  if chance(st + (50 - st) * temp / 100) then begin
+    c_have := true
+    -- remember the end it maps to (or, for a literal letter, the letter):
+    -- groups may form or break before the answer is built
+    c_side := r_desc = LETTERCAT -> 0, k = 0 -> -1, 1
+    c_obj := olo[k]
+    c_pos := pos
+    c_chg := chg
+    c_str := st
+    if pos then activate(LEFTMOST, 20)
+    if pos then activate(RIGHTMOST, 20)
+    post(BUILDER, 0, 15)
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- building the answer
+-- ---------------------------------------------------------------------
+proc snag(failed_letter)
+begin
+  snags := snags + 1
+  clamp := 100
+  if failed_letter = 1 or failed_letter = 26 then activate(FIRSTLAST, 100)
+  activate(OPPOSITE, 40)
+  c_have := false
+  r_have := false                       -- rethink the change itself
+  post(RULESCOUT, 0, 50)
+  post(CORRSCOUT, 0, 50)
+  return 0
+end
+
+proc builder()
+begin
+  var lo, hi, change, v, L
+  if not (r_have and c_have) then return 0
+  -- a warm workspace is not ready to answer
+  if not chance((100 - temp) * (100 - temp) / 100 * (100 - temp) / 100) then
+    return 0
+  target_objects()
+  if c_side <> 0 then c_obj := c_side < 0 -> 0, slen[2] - 1
+  for j := 0 to nobj - 1 do
+    if olo[j] <= c_obj and c_obj <= ohi[j] then begin lo := olo[j]; hi := ohi[j] end
+  change := r_change
+  if c_chg and change = SUCC then change := PRED
+  else if c_chg and change = PRED then change := SUCC
+  outlen := slen[2]
+  for i := 0 to outlen - 1 do out[i] := letter_at(2, i)
+  if change = LITERAL then begin
+    for i := lo to hi do out[i] := r_to
+  end else if c_len then begin
+    -- the group grows (or shrinks) by one
+    L := hi - lo + 1 + (change = SUCC -> 1, -1)
+    if L < 1 then return snag(0)
+    for i := outlen - 1 to hi + 1 by -1 do out[i + L - (hi - lo + 1)] := out[i]
+    for i := lo to lo + L - 1 do out[i] := letter_at(2, lo)
+    outlen := outlen + L - (hi - lo + 1)
+  end else
+    for i := lo to hi do begin
+      v := out[i] + (change = SUCC -> 1, -1)
+      if v < 1 or v > 26 then return snag(out[i])
+      out[i] := v
+    end
+  done := true
+end
+
+-- the breaker: in a hot workspace, knock down a structure at random
+proc breaker()
+begin
+  var k
+  if not chance(temp - 50) then return 0
+  -- a structure survives in proportion to its strength
+  if rnd(2) = 0 and ngroups > 0 then begin
+    k := 1 + rnd(ngroups)
+    if gid[2 * NCH + glo[k]] = k and not chance(gstr[k]) then
+      for j := glo[k] to ghi[k] do gid[2 * NCH + j] := 0
+  end else if c_have and not chance(c_str) then c_have := false
+end
+
+-- ---------------------------------------------------------------------
+-- the temperature: how incoherent the present understanding is
+-- ---------------------------------------------------------------------
+proc update_temperature()
+begin
+  var s := 0, n := 0, t, k
+  -- every relation not yet noticed, and every run of alike letters not
+  -- yet grouped, is an unhappy object: it counts, at strength zero
+  for x := 0 to 2 by 2 do
+    for i := 0 to slen[x] - 2 do begin
+      k := x * NCH + i
+      if bond[k] <> 0 then begin s := s + bstr[k]; n := n + 1 end
+      else if relation(ch[k], ch[k + 1]) <> 0 then n := n + 2
+      if x = 2 and ch[k] = ch[k + 1] and gid[k] = 0 then n := n + 3
+    end
+  for g := 1 to ngroups do
+    if gid[2 * NCH + glo[g]] = g then begin s := s + gstr[g]; n := n + 1 end
+  if r_have then begin s := s + 3 * r_str; n := n + 3 end
+  else begin n := n + 3 end
+  if c_have then begin s := s + 3 * c_str; n := n + 3 end
+  else begin n := n + 3 end
+  t := n > 0 -> 100 - s / n, 100
+  temp := max(t, clamp)
+  if clamp > 0 then clamp := clamp - 2
+end
+
+-- ---------------------------------------------------------------------
+-- one run: codelets until an answer is built
+-- ---------------------------------------------------------------------
+proc run_codelet()
+begin
+  var tot := 0, r, k, type, arg
+  for i := 0 to ncr - 1 do tot := tot + cr_urg[i]
+  r := rnd(max(tot, 1))
+  k := 0
+  while k < ncr - 1 and r >= cr_urg[k] do begin r := r - cr_urg[k]; k := k + 1 end
+  type := cr_type[k]
+  arg := cr_arg[k]
+  ncr := ncr - 1
+  cr_type[k] := cr_type[ncr]
+  cr_arg[k] := cr_arg[ncr]
+  cr_urg[k] := cr_urg[ncr]
+  codelets := codelets + 1
+  sign type - 3 of
+    - : if type = BONDSCOUT then bond_scout(arg) else group_scout(arg)
+    0 : rule_scout()
+    + : if type = CORRSCOUT then corr_scout()
+        else if type = BUILDER then builder()
+        else breaker()
+  end
+end
+
+proc run_once()
+begin
+  for i := 0 to 35 do begin bond[i] := 0; bstr[i] := 0; gid[i] := 0 end
+  for i := 1 to 11 do act[i] := 0
+  ngroups := 0
+  r_have := false
+  c_have := false
+  temp := 100
+  clamp := 0
+  snags := 0
+  done := false
+  ncr := 0
+  steps := 0
+  while not done and steps < MAXSTEPS do begin
+    steps := steps + 1
+    -- bottom-up codelets arrive all the time, whatever else is waiting
+    if steps mod 4 = 1 then begin
+      post(BONDSCOUT, 0, 20)
+      post(BONDSCOUT, 2, 20)
+      post(GROUPSCOUT, 2, 10 + act[SAME] / 2)
+      post(RULESCOUT, 0, r_have -> 5, 20)
+      post(CORRSCOUT, 0, c_have -> 5, 15)
+      post(BUILDER, 0, 3)
+      post(BREAKER, 0, temp / 10)
+    end
+    run_codelet()
+    if steps mod 10 = 0 then
+      for i := 1 to 11 do act[i] := act[i] - act[i] / 10
+    update_temperature()
+  end
+  return done
+end
+
+-- ---------------------------------------------------------------------
+-- problems and results
+-- ---------------------------------------------------------------------
+proc setstr(s, text)
+begin
+  slen[s] := text[0]
+  for i := 1 to text[0] do ch[s * NCH + i - 1] := text[i] - 'a' + 1
+end
+
+proc record()
+begin
+  var same
+  for a := 0 to nans - 1 do begin
+    same := anslen[a] = outlen
+    for i := 0 to outlen - 1 do
+      if same and ans[a * NCH + i] <> out[i] then same := false
+    if same then begin
+      anscount[a] := anscount[a] + 1
+      anstemp[a] := anstemp[a] + temp
+      return 0
+    end
+  end
+  if nans < 30 then begin
+    for i := 0 to outlen - 1 do ans[nans * NCH + i] := out[i]
+    anslen[nans] := outlen
+    anscount[nans] := 1
+    anstemp[nans] := temp
+    nans := nans + 1
+  end
+end
+
+proc printstr(s)
+begin
+  for i := 0 to slen[s] - 1 do putc('a' + letter_at(s, i) - 1)
+end
+
+proc problem(target)
+begin
+  var failed := 0, best, bi, total := 0
+  setstr(0, "abc")
+  setstr(1, "abd")
+  setstr(2, target)
+  nans := 0
+  codelets := 0
+  prints("   abc -> abd,  "); printstr(2); prints(" -> ?\n")
+  for run := 1 to RUNS do
+    if run_once() then record() else failed := failed + 1
+  -- the answers, most frequent first
+  for a := 0 to nans - 1 do begin
+    best := -1
+    for b := 0 to nans - 1 do
+      if anscount[b] > best then begin best := anscount[b]; bi := b end
+    prints("      ")
+    for i := 0 to anslen[bi] - 1 do putc('a' + ans[bi * NCH + i] - 1)
+    spaces(10 - anslen[bi])
+    printw(anscount[bi], 3); prints("  ")
+    for i := 1 to anscount[bi] do putc('#')
+    spaces(RUNS - anscount[bi] + 2)
+    prints("temperature "); print(anstemp[bi] / anscount[bi])
+    newline()
+    anscount[bi] := -anscount[bi]
+  end
+  if failed > 0 then begin
+    prints("      (no answer in "); print(failed); prints(" runs)\n")
+  end
+  prints("      "); print(codelets / RUNS); prints(" codelets a run\n\n")
+end
+
+proc main()
+begin
+  prints("COPYCAT -- analogies among letter strings, after Hofstadter and Mitchell\n\n")
+  prints("   Each problem is run "); print(RUNS)
+  prints(" times.  For each answer: how often it was\n")
+  prints("   given, and the average temperature when it was -- low means the\n")
+  prints("   program found it coherent.\n\n")
+  problem("ijk")
+  problem("iijjkk")
+  problem("kji")
+  problem("mrrjjj")
+  problem("xyz")
+  prints("   xyz is the famous one.  The rule says: replace the rightmost letter\n")
+  prints("   by its successor, and z has none.  The snag heats the workspace and\n")
+  prints("   wakes the idea that a is first and z is last.  Seeing abc and xyz as\n")
+  prints("   mirror images -- rightmost slips to leftmost, successor to\n")
+  prints("   predecessor -- gives wyz.  It is found less often than the literal\n")
+  prints("   xyd, but at a lower temperature: the program itself judges it the\n")
+  prints("   more coherent answer.  So, in mrrjjj, does mrrjjjj, which sees the\n")
+  prints("   lengths 1, 2, 3 as a successor sequence.\n")
+  return 0
+end

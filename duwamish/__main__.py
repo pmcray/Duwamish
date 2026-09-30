@@ -10,7 +10,8 @@
 Options for run/go:  --model 30|90   --wcs (enable the writable control
 store key)   --fpu / --no-fpu (fit or remove the floating-point unit;
 standard on the Model 90)   --opt (compile SALISH with the optimising
-compiler; also for compile)   --list (print listings)   --time N (cycle
+compiler; also for compile)   --lookahead (fit the Model 90's
+look-ahead unit and instruction stack)   --list (print listings)   --time N (cycle
 limit, go only)
 """
 
@@ -36,6 +37,7 @@ def main(argv=None):
         p.add_argument("--list", action="store_true")
         p.add_argument("--fpu", dest="fpu", action="store_true", default=None)
         p.add_argument("--no-fpu", dest="fpu", action="store_false")
+        p.add_argument("--lookahead", action="store_true")
     c = sub.add_parser("compile")
     c.add_argument("file")
     for p in (r, g, c):
@@ -49,12 +51,13 @@ def main(argv=None):
     if args.cmd == "run":
         satellite.run_decks(args.decks, model=args.model, wcs=args.wcs,
                             listing=args.list, fpu=args.fpu,
-                            optimise=args.opt)
+                            optimise=args.opt, lookahead=args.lookahead)
     elif args.cmd == "go":
         satellite.run_program(args.file, data=args.data, model=args.model,
                               wcs=args.wcs, listing=args.list,
                               time_limit=args.time, fpu=args.fpu,
-                              optimise=args.opt)
+                              optimise=args.opt,
+                              lookahead=args.lookahead)
     elif args.cmd == "compile":
         with open(args.file) as f:
             asm, comp = salish.compile_source(f.read(), args.file,

@@ -139,6 +139,7 @@ DEV_PRINTER = 3   # line printer (out)
 DEV_TIMER = 4     # interval timer (out): trap when clock passes this value
 DEV_SATELLITE = 5 # channel to the satellite job-control computer (in)
 DEV_CONFIG = 6    # configuration switches (in): +1 if the FPU is fitted
+DEV_PUNCH = 7     # card punch (out): characters, 10 ends a card
 FP_OPS = range(47, 54)
 
 

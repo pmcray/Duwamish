@@ -169,7 +169,8 @@ at −60000. It:
    interval-timer limit;
 3. services supervisor calls (0 exit, 1 print a character, 2 read a
    character from the card reader, 3 console typewriter, 4 configuration:
-   +1 if the floating-point unit is fitted, −1 if not);
+   +1 if the floating-point unit is fitted, −1 if not, 5 punch a character
+   on the card punch);
 4. on EXIT or on a program check, prints a diagnostic, reports the outcome
    and the cycles used to the satellite, and loops.
 
@@ -182,8 +183,9 @@ Executive (`duwamish/satellite.py`):
 
 ```
 //JOB  name  TIME=cycles
-//SALISH [FROM=file] [LIST]      compile the cards that follow (or a file)
+//SALISH [FROM=file] [LIST] [OPT]  compile the cards that follow (or a file)
 //TRIAD  [FROM=file] [LIST]      assemble
+//TRIAD  PUNCHED [LIST]          assemble the cards the last step punched
 //EXEC   [TRILISP]               run what was just translated, or a catalogued program
 //DATA   [FROM=file]             cards for the program's card reader
 //END
@@ -192,6 +194,15 @@ Executive (`duwamish/satellite.py`):
 The translators run on the satellite. This is how the period built new
 machines: cross-translators ran on an established computer. TRILISP's reader
 and evaluator, however, run on the Duwamish itself.
+
+A program can punch cards (SVC 5; `punch(c)` in SALISH), and the satellite
+keeps each step's punched deck. `//TRIAD PUNCHED` assembles that deck when
+the step that needs it starts. So a compiler running on the Duwamish can
+hand its output to the next step, as the object decks of the period went
+from a compiler's punch to the reader. The satellite reports when a
+punched deck is identical to an earlier one, or to its own compilation of
+a program. `jobs/bootstrap.job` uses this to have the SALISH compiler,
+written in SALISH, compile itself (see [DEMONSTRATOR.md](DEMONSTRATOR.md)).
 
 ## 7. Microprogramming: two models, one architecture
 
@@ -257,6 +268,21 @@ FETCH. That one indirection is what lets the machine chain instructions
 together without fetching them (§8). The full microprogram is
 `duwamish/microcode/model30.dmc` (156 words); list it with
 `python -m duwamish micro`.
+
+### The look-ahead unit
+
+A second option for the Model 90 (`--lookahead`), after the CDC 6600, adds
+an **instruction stack**: the 32 words most recently fetched, contiguous.
+The 6600's eight 60-bit words held up to 32 short instructions. An
+instruction found in the stack needs no core fetch. So one that makes no
+data reference to core (a register or immediate order, a jump, a compare)
+runs at the speed of the logic: one 200 ns cycle instead of a 1 µs core
+cycle. An order that reads or writes core still takes a core cycle. A
+jump inside the stack stays in it; a jump outside, or a store into it,
+empties it. A loop that fits in 32 words therefore runs from the stack.
+The unit changes only timing. A test runs random programs with and
+without it and compares every register and word. The satellite reports
+what fraction of instructions came from the stack.
 
 ### The floating-point unit
 
@@ -336,6 +362,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | Executive | resident monitor | `duwamish/executive.tri` |
 | SALISH | BCPL-like systems language, three-valued logic, BlooP certification | [SALISH.md](SALISH.md) |
 | SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
+| SALISH/S | the SALISH compiler written in SALISH; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compiler | `programs/selfhost/salish.sal` |
 | TRILISP | LISP 1.5-style interpreter written in SALISH, ternary-tagged | [TRILISP.md](TRILISP.md) |
 
 ## 11. Speed
@@ -359,7 +386,7 @@ commonly published values from memory, not checked against sources here.
 
 | | Duwamish Model 30 | Duwamish Model 90 | CDC 7600 |
 |---|---|---|---|
-| Cycle | 200 ns micro-cycle (5 MHz) | 1 µs per instruction (nominal) | 27.5 ns (36.4 MHz) |
+| Cycle | 200 ns micro-cycle (5 MHz) | 1 µs per instruction (nominal); 200 ns from the look-ahead unit's stack | 27.5 ns (36.4 MHz) |
 | Organisation | microprogrammed, one micro-step at a time | hardwired, one instruction at a time | pipelined independent functional units, instruction buffer |
 | Register add | 10 cycles = 2.0 µs | 1 µs | about 2 clocks, overlapped |
 | Add from core | 14 cycles = 2.8 µs | 1 µs | overlapped |
@@ -420,6 +447,21 @@ identical.
 | 12 first difference | 100 | 0.0671 | 0.0027 | 0.0645 | 0.1652 | 0.0066 | 0.1503 |
 | **harmonic mean** | | **0.0604** | **0.0030** | **0.0970** | **0.1839** | **0.0078** | **0.2163** |
 
+**SALISH/O, Model 90 with the look-ahead unit** (`--model 90 --lookahead`)
+
+| kernel | flops | fixed | soft float | FPU |
+|---|---:|---:|---:|---:|
+| 1 hydro fragment | 500 | 0.2918 | 0.0076 | 0.3498 |
+| 3 inner product | 200 | 0.2816 | 0.0082 | 0.4452 |
+| 5 tri-diagonal elimination | 198 | 0.2251 | 0.0073 | 0.3187 |
+| 7 equation of state | 1,600 | 0.2537 | 0.0083 | 0.4406 |
+| 11 first sum | 99 | 0.2721 | 0.0097 | 0.2339 |
+| 12 first difference | 100 | 0.2721 | 0.0066 | 0.2339 |
+| **harmonic mean** | | **0.2641** | **0.0078** | **0.3147** |
+
+Plainly compiled code gains little from the stack: 0.065 → 0.075 with the
+FPU. Its loops are about 20 instructions, mostly core references.
+
 (MFLOPS; for fixed point, arithmetic operations per microsecond counted as
 the kernel's floating-point operations. Run `python -m duwamish run
 jobs/livermore.job --model 90`, or `--model 30 --fpu`.)
@@ -427,7 +469,8 @@ jobs/livermore.job --model 90`, or `--model 30 --fpu`.)
 ### What the numbers say
 
 * **Against the 7600's peak of 36 MFLOPS**, the best Duwamish (Model 90,
-  floating-point unit, SALISH/O) is about 170 times slower. The Model 30
+  floating-point unit, look-ahead unit, SALISH/O) is about 115 times
+  slower. Without the look-ahead unit it is about 170 times slower. The Model 30
   without the unit, compiled plainly, is about 1,500 times slower in
   fixed point and 15,000 times slower in software floating point.
   Sustained 7600 performance on real codes was typically quoted at a
@@ -471,9 +514,17 @@ jobs/livermore.job --model 90`, or `--model 30 --fpu`.)
   that lets programs invent their own instructions. The explosion
   demonstration's fused instructions are a small version of the 7600's
   instruction buffer. They save fetches, but not the arithmetic.
-* **What would close the gap next** is the hardware the 7600 had and the
-  Duwamish has not. It would overlap fetch with execution, as the IBM
-  360/91 and the 7600 did, and it would keep a loop in an instruction
-  buffer. It would also start a new floating-point operation before the
-  last one finishes. None of these touches what the machine is for, which
-  is the point of the committee's choices.
+* **What the look-ahead unit bought.** The optimised inner product is
+  six instructions. Four of them (FAD on a register, ADD, CMP, JNP) touch
+  no core once the loop is in the stack. The pass falls from 38 cycles to
+  22: 5 each for the two core operands, 8 in the floating-point unit, and
+  4 of logic. That is 0.26 → 0.45 MFLOPS on kernel 3, and 0.216 → 0.315
+  on the harmonic mean. The two changes need each other: SALISH/O made the
+  loops short enough to fit, and the stack made short loops pay.
+* **What would close the gap next** is the rest of what the 7600 had. It
+  would interleave core so that operands stream at the logic's speed. It
+  would pipeline the floating-point unit, so that a new operation starts
+  every cycle rather than when the last one finishes. And it would have
+  several independent functional units working at once. None of these
+  touches what the machine is for, which is the point of the committee's
+  choices.

@@ -14,6 +14,9 @@ python -m duwamish run jobs/draughts.job --model 90  # Samuel's draughts learner
 python -m duwamish run jobs/chess.job --model 90     # Los Alamos chess (about a minute)
 python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job          # LISP in LISP in LISP (about a minute)
+python -m duwamish run jobs/fiveyear.job --model 90  # Good's five-year plan v. Shannon (about six minutes)
+python -m duwamish run jobs/copycat.job --model 90   # Copycat's analogies (about half a minute)
+python -m duwamish run jobs/bootstrap.job --model 90 # the compiler compiles itself (about half a minute)
 python -m duwamish run jobs/tour.job           # the machine and its languages
 ```
 
@@ -179,7 +182,49 @@ general intelligence, not a mere chess player. Deep Blue's 1997 victory
 by search refuted that, and Hofstadter said so. It is a useful caution
 about predicting which abilities need a mind.
 
-### 5. Backgammon, learned by self-play — `programs/good/backgammon.sal`
+### 5. The five-year plan — `programs/good/fiveyear.sal`
+
+Good's "A Five-Year Plan for Automatic Chess" (*Machine Intelligence 2*,
+1968) did not want a program to look the same distance down every line.
+A strong player follows the lines likely to be played, and follows
+"agitated" positions (captures, checks) until they are quiet. Good also
+argued that a position's value is a probability of winning, judged by a
+fallible player. `fiveyear.sal` is **our reading** of two of those
+proposals, on the chess engine above (now `chessbase.sal`, shared by both
+programs):
+
+* **Plausibility.** Every move gets a weight for how likely a player is to
+  choose it: captures by the value taken, promotions, checks, moves to the
+  centre. A line is followed while the product of its moves'
+  probabilities stays above a threshold. Likely lines are searched deep
+  and unlikely ones shallow. A side in check is agitated, and its replies
+  divide the probability less.
+* **Fallible backing up.** Where the opponent replies to the move being
+  considered, the backed-up value is three parts minimax and one part the
+  plausibility-weighted average of all the replies. It prefers moves that
+  give the opponent ways to go wrong.
+
+Each Good player plays Shannon's (two plies full width, then captures),
+with each colour, from three openings. The threshold is adjusted after
+every move so that Good's players search about as many positions as
+Shannon's. In the recorded match (about six minutes, Model 90):
+
+| player | score against Shannon | positions per move |
+|---|---|---|
+| Good, plausibility | 3½ of 6 | 470 (Shannon 423) |
+| Good, plausibility + fallible backing up | 1 of 6 | 524 |
+
+Plausibility-guided search did slightly better on slightly more work.
+Assuming a fallible opponent did clearly worse: it chose moves that invite
+mistakes, and a player that searches every reply does not make them. Six
+games are a small sample, and the program says so. History's verdict came
+later. Selective search was the hope of the 1960s (Greenblatt's MacHack VI
+pruned by plausibility too). In 1973 Slate and Atkin's Chess 4.0 went
+over to full width, and brute force won the decades after. The notebook
+draws where Good's search cuts its lines off: most at the first ply, a
+few four or five plies deep.
+
+### 6. Backgammon, learned by self-play — `programs/good/backgammon.sal`
 
 Backgammon is a game of expectation, not certainty, which is the
 probabilist's world. Michie's "Game-playing and game-learning automata"
@@ -215,7 +260,7 @@ then stopped improving. That plateau is the honest lesson: ten linear
 features can match their programmer's judgement but not go far beyond it.
 TD-Gammon needed a hidden layer.
 
-### 6. Weight of evidence — `programs/good/banburismus.sal`
+### 7. Weight of evidence — `programs/good/banburismus.sal`
 
 Turing and Good at Bletchley measured evidence in **decibans**: *W* = 10
 log₁₀ of the likelihood ratio, which *adds* across independent
@@ -228,7 +273,7 @@ logarithms by repeated squaring. It plots the evidence letter by letter and
 reports its verdicts. A pair that fails to reach the threshold is reported
 as undecided, not guessed.
 
-### 7. The probability of the unseen — `programs/good/goodturing.sal`
+### 8. The probability of the unseen — `programs/good/goodturing.sal`
 
 Good's 1953 paper (crediting Turing): the chance that the next specimen is
 of a *new* species is about *N₁/N*, the fraction of the sample seen exactly
@@ -249,7 +294,7 @@ once. A species seen *r* times deserves the adjusted count
 
 ## Douglas Hofstadter
 
-### 8. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
+### 9. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
 
 Gödel's diagonal lemma says that a sentence can state a property of its
 *own* Gödel number. The program's "sentence" is its own machine code.
@@ -265,7 +310,7 @@ claim is false. The program then
 
 Nothing is assumed: the true self-description is *computed*, as Gödel's is.
 
-### 9. Quining — `programs/hofstadter/quine.sal`
+### 10. Quining — `programs/hofstadter/quine.sal`
 
 A SALISH program whose output is exactly its own source text, byte for
 byte. The test suite checks this on every run. It follows Hofstadter's
@@ -273,7 +318,7 @@ byte. The test suite checks this on every run. It follows Hofstadter's
 using it. `tools/make_quine.py` shows how the text was constructed. TRILISP's
 tour includes the LISP version, checked in-machine by `(equal (eval q) q)`.
 
-### 10. The MU puzzle — `programs/hofstadter/miu.sal`
+### 11. The MU puzzle — `programs/hofstadter/miu.sal`
 
 This separates Hofstadter's **mechanical mode** from his **intelligent
 mode**. Working inside the MIU system, the machine derives all 216
@@ -284,7 +329,54 @@ last trit is 0", and the machine checks that trit on every theorem it
 derives. The table shows the count of I's in balanced ternary: the last
 trit is always 1 or T.
 
-### 11. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
+### 12. Copycat: analogy as perception — `programs/hofstadter/copycat.sal`
+
+"If abc changes to abd, what does ijk change to?" Hofstadter and Melanie
+Mitchell's Copycat (1988–1993; *Fluid Concepts and Creative Analogies*,
+1995) treats analogy as perception, and perception as the work of many
+small, independent, randomly chosen agents: **codelets**.
+
+* **The workspace.** Bond scouts notice that neighbouring letters are the
+  same, successors or predecessors. Group scouts gather runs of alike
+  letters. A rule scout describes the change ("replace the rightmost
+  letter by its successor"). A correspondence scout maps the changed
+  letter into the target.
+* **The slipnet.** Concepts (sameness, successor, leftmost, group,
+  opposite, first/last, ...) grow active as they are used, and each has a
+  conceptual depth. A concept may **slip** into a neighbour when the
+  situation presses it: rightmost into leftmost, successor into
+  predecessor, letter into group, the successorship of letters into that
+  of lengths.
+* **Temperature.** Temperature measures how incoherent the understanding
+  is: unnoticed relations, ungrouped runs and weak structures keep it
+  high. Hot, and choices are nearly random; cold, and the strongest
+  structures win. An answer the program cannot build (the successor of z)
+  is a **snag**. The temperature jumps, structures are broken, and idle
+  concepts are woken.
+
+It is a cut-down reconstruction, not Mitchell's code: one changed letter
+in the source, sameness groups only, eleven concepts. Run 30 times per
+problem (half a minute, Model 90):
+
+| target | answers (count, average final temperature) |
+|---|---|
+| ijk | **ijl** 29 (27), ijd 1 (42) |
+| iijjkk | **iijjll** 23 (31), iijjkl 6 (49), iijjkj 1 |
+| kji | **lji** 14 (24), **kjh** 12 (25), kjj 4 (35) |
+| mrrjjj | **mrrkkk** 24 (23), mrrjjk 4 (53), **mrrjjjj** 2 (19) |
+| xyz | xyd 16 (29), **wyz** 12 (20), xyy 1, dyz 1 |
+
+The shape is Copycat's. Grouping wins where the target is grouped (iijjll,
+mrrkkk). kji divides between slipping the position (lji) and slipping the
+direction (kjh). And the rare, deep answers are the coolest: mrrjjjj
+(the lengths 1, 2, 3 seen as a successor sequence) and wyz. wyz is xyz
+seen as abc's mirror: the snag at z wakes "a is first, z is last", and
+rightmost slips to leftmost with successor to predecessor. One difference
+is honest to record: in Mitchell's runs xyd was far commoner than wyz.
+Here wyz comes up more often than that, though still less often than xyd,
+and still at the lowest temperature.
+
+### 13. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
 
 With the word `bloop`, the SALISH compiler *certifies termination*. It
 accepts only bounded `for` loops, no recursion and no indirect calls, and
@@ -295,7 +387,7 @@ wondrous-numbers (Collatz) program is **refused** certification, with each
 unbounded loop named, and then runs as FlooP. Whether *every* number is
 wondrous is a GlooP question that no bounded loop can answer.
 
-### 12. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
+### 14. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
 
 The tower of interpreters: Python → microcode → TRIAD → SALISH (the TRILISP
 interpreter) → M-EVAL, McCarthy's LISP-in-LISP → M-EVAL again, running its
@@ -305,7 +397,38 @@ Each costs about 100–160 times the level below. The top interpreter is the
 same *text* as the one below it, read as data: the program has become its
 own subject.
 
-### 13. Contracrostipunctus — `diagonal.lsp`
+### 15. The compiler that compiles itself — `programs/selfhost/salish.sal`
+
+SALISH/S is the SALISH compiler written in SALISH: about a thousand lines,
+following the satellite's compiler part for part. It reads a program from
+the card reader and punches TRIAD code on the card punch (SVC 5). The
+control card `//TRIAD PUNCHED` assembles the cards a step punched, so one
+job deck can feed a compiler's output to the next step. `jobs/bootstrap.job`:
+
+1. **Generation 0**, compiled by the satellite, compiles SALISH/S on the
+   Duwamish (23 million instructions; 8,813 cards).
+2. The satellite assembles those cards into **generation 1**, and reports
+   that they are *identical, card for card, to its own compilation*.
+   Generation 1 compiles SALISH/S again: the same 8,813 cards.
+3. **Generation 2** compiles a small program, and step 4 runs it.
+
+Because generation 0 reproduces exactly the code it was made from,
+generation 1 *is* generation 0. The loop closes on itself at once, a
+**fixed point** of compilation. It is the strange loop in its most literal
+form: a program whose output, one level up, is itself. (The quine, §10,
+does it at one level; this does it across two.) It is also Good's
+condition for an intelligence explosion in miniature: a machine that can
+build its own successor. The successor here is not yet better. Built by
+SALISH/O instead, generation 0 punches exactly the same cards in 9% fewer
+instructions: same output, faster maker. Teaching SALISH/S the
+optimiser's own tricks would carry that into every generation after it.
+
+The tests check that SALISH/S agrees card for card with the satellite's
+compiler on the demonstration programs and on itself. That makes the two
+compilers each other's specification: a change to either that the other
+does not copy shows up as a difference.
+
+### 16. Contracrostipunctus — `diagonal.lsp`
 
 The Crab's record players and the Tortoise's records. `HALTS?` is an honest
 would-be oracle: it runs a program in M-EVAL with a step budget. It is right
@@ -314,7 +437,7 @@ about *itself* and does the opposite. The oracle says "runs forever";
 `CONTRARY` then halts. Raising the budget changes nothing. This is Turing's
 halting theorem, the engine of Gödel's.
 
-### 14. The tangled hierarchy — the machine as a whole
+### 17. The tangled hierarchy — the machine as a whole
 
 The deepest Hofstadterian feature is architectural. The writable control
 store lets software rewrite the microcode that runs it (§1). TRILISP can

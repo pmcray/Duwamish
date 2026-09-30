@@ -565,6 +565,131 @@ def show_tally(machine, obj, top=12):
     return _display("".join(svg))
 
 
+def show_bars(title, rows, series, fmt="{:,}"):
+    """Grouped horizontal bars in the console's colours.
+    rows: [(label, [value per series])]; series: the series' names."""
+    colours = ["#ffb238", "#4fc3ff", "#7ee787", "#c678dd"]
+    width, bh = 380, 15
+    peak = max((v for _, vs in rows for v in vs), default=1) or 1
+    n = len(series)
+    rowh = bh * n + 8
+    h = 44 + rowh * len(rows)
+    svg = [f'<svg width="{width + 340}" height="{h}" '
+           f'style="background:#1d2024;font:12px monospace">',
+           f'<text x="8" y="16" fill="#e8e2cc">{html.escape(title)}</text>']
+    for j, name in enumerate(series):
+        x = 8 + 170 * j
+        svg.append(f'<rect x="{x}" y="24" width="10" height="10" '
+                   f'fill="{colours[j % 4]}"/><text x="{x + 14}" y="33" '
+                   f'fill="#a9a18a">{html.escape(name)}</text>')
+    for i, (label, vs) in enumerate(rows):
+        y = 44 + i * rowh
+        svg.append(f'<text x="8" y="{y + 10 + bh * (n - 1) / 2}" '
+                   f'fill="#e8e2cc">{html.escape(str(label))}</text>')
+        for j, v in enumerate(vs):
+            w = max(1, width * v / peak)
+            yy = y + j * bh
+            svg.append(f'<rect x="200" y="{yy}" width="{w}" height="{bh - 3}" '
+                       f'fill="{colours[j % 4]}"/><text x="{206 + w}" '
+                       f'y="{yy + 11}" fill="#a9a18a">{fmt.format(v)}</text>')
+    svg.append("</svg>")
+    return _display("".join(svg))
+
+
+def show_copycat(output):
+    """Copycat's answers, as printed by programs/hofstadter/copycat.sal:
+    a bar for each answer, as long as its count and coloured by the average
+    temperature at which it was found (blue cool, red hot)."""
+    import re
+    blocks = re.findall(r"abc -> abd,  (\w+) -> \?\n(.*?)\n\s*\d+ codelets",
+                        output, re.S)
+    rows = []
+    for target, body in blocks:
+        answers = re.findall(r"^\s+(\w+)\s+(\d+)\s+#+\s+temperature (\d+)",
+                             body, re.M)
+        rows.append((target, [(a, int(n), int(t)) for a, n, t in answers]))
+    bh, width = 17, 300
+    total = sum(len(a) + 1 for _, a in rows)
+    peak = max((n for _, a in rows for _, n, _ in a), default=1)
+    svg = [f'<svg width="{width + 330}" height="{bh * total + 40}" '
+           f'style="background:#1d2024;font:12px monospace">',
+           '<text x="8" y="16" fill="#e8e2cc">abc -> abd; what does each '
+           'target become?  (colour: temperature, blue cool, red hot)</text>']
+    y = 30
+    for target, answers in rows:
+        svg.append(f'<text x="8" y="{y + 12}" fill="#ffb238">{target} -></text>')
+        y += bh
+        for a, n, temp in answers:
+            f = min(1, max(0, (temp - 15) / 60))
+            col = (f"rgb({int(79 + f * 176)},{int(195 - f * 88)},"
+                   f"{int(255 - f * 148)})")
+            w = max(2, width * n / peak)
+            svg.append(f'<text x="40" y="{y + 12}" fill="#e8e2cc">{a}</text>')
+            svg.append(f'<rect x="120" y="{y + 2}" width="{w}" height="{bh - 5}" '
+                       f'fill="{col}"/><text x="{126 + w}" y="{y + 12}" '
+                       f'fill="#a9a18a">{n}   T={temp}</text>')
+            y += bh
+    svg.append("</svg>")
+    return _display("".join(svg))
+
+
+def show_bootstrap(sat):
+    """jobs/bootstrap.job as a picture: each generation of the compiler
+    compiling the next, and which punched decks were identical."""
+    import re
+    job = sat.jobs[0]
+    steps = job.steps
+    boxes = [("the satellite", "", None)]
+    for i, st in enumerate(steps):
+        what = st.output.strip().splitlines()[0] if st.output else ""
+        if len(what) > 24:
+            what = what[:23] + "\u2026"
+        boxes.append((f"step {i + 1}: generation {i}" if i < 3 else
+                      f"step {i + 1}: the program", what, st))
+    w, h, gap = 184, 86, 26
+    svg = [f'<svg width="{(w + gap) * len(boxes)}" height="{h + 70}" '
+           f'style="background:#1d2024;font:11px monospace">']
+    for i, (head, what, st) in enumerate(boxes):
+        x = 8 + i * (w + gap)
+        svg.append(f'<rect x="{x}" y="20" width="{w}" height="{h}" rx="6" '
+                   f'fill="#23272c" stroke="#ffb238"/>')
+        svg.append(f'<text x="{x + 8}" y="38" fill="#ffb238">{html.escape(head)}</text>')
+        if i == 0:
+            svg.append(f'<text x="{x + 8}" y="56" fill="#e8e2cc">compiles SALISH/S:'
+                       f'</text><text x="{x + 8}" y="72" fill="#e8e2cc">'
+                       f'generation 0</text>')
+        if st is not None and st.result:
+            svg.append(f'<text x="{x + 8}" y="56" fill="#e8e2cc">'
+                       f'{st.result[4]:,} instructions</text>')
+            if st.punched:
+                svg.append(f'<text x="{x + 8}" y="72" fill="#e8e2cc">punched '
+                           f'{st.punched.count(chr(10)):,} cards</text>')
+            svg.append(f'<text x="{x + 8}" y="90" fill="#a9a18a">'
+                       f'{html.escape(what)}</text>')
+        else:
+            svg.append(f'<text x="{x + 8}" y="56" fill="#a9a18a">'
+                       f'{html.escape(what)}</text>')
+        if i + 1 < len(boxes):
+            ax = x + w
+            svg.append(f'<line x1="{ax}" y1="{20 + h / 2}" x2="{ax + gap - 4}" '
+                       f'y2="{20 + h / 2}" stroke="#4fc3ff" stroke-width="2"/>'
+                       f'<polygon points="{ax + gap - 4},{16 + h / 2} '
+                       f'{ax + gap},{20 + h / 2} {ax + gap - 4},{24 + h / 2}" '
+                       f'fill="#4fc3ff"/>')
+        msg = st.messages[0] if st is not None and st.messages else ""
+        same = ("the satellite's code" if "satellite's own" in msg
+                else re.sub(r"the deck of step (\d+)", r"step \1's cards",
+                            re.search(r"the deck of step \d+", msg).group(0))
+                if "deck of step" in msg else None)
+        if same:
+            svg.append(f'<text x="{x + 8}" y="{h + 42}" fill="#7ee787">'
+                       f'&#10003; made from cards the</text>')
+            svg.append(f'<text x="{x + 8}" y="{h + 58}" fill="#7ee787">'
+                       f'same as {html.escape(same)}</text>')
+    svg.append("</svg>")
+    return _display("".join(svg))
+
+
 # ----------------------------------------------------------------------
 # the front-panel page (HTML + JavaScript, no external dependencies)
 # ----------------------------------------------------------------------

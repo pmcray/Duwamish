@@ -14,6 +14,7 @@
 ;       SVC 3   TTYC       R1 = character, to the operator's console
 ;       SVC 4   CONFIG     R1 <- +1 if the floating-point unit is fitted,
 ;                          -1 if not
+;       SVC 5   PUNCH      R1 = character, to the card punch (10 ends a card)
 ;
 ;   Channel protocol with the satellite (device 5):
 ;       OUT 1            request the next job step; then
@@ -36,6 +37,7 @@ TTY      = 1
 READER   = 2
 TIMER    = 4
 CONFIG   = 6
+PUNCH    = 7
 
          ORG  -60000
          ENTRY BOOT
@@ -110,6 +112,8 @@ TRAP:    ST   R1, SAVE1
          JZ   SVTTY
          CMP  R2, #4
          JZ   SVCONF
+         CMP  R2, #5
+         JZ   SVPNCH
          JMP  FAULT              ; unknown service: a program check
 
 SVPUTC:  LD   R1, SAVE1
@@ -118,6 +122,10 @@ SVPUTC:  LD   R1, SAVE1
 
 SVTTY:   LD   R1, SAVE1
          OUT  R1, #TTY
+         JMP  RESUME
+
+SVPNCH:  LD   R1, SAVE1
+         OUT  R1, #PUNCH
          JMP  RESUME
 
 SVCONF:  IN   R1, #CONFIG

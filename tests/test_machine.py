@@ -132,8 +132,8 @@ class TestModels(unittest.TestCase):
             for i, w in enumerate(code):
                 words[100 + i] = w
             results = []
-            for model in (30, 90):
-                mc = machine.Machine(model=model)
+            for model, la in ((30, False), (90, False), (90, True)):
+                mc = machine.Machine(model=model, lookahead=la)
                 mc.load_image(words)
                 mc.poke(isa.LOC_TRAP_VEC, 100 + len(code) - 1)
                 mc.rf = [0, 5, base, 7, -3, 11, 0, base + 10, 3000]
@@ -146,6 +146,60 @@ class TestModels(unittest.TestCase):
                        [mc.peek(2990 + i) for i in range(11)]
                 results.append((mc.rf, mc.c, mc.mode, data, mc.halted))
             self.assertEqual(results[0], results[1], f"trial {trial}")
+            self.assertEqual(results[1], results[2], f"trial {trial} (look-ahead)")
+
+
+LOOP = """
+        ORG  100
+        ENTRY GO
+GO:     LD   R3, #0
+        LD   R4, #0
+L:      ADD  R4, #0(R3)
+        ADD  R3, #1
+        CMP  R3, #1000
+        JN   L
+        HLT
+"""
+
+
+class TestLookahead(unittest.TestCase):
+    """The Model 90's look-ahead unit changes only how long things take."""
+
+    def run_loop(self, src, lookahead):
+        obj = triad.assemble(src)
+        m = machine.Machine(model=90, lookahead=lookahead)
+        m.load_image(obj.image())
+        m.pc = obj.entry
+        self.assertEqual(m.run(max_cycles=10 ** 7), "halt")
+        return m
+
+    def test_a_loop_runs_from_the_stack(self):
+        plain = self.run_loop(LOOP, False)
+        fast = self.run_loop(LOOP, True)
+        self.assertEqual(plain.rf, fast.rf)
+        self.assertEqual(plain.rf[4], 499500)
+        # four register orders a pass: 20 cycles from core, 4 from the stack
+        self.assertEqual(plain.clock, 5 * plain.icount)
+        self.assertLess(fast.clock, plain.clock / 4)
+        self.assertGreater(fast.stack_hits, 3990)
+
+    def test_a_store_into_the_stack_empties_it(self):
+        """A loop that rewrites one of its own instructions must fetch it
+        again from core every pass."""
+        src = LOOP.replace("ADD  R3, #1", "ADD  R3, #1\n        ST   R4, K")\
+                  .replace("        HLT", "        HLT\nK:      DATA 0")
+        clean = self.run_loop(src, True)
+        # store the word at L back over itself: same program, dirty stack
+        src2 = LOOP.replace("GO:     LD   R3, #0",
+                            "GO:     LD   R5, L\n        LD   R3, #0")\
+                   .replace("ADD  R3, #1", "ADD  R3, #1\n        ST   R5, L")
+        dirty = self.run_loop(src2, True)
+        self.assertEqual(clean.rf[4], dirty.rf[4])
+        self.assertGreater(clean.stack_hits, 4 * dirty.stack_hits)
+
+    def test_only_on_the_model_90(self):
+        with self.assertRaises(ValueError):
+            machine.Machine(model=30, lookahead=True)
 
 
 class TestAssembler(unittest.TestCase):

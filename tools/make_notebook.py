@@ -361,7 +361,140 @@ print("".join(chr(c) for f, c in bare.rec.output))
 """)
 
 md(r"""
-## 9. Load your own program
+## 9. The compiler that compiles itself
+
+`programs/selfhost/salish.sal` is SALISH/S: the SALISH compiler, written in
+SALISH. It reads a program from the card reader and punches TRIAD code on
+the card punch. The code is the same, card for card, as the compiler
+that runs on the satellite. `jobs/bootstrap.job` runs four steps:
+
+1. **Generation 0**, compiled by the satellite, compiles SALISH/S itself.
+2. The cards it punched are assembled into **generation 1**, which
+   compiles SALISH/S again.
+3. **Generation 2** compiles a small program.
+4. The small program runs.
+
+Because generation 0 punches exactly the code it was made from,
+generation 1 *is* generation 0, and the loop closes on itself at once.
+This is Hofstadter's strange loop, a program that reproduces itself one
+level up. It is also Good's machine that can build its own successor. It
+takes about half a minute.
+""")
+
+code(r"""
+boot = satellite.run_decks(["jobs/bootstrap.job"], model=90, out=lambda s: None)
+for i, st in enumerate(boot.jobs[0].steps, 1):
+    for m in st.messages:
+        print(f"step {i}: {m}")
+panel.show_bootstrap(boot)
+""")
+
+md(r"""
+The first cards generation 0 punched for itself:
+""")
+
+code(r"""
+print("\n".join(boot.jobs[0].steps[0].punched.splitlines()[:24]))
+""")
+
+md(r"""
+## 10. Copycat: analogy as perception
+
+"If abc changes to abd, what does ijk change to?" Hofstadter and
+Mitchell's Copycat answers such questions with many small, random agents
+(codelets). The agents notice bonds between letters, group alike letters,
+describe the change as a rule, and map it across, letting concepts
+*slip*: rightmost into leftmost, successor into predecessor, letter into
+group. A *temperature* measures how incoherent the current understanding
+is. `programs/hofstadter/copycat.sal` is a cut-down version on the
+Duwamish. Each problem is run 30 times. The bars show how often each
+answer came up, coloured by the average temperature at which it was
+found. A cool answer is one the program itself found coherent. Look at
+xyz: z has no successor, and the snag leads some runs to the mirror
+answer wyz. It is rarer than the literal xyd, and cooler. The run takes
+about half a minute.
+""")
+
+code(r"""
+cc = satellite.run_program("programs/hofstadter/copycat.sal", model=90,
+                           optimise=True, out=lambda s: None)
+panel.show_copycat(cc.jobs[0].steps[0].output)
+""")
+
+md(r"""
+## 11. Good's five-year plan: where the search goes
+
+Shannon's chess program looks the same distance down every line. Good
+wanted a program to follow the lines that are *likely to be played* and
+cut the unlikely ones short. `programs/good/fiveyear.sal` gives every
+move a plausibility and follows a line while its probability stays above
+a threshold. Here is one move's search from an opening. Shannon's player
+cuts every line at the second ply. Good's player cuts implausible lines
+at the first and follows plausible ones four or five plies deep, for
+about the same number of positions. `jobs/fiveyear.job` plays the full
+match.
+""")
+
+code(r"""
+FIVE = open("programs/good/fiveyear.sal").read()
+FIVE = FIVE.replace('get "chessbase"', 'get "programs/good/chessbase.sal"')
+FIVE = FIVE[:FIVE.index("proc main()")] + '''
+proc main()
+begin
+  var col := 1
+  setup()
+  seed := 1975
+  for j := 1 to 4 do begin random_move(col); col := -col end
+  think(1, col)
+  prints("shannon "); print(nodes); newline()
+  think(2, col)
+  prints("good "); print(nodes); newline()
+  for p := 1 to 12 do begin print(cutoff[p]); space() end
+  newline()
+end
+'''
+import tempfile
+with tempfile.NamedTemporaryFile("w", suffix=".sal", dir=".", delete=False) as f:
+    f.write(FIVE)
+fy = satellite.run_program(f.name, model=90, optimise=True, out=lambda s: None)
+os.unlink(f.name)
+lines = fy.jobs[0].steps[0].output.split("\n")
+print(lines[0], "positions;", lines[1], "positions")
+cuts = [int(x) for x in lines[2].split()]
+panel.show_bars("lines cut off, by ply (Shannon's player: all at ply 2)",
+                [(f"ply {p}", [c]) for p, c in enumerate(cuts, 1) if c],
+                ["Good's player"])
+""")
+
+md(r"""
+## 12. The look-ahead unit
+
+The Model 90 issues one instruction per 1 µs core cycle. The optional
+look-ahead unit adds a 32-word **instruction stack**, after the CDC 6600:
+a loop that fits in it runs without fetching instructions from core. An
+instruction from the stack that makes no data reference to core takes
+one 200 ns cycle. Here are the Livermore kernels, compiled by SALISH/O
+and run with the floating-point unit, without and with the look-ahead
+unit. The answers are identical; only the time changes.
+""")
+
+code(r"""
+import re
+def livermore(lookahead):
+    sat = satellite.run_decks(["jobs/livermore.job"], model=90,
+                              lookahead=lookahead, out=lambda s: None)
+    out = sat.jobs[1].steps[0].output          # the job compiled by SALISH/O
+    rows = re.findall(r"^\s*(\d+)\s+(\S.*?\S)\s+\d+\s+\d+\s+[\d.]+\s+\d+\s+[\d.]+"
+                      r"\s+\d+\s+([\d.]+)", out, re.M)
+    return {f"{k} {name}": float(v) for k, name, v in rows}
+plain, fast = livermore(False), livermore(True)
+panel.show_bars("Livermore kernels, hardware float, SALISH/O (MFLOPS)",
+                [(k, [plain[k], fast[k]]) for k in plain],
+                ["Model 90", "Model 90 + look-ahead"], fmt="{:.3f}")
+""")
+
+md(r"""
+## 13. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long

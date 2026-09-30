@@ -1,0 +1,1765 @@
+-- =====================================================================
+--  SALISH/S: the SALISH compiler, written in SALISH.
+--
+--  It reads a program from the card reader and punches the TRIAD
+--  assembly code for it on the card punch -- the same code, card for
+--  card, as the compiler that runs on the satellite (duwamish/salish.py,
+--  without OPT).  So the Duwamish can compile its own compiler:
+--
+--      generation 0   this program, compiled by the satellite's compiler
+--      generation 1   this program, compiled by generation 0 on the
+--                     Duwamish, and assembled from the punched deck
+--      generation 2   this program, compiled by generation 1 ...
+--
+--  If generation 0 punches exactly what the satellite's compiler prints,
+--  generation 1 is the same machine code as generation 0, and every later
+--  generation is the same again: the loop closes on itself at once.  That
+--  is Hofstadter's strange loop made literal -- a program that is its own
+--  output, one level up -- and Good's machine that can make its own
+--  successor.  jobs/bootstrap.job runs it.
+--
+--  THE CARDS: the program, then the runtime library (duwamish/lib/
+--  runtime.sal), which the satellite's compiler includes by itself.
+--  The language is all of SALISH except `get` (modules come on the
+--  cards instead) and `inline` procedures; BlooP programs compile, but
+--  are not certified.
+--
+--  THE STRUCTURE follows the satellite's compiler part for part, so that
+--  the two can be read side by side: a tokenizer that reads the cards as
+--  they come, a recursive-descent parser that builds the tree in the
+--  heap, a pass over the declarations, and a code generator that punches
+--  as it goes.  The one change: the size of each procedure's frame is
+--  counted before its code is generated, so no card need be held back.
+-- =====================================================================
+
+const MAXNAMES = 4000
+const NHASH = 8192
+const MAXDECL = 2000
+const MAXDATA = 4000
+const MAXSTR = 1500
+const LSTACK = 20000
+const MAXSCOPE = 600
+const MAXLOOP = 100
+const ADDR_MAX = 21523360     -- (3^16 - 1) / 2: the largest address field
+
+-- token kinds
+const T_EOF = 0
+const T_NAME = 1
+const T_KW = 2
+const T_NUM = 3
+const T_STR = 4
+const T_OP = 5
+
+-- operators of more than one character (the others are their own code)
+const O_ADDTO = 256            -- +:=
+const O_SUBFROM = 257          -- -:=
+const O_ASSIGN = 258           -- :=
+const O_ARROW = 259            -- ->
+const O_NE = 260               -- <>
+const O_LE = 261               -- <=
+const O_GE = 262               -- >=
+const O_SHL = 263              -- <<
+const O_SHR = 264              -- >>
+
+-- keywords: interned first, in this order, so a keyword's name id is its code
+const K_GLOBAL = 0
+const K_CONST = 1
+const K_PROC = 2
+const K_GET = 3
+const K_BLOOP = 4
+const K_BEGIN = 5
+const K_END = 6
+const K_VAR = 7
+const K_IF = 8
+const K_THEN = 9
+const K_ELSE = 10
+const K_WHILE = 11
+const K_DO = 12
+const K_REPEAT = 13
+const K_UNTIL = 14
+const K_FOR = 15
+const K_TO = 16
+const K_BY = 17
+const K_SIGN = 18
+const K_OF = 19
+const K_RETURN = 20
+const K_BREAK = 21
+const K_NEXT = 22
+const K_AND = 23
+const K_OR = 24
+const K_NOT = 25
+const K_MOD = 26
+const K_TRUE = 27
+const K_FALSE = 28
+const K_UNKNOWN = 29
+const K_TABLE = 30
+const K_INLINE = 31
+const NKW = 32
+global kwnames := table("global", "const", "proc", "get", "bloop", "begin",
+                        "end", "var", "if", "then", "else", "while", "do",
+                        "repeat", "until", "for", "to", "by", "sign", "of",
+                        "return", "break", "next", "and", "or", "not", "mod",
+                        "true", "false", "unknown", "table", "inline")
+
+-- the built-in procedures come next, then a few names the parser needs
+const I_FIRST = 32
+global innames := table("peek", "poke", "putc", "getc", "exit", "ttyc",
+                        "xtr", "trit", "clock", "tally", "tclear", "rcs",
+                        "wcs", "rks", "wks", "rmap", "wmap", "heapbase",
+                        "stackptr", "svc", "codebase", "catchpoint", "throw",
+                        "codeend", "fadd", "fsub", "fmul", "fdiv", "float",
+                        "fix", "fcmp", "hasfpu", "punch")
+global inargs := table(1, 2, 1, 0, 1, 1, 3, 2, 0, 1, 0, 1, 2, 1, 2, 1, 2, 0,
+                       0, 2, 0, 1, 2, 0, 2, 2, 2, 2, 1, 1, 2, 0, 1)
+const NINTR = 33
+const I_PEEK = 32
+const I_POKE = 33
+const I_PUTC = 34
+const I_GETC = 35
+const I_EXIT = 36
+const I_TTYC = 37
+const I_XTR = 38
+const I_TRIT = 39
+const I_CLOCK = 40
+const I_TALLY = 41
+const I_TCLEAR = 42
+const I_RCS = 43
+const I_WCS = 44
+const I_RKS = 45
+const I_WKS = 46
+const I_RMAP = 47
+const I_WMAP = 48
+const I_HEAPBASE = 49
+const I_STACKPTR = 50
+const I_SVC = 51
+const I_CODEBASE = 52
+const I_CATCH = 53
+const I_THROW = 54
+const I_CODEEND = 55
+const I_FADD = 56
+const I_FSUB = 57
+const I_FMUL = 58
+const I_FDIV = 59
+const I_FLOAT = 60
+const I_FIX = 61
+const I_FCMP = 62
+const I_HASFPU = 63
+const I_PUNCH = 64
+const NM_MAIN = 65
+const NM_NEG = 66
+const NM_ZERO = 67
+const NM_POS = 68
+
+-- global symbols
+const SYM_CONST = 1
+const SYM_GLOBAL = 2
+const SYM_PROC = 3
+
+-- tree nodes: v[0] is the kind
+const N_NUM = 1                -- value
+const N_STR = 2                -- string
+const N_NAME = 3               -- name
+const N_NEG = 4                -- e
+const N_ADDR = 5               -- name
+const N_BIN = 6                -- op, a, b
+const N_CMP = 7                -- op, a, b
+const N_AND = 8                -- a, b
+const N_OR = 9                 -- a, b
+const N_COND = 10              -- c, a, b
+const N_CALL = 11              -- name, args
+const N_INDEX = 12             -- vector, index
+const N_TABLE = 13             -- items
+const S_BLOCK = 20             -- statements
+const S_VAR = 21               -- declarations: each [name, size, init]
+const S_EXPR = 22              -- e
+const S_ASSIGN = 23            -- target, value
+const S_IF = 24                -- c, then, else
+const S_WHILE = 25             -- c, body
+const S_REPEAT = 26            -- body, c
+const S_FOR = 27               -- name, from, to, step, body
+const S_SIGN = 28              -- e, arm -, arm 0, arm +
+const S_RETURN = 29            -- e (or 0)
+const S_BREAK = 30
+const S_NEXT = 31
+
+-- binary operators (the op field of N_BIN) and comparisons (of N_CMP)
+const B_ADD = 1
+const B_SUB = 2
+const B_MUL = 3
+const B_DIV = 4
+const B_MOD = 5
+const B_SHL = 6
+const B_SHR = 7
+const B_AND = 8
+const B_OR = 9
+global arith := table("", "ADD ", "SUB ", "MUL ", "DIV ", "MOD ", "SHF ",
+                      "", "AND ", "OR  ")
+const C_EQ = 1
+const C_NE = 2
+const C_LT = 3
+const C_LE = 4
+const C_GT = 5
+const C_GE = 6
+global seltable := table(0, -7, 7, -11, -5, 5, 11)
+global jumpfalse := table("", "JNZ ", "JZ  ", "JNN ", "JP  ", "JNP ", "JN  ")
+global jumptrue := table("", "JZ  ", "JNZ ", "JN  ", "JNP ", "JP  ", "JNN ")
+
+-- operands, packed in a word: value * 16 + kind
+const OP_IMM = 1               -- #v
+const OP_LIT = 2               -- =v (the value is in the literal ring)
+const OP_LOCAL = 3             -- v(FP)
+const OP_GLOBAL = 4            -- G_name
+const OP_PROC = 5              -- #P_name
+const OP_STRLAB = 6            -- #Sk
+const OP_TABLAB = 7            -- #Lk
+
+-- static values in the data section: [kind, value]
+const SV_NUM = 1
+const SV_STR = 2
+const SV_TABLE = 3
+const SV_PROC = 4
+const SV_GLOBAL = 5
+
+-- data-section records
+const DR_STR = 1
+const DR_TABLE = 2
+const DR_GVEC = 3
+const DR_GVAR = 4
+
+-- declarations
+const D_CONST = 1
+const D_GLOBAL = 2
+const D_PROC = 3
+
+global nm_text[MAXNAMES], nm_kind[MAXNAMES], nm_val[MAXNAMES]
+global nm_hash[NHASH], nnames := 0
+global namebuf[260], strbuf[2000]
+
+global la0, la1, la2, line := 1        -- the next three characters
+global tkind, tval, tnl, tline         -- the current token
+
+global lst[LSTACK], lsp := 0           -- where lists are built
+
+global dkind[MAXDECL], dname[MAXDECL], da[MAXDECL], db[MAXDECL], ndecl := 0
+
+global sc_name[MAXSCOPE], sc_slot[MAXSCOPE], sc_top := 0, sc_base := 0
+global lp_brk[MAXLOOP], lp_cont[MAXLOOP], lp_top := 0
+global nlocals, ret_label, nlabel := 0
+
+global dr_kind[MAXDATA], dr_a[MAXDATA], dr_b[MAXDATA], ndata := 0
+global strs[MAXSTR], nstrs := 0
+global litring[64], litpos := 0
+global fok                                -- did the last fold succeed?
+
+-- ---------------------------------------------------------------------
+-- errors, and punching
+-- ---------------------------------------------------------------------
+proc fail(msg)
+begin
+  prints("*** SALISH/S: line "); print(tline); prints(": "); prints(msg)
+  newline()
+  exit(2)
+end
+
+proc failname(msg, id)
+begin
+  prints("*** SALISH/S: line "); print(tline); prints(": "); prints(msg)
+  prints(" "); prints(nm_text[id])
+  newline()
+  exit(2)
+end
+
+proc pstr(s)
+begin
+  for i := 1 to s[0] do punch(s[i])
+end
+
+proc pnum(n)
+begin
+  var buf[14], k := 0, m := n
+  if m = 0 then begin punch('0'); return end
+  if m < 0 then begin punch('-'); m := -m end
+  for i := 1 to 14 do
+    if m > 0 then begin buf[k] := m mod 10; m := m / 10; k := k + 1 end
+  for i := k - 1 to 0 by -1 do punch('0' + buf[i])
+end
+
+proc pnl() = punch('\n')
+proc plabel(k)
+begin
+  punch('L'); pnum(k)
+end
+
+proc place(k)
+begin
+  plabel(k); punch(':'); pnl()
+end
+
+-- an instruction: eight spaces, then the text
+proc ins(s)
+begin
+  pstr("        "); pstr(s)
+end
+
+proc insl(s)
+begin
+  ins(s); pnl()
+end
+
+proc inslab(s, k)
+begin
+  ins(s); plabel(k); pnl()
+end
+
+proc insfp(s, slot)
+begin
+  ins(s); pnum(slot); pstr("(FP)"); pnl()
+end
+
+proc newlabel()
+begin
+  nlabel := nlabel + 1
+  return nlabel
+end
+
+-- ---------------------------------------------------------------------
+-- names
+-- ---------------------------------------------------------------------
+proc intern(buf)
+begin
+  var h := 0, i, id, s
+  for j := 1 to buf[0] do h := (h * 31 + buf[j]) mod NHASH
+  i := h
+  while nm_hash[i] <> 0 do begin
+    id := nm_hash[i] - 1
+    if streq(nm_text[id], buf) then return id
+    i := (i + 1) mod NHASH
+  end
+  if nnames >= MAXNAMES then fail("too many names")
+  s := alloc(buf[0] + 1)
+  for j := 0 to buf[0] do s[j] := buf[j]
+  nm_text[nnames] := s
+  nm_kind[nnames] := 0
+  nm_hash[i] := nnames + 1
+  nnames := nnames + 1
+  return nnames - 1
+end
+
+proc intern_all(names, n)
+begin
+  for i := 0 to n - 1 do intern(names[i])
+end
+
+-- ---------------------------------------------------------------------
+-- the tokenizer: it reads the cards as they come
+-- ---------------------------------------------------------------------
+proc advance()
+begin
+  la0 := la1
+  la1 := la2
+  la2 := la1 < 0 -> -1, getc()
+end
+
+proc is_letter(c) = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c = '_'
+proc is_digit(c) = c >= '0' and c <= '9'
+
+proc escape(c)
+begin
+  if c = 'n' then return '\n'
+  if c = 't' then return '\t'
+  if c = '0' then return 0
+  if c = 'e' then return 27
+  return c
+end
+
+proc op1(code)
+begin
+  advance()
+  tkind := T_OP
+  tval := code
+end
+
+proc op2(code)
+begin
+  advance()
+  advance()
+  tkind := T_OP
+  tval := code
+end
+
+proc lex()
+begin
+  var nl := false, v, n, c
+  -- white space, newlines and comments
+  while la0 = ' ' or la0 = '\t' or la0 = 13 or la0 = '\n' or
+        (la0 = '-' and la1 = '-') do begin
+    if la0 = '\n' then begin line := line + 1; nl := true; advance() end
+    else if la0 = '-' then
+      while la0 >= 0 and la0 <> '\n' do advance()
+    else advance()
+  end
+  tnl := nl
+  tline := line
+  c := la0
+  if c < 0 then begin tkind := T_EOF; tnl := true; return end
+  if c = '0' and la1 = 't' then begin
+    -- a balanced-ternary constant: 0t1T0
+    advance()
+    advance()
+    v := 0
+    while la0 = 'T' or la0 = '0' or la0 = '1' do begin
+      v := 3 * v + (la0 = 'T' -> -1, la0 = '0' -> 0, 1)
+      advance()
+    end
+    tkind := T_NUM
+    tval := v
+    return
+  end
+  if is_digit(c) then begin
+    v := 0
+    while is_digit(la0) do begin v := 10 * v + la0 - '0'; advance() end
+    tkind := T_NUM
+    tval := v
+    return
+  end
+  if is_letter(c) then begin
+    n := 0
+    while is_letter(la0) or is_digit(la0) do begin
+      n := n + 1
+      namebuf[n] := la0
+      advance()
+    end
+    namebuf[0] := n
+    tval := intern(namebuf)
+    tkind := tval < NKW -> T_KW, T_NAME
+    return
+  end
+  if c = '"' then begin
+    advance()
+    n := 0
+    while la0 <> '"' do begin
+      if la0 < 0 or la0 = '\n' then fail("unterminated string")
+      if la0 = '\\' then begin advance(); c := escape(la0) end else c := la0
+      advance()
+      n := n + 1
+      strbuf[n] := c
+    end
+    advance()
+    v := alloc(n + 1)
+    v[0] := n
+    for i := 1 to n do v[i] := strbuf[i]
+    tkind := T_STR
+    tval := v
+    return
+  end
+  if c = '\'' then begin
+    advance()
+    if la0 = '\\' then begin advance(); v := escape(la0) end else v := la0
+    advance()
+    if la0 <> '\'' then fail("bad character constant")
+    advance()
+    tkind := T_NUM
+    tval := v
+    return
+  end
+  if c = '+' and la1 = ':' and la2 = '=' then begin advance(); op2(O_ADDTO); return end
+  if c = '-' and la1 = ':' and la2 = '=' then begin advance(); op2(O_SUBFROM); return end
+  if c = ':' and la1 = '=' then begin op2(O_ASSIGN); return end
+  if c = '-' and la1 = '>' then begin op2(O_ARROW); return end
+  if c = '<' and la1 = '>' then begin op2(O_NE); return end
+  if c = '<' and la1 = '=' then begin op2(O_LE); return end
+  if c = '>' and la1 = '=' then begin op2(O_GE); return end
+  if c = '<' and la1 = '<' then begin op2(O_SHL); return end
+  if c = '>' and la1 = '>' then begin op2(O_SHR); return end
+  if c = '-' or c = '+' or c = '*' or c = '/' or c = '=' or c = '<' or
+     c = '>' or c = '(' or c = ')' or c = '[' or c = ']' or c = ',' or
+     c = ';' or c = ':' or c = '&' or c = '|' or c = '@' then begin
+    op1(c)
+    return
+  end
+  fail("unexpected character")
+end
+
+-- ---------------------------------------------------------------------
+-- the parser
+-- ---------------------------------------------------------------------
+proc at_op(o) = tkind = T_OP and tval = o
+proc at_kw(k) = tkind = T_KW and tval = k
+
+proc expect_op(o)
+begin
+  if not at_op(o) then fail("unexpected symbol")
+  lex()
+end
+
+proc expect_kw(k)
+begin
+  if not at_kw(k) then failname("expected", k)
+  lex()
+end
+
+proc expect_name()
+begin
+  var id := tval
+  if tkind <> T_NAME then fail("expected a name")
+  lex()
+  return id
+end
+
+proc node(kind, a, b, c, d)
+begin
+  var n := alloc(5)
+  n[0] := kind
+  n[1] := a
+  n[2] := b
+  n[3] := c
+  n[4] := d
+  return n
+end
+
+proc push(v)
+begin
+  if lsp >= LSTACK then fail("program too big")
+  lst[lsp] := v
+  lsp := lsp + 1
+end
+
+-- the items pushed since `from`, as a list: v[0] the count
+proc mklist(from)
+begin
+  var v := alloc(lsp - from + 1)
+  v[0] := lsp - from
+  for i := from to lsp - 1 do v[i - from + 1] := lst[i]
+  lsp := from
+  return v
+end
+
+-- a binary operator continues an expression only on the same line
+proc cont() = not tnl
+
+proc primary()
+begin
+  var k := tkind, v := tval, from, e
+  if k = T_NUM then begin lex(); return node(N_NUM, v, 0, 0, 0) end
+  if k = T_STR then begin lex(); return node(N_STR, v, 0, 0, 0) end
+  if k = T_NAME then begin lex(); return node(N_NAME, v, 0, 0, 0) end
+  if k = T_KW then begin
+    if v = K_TRUE then begin lex(); return node(N_NUM, 1, 0, 0, 0) end
+    if v = K_FALSE then begin lex(); return node(N_NUM, -1, 0, 0, 0) end
+    if v = K_UNKNOWN then begin lex(); return node(N_NUM, 0, 0, 0, 0) end
+    if v = K_TABLE then begin
+      lex()
+      expect_op('(')
+      from := lsp
+      push(expr())
+      while at_op(',') do begin lex(); push(expr()) end
+      expect_op(')')
+      return node(N_TABLE, mklist(from), 0, 0, 0)
+    end
+  end
+  if at_op('(') then begin
+    lex()
+    e := expr()
+    expect_op(')')
+    return e
+  end
+  fail("unexpected symbol in an expression")
+end
+
+proc postfix()
+begin
+  var e := primary(), from, i
+  while true do begin
+    if at_op('(') and cont() then begin
+      if e[0] <> N_NAME then fail("only a name can be called")
+      lex()
+      from := lsp
+      if not at_op(')') then begin
+        push(expr())
+        while at_op(',') do begin lex(); push(expr()) end
+      end
+      expect_op(')')
+      e := node(N_CALL, e[1], mklist(from), 0, 0)
+    end else if at_op('[') and cont() then begin
+      lex()
+      i := expr()
+      expect_op(']')
+      e := node(N_INDEX, e, i, 0, 0)
+    end else return e
+  end
+end
+
+proc unary()
+begin
+  if at_op('-') then begin lex(); return node(N_NEG, unary(), 0, 0, 0) end
+  if at_op('+') then begin lex(); return unary() end
+  if at_op('@') then begin lex(); return node(N_ADDR, expect_name(), 0, 0, 0) end
+  return postfix()
+end
+
+proc mul_expr()
+begin
+  var e := unary(), op
+  while (at_op('*') or at_op('/') or at_kw(K_MOD)) and cont() do begin
+    op := at_op('*') -> B_MUL, at_op('/') -> B_DIV, B_MOD
+    lex()
+    e := node(N_BIN, op, e, unary(), 0)
+  end
+  return e
+end
+
+proc add_expr()
+begin
+  var e := mul_expr(), op
+  while (at_op('+') or at_op('-')) and cont() do begin
+    op := at_op('+') -> B_ADD, B_SUB
+    lex()
+    e := node(N_BIN, op, e, mul_expr(), 0)
+  end
+  return e
+end
+
+proc shift_expr()
+begin
+  var e := add_expr(), op
+  while (at_op(O_SHL) or at_op(O_SHR)) and cont() do begin
+    op := at_op(O_SHL) -> B_SHL, B_SHR
+    lex()
+    e := node(N_BIN, op, e, add_expr(), 0)
+  end
+  return e
+end
+
+proc band_expr()
+begin
+  var e := shift_expr()
+  while at_op('&') and cont() do begin
+    lex()
+    e := node(N_BIN, B_AND, e, shift_expr(), 0)
+  end
+  return e
+end
+
+proc bor_expr()
+begin
+  var e := band_expr()
+  while at_op('|') and cont() do begin
+    lex()
+    e := node(N_BIN, B_OR, e, band_expr(), 0)
+  end
+  return e
+end
+
+proc cmp_code()
+begin
+  if tkind <> T_OP then return 0
+  if tval = '=' then return C_EQ
+  if tval = O_NE then return C_NE
+  if tval = '<' then return C_LT
+  if tval = O_LE then return C_LE
+  if tval = '>' then return C_GT
+  if tval = O_GE then return C_GE
+  return 0
+end
+
+proc cmp_expr()
+begin
+  var e := bor_expr(), op := cmp_code()
+  if op <> 0 and cont() then begin
+    lex()
+    e := node(N_CMP, op, e, bor_expr(), 0)
+  end
+  return e
+end
+
+proc not_expr()
+begin
+  if at_kw(K_NOT) then begin lex(); return node(N_NEG, not_expr(), 0, 0, 0) end
+  return cmp_expr()
+end
+
+proc and_expr()
+begin
+  var e := not_expr()
+  while at_kw(K_AND) and cont() do begin
+    lex()
+    e := node(N_AND, e, not_expr(), 0, 0)
+  end
+  return e
+end
+
+proc or_expr()
+begin
+  var e := and_expr()
+  while at_kw(K_OR) and cont() do begin
+    lex()
+    e := node(N_OR, e, and_expr(), 0, 0)
+  end
+  return e
+end
+
+proc expr()
+begin
+  var c := or_expr(), a, b
+  if at_op(O_ARROW) and cont() then begin
+    lex()
+    a := expr()
+    expect_op(',')
+    b := expr()
+    return node(N_COND, c, a, b, 0)
+  end
+  return c
+end
+
+proc stmt()
+begin
+  var from, c, a, b, v, e, rhs, op, arms, key, d
+  if tkind = T_KW then begin
+    if tval = K_BEGIN then begin
+      lex()
+      from := lsp
+      while not at_kw(K_END) do begin
+        if tkind = T_EOF then fail("missing 'end'")
+        if at_op(';') then lex() else push(stmt())
+      end
+      lex()
+      return node(S_BLOCK, mklist(from), 0, 0, 0)
+    end
+    if tval = K_VAR then begin
+      lex()
+      from := lsp
+      while true do begin
+        d := alloc(3)
+        d[0] := expect_name()
+        d[1] := 0
+        d[2] := 0
+        if at_op('[') then begin lex(); d[1] := expr(); expect_op(']') end
+        if at_op(O_ASSIGN) then begin lex(); d[2] := expr() end
+        push(d)
+        if not at_op(',') then break
+        lex()
+      end
+      return node(S_VAR, mklist(from), 0, 0, 0)
+    end
+    if tval = K_IF then begin
+      lex()
+      c := expr()
+      expect_kw(K_THEN)
+      a := stmt()
+      b := 0
+      if at_kw(K_ELSE) then begin lex(); b := stmt() end
+      return node(S_IF, c, a, b, 0)
+    end
+    if tval = K_WHILE then begin
+      lex()
+      c := expr()
+      expect_kw(K_DO)
+      return node(S_WHILE, c, stmt(), 0, 0)
+    end
+    if tval = K_REPEAT then begin
+      lex()
+      from := lsp
+      while not at_kw(K_UNTIL) do begin
+        if tkind = T_EOF then fail("missing 'until'")
+        if at_op(';') then lex() else push(stmt())
+      end
+      lex()
+      b := node(S_BLOCK, mklist(from), 0, 0, 0)
+      return node(S_REPEAT, b, expr(), 0, 0)
+    end
+    if tval = K_FOR then begin
+      lex()
+      v := expect_name()
+      expect_op(O_ASSIGN)
+      a := expr()
+      expect_kw(K_TO)
+      b := expr()
+      c := node(N_NUM, 1, 0, 0, 0)
+      if at_kw(K_BY) then begin lex(); c := expr() end
+      expect_kw(K_DO)
+      d := alloc(5)
+      d[0] := S_FOR
+      d[1] := v
+      d[2] := a
+      d[3] := b
+      d[4] := c
+      return node2(d, stmt())
+    end
+    if tval = K_SIGN then begin
+      lex()
+      e := expr()
+      expect_kw(K_OF)
+      arms := alloc(3)
+      arms[0] := 0
+      arms[1] := 0
+      arms[2] := 0
+      while not at_kw(K_END) do begin
+        if at_op(';') then lex()
+        else begin
+          key := 2
+          if at_op('-') then key := -1
+          else if at_op('+') then key := 1
+          else if tkind = T_NUM and tval = 0 then key := 0
+          else if (tkind = T_NAME and tval = NM_NEG) or at_kw(K_FALSE) then key := -1
+          else if (tkind = T_NAME and tval = NM_ZERO) or at_kw(K_UNKNOWN) then key := 0
+          else if (tkind = T_NAME and tval = NM_POS) or at_kw(K_TRUE) then key := 1
+          if key = 2 then fail("expected an arm label - 0 +")
+          if arms[key + 1] <> 0 then fail("duplicate arm")
+          lex()
+          expect_op(':')
+          arms[key + 1] := stmt()
+        end
+      end
+      lex()
+      return node(S_SIGN, e, arms[0], arms[1], arms[2])
+    end
+    if tval = K_RETURN then begin
+      lex()
+      e := 0
+      if not tnl and not at_kw(K_END) and not at_kw(K_ELSE) and
+         not at_op(';') and tkind <> T_EOF then e := expr()
+      return node(S_RETURN, e, 0, 0, 0)
+    end
+    if tval = K_BREAK then begin lex(); return node(S_BREAK, 0, 0, 0, 0) end
+    if tval = K_NEXT then begin lex(); return node(S_NEXT, 0, 0, 0, 0) end
+  end
+  e := expr()
+  if at_op(O_ASSIGN) or at_op(O_ADDTO) or at_op(O_SUBFROM) then begin
+    op := tval
+    lex()
+    if e[0] <> N_NAME and e[0] <> N_INDEX then fail("cannot assign to this")
+    rhs := expr()
+    if op = O_ADDTO then rhs := node(N_BIN, B_ADD, e, rhs, 0)
+    if op = O_SUBFROM then rhs := node(N_BIN, B_SUB, e, rhs, 0)
+    return node(S_ASSIGN, e, rhs, 0, 0)
+  end
+  if e[0] <> N_CALL then fail("an expression statement must be a call or assignment")
+  return node(S_EXPR, e, 0, 0, 0)
+end
+
+-- a for statement needs six fields: the body goes in a second node
+proc node2(d, body)
+begin
+  var n := alloc(6)
+  for i := 0 to 4 do n[i] := d[i]
+  n[5] := body
+  return n
+end
+
+proc declare(kind, name, a, b)
+begin
+  if ndecl >= MAXDECL then fail("too many declarations")
+  dkind[ndecl] := kind
+  dname[ndecl] := name
+  da[ndecl] := a
+  db[ndecl] := b
+  ndecl := ndecl + 1
+end
+
+proc module()
+begin
+  var name, size, init, from, e, body
+  while tkind <> T_EOF do begin
+    if at_kw(K_BLOOP) then lex()
+    else if at_kw(K_GET) then fail("get: put the module on the cards instead")
+    else if at_kw(K_INLINE) then fail("inline procedures are not supported")
+    else if at_kw(K_GLOBAL) then begin
+      lex()
+      while true do begin
+        name := expect_name()
+        size := 0
+        init := 0
+        if at_op('[') then begin lex(); size := expr(); expect_op(']') end
+        if at_op(O_ASSIGN) then begin lex(); init := expr() end
+        declare(D_GLOBAL, name, size, init)
+        if not at_op(',') then break
+        lex()
+      end
+    end else if at_kw(K_CONST) then begin
+      lex()
+      while true do begin
+        name := expect_name()
+        expect_op('=')
+        declare(D_CONST, name, expr(), 0)
+        if not at_op(',') then break
+        lex()
+      end
+    end else if at_kw(K_PROC) then begin
+      lex()
+      name := expect_name()
+      expect_op('(')
+      from := lsp
+      if not at_op(')') then begin
+        push(expect_name())
+        while at_op(',') do begin lex(); push(expect_name()) end
+      end
+      expect_op(')')
+      e := mklist(from)
+      if at_op('=') then begin
+        lex()
+        body := node(S_RETURN, expr(), 0, 0, 0)
+      end else body := stmt()
+      declare(D_PROC, name, e, body)
+    end else if at_op(';') then lex()
+    else fail("expected a declaration")
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- scopes: the locals of the procedure being compiled, innermost last
+-- ---------------------------------------------------------------------
+proc lookup_local(name)
+begin
+  for i := sc_top - 1 to 0 by -1 do
+    if sc_name[i] = name then return i
+  return -1
+end
+
+proc add_local(name, slot)
+begin
+  if sc_top >= MAXSCOPE then fail("too many local names")
+  sc_name[sc_top] := name
+  sc_slot[sc_top] := slot
+  sc_top := sc_top + 1
+end
+
+proc new_slot(size)
+begin
+  nlocals := nlocals + size
+  return -nlocals
+end
+
+-- ---------------------------------------------------------------------
+-- constant folding
+-- ---------------------------------------------------------------------
+proc fold(e)
+begin
+  var k := e[0], a, b, oka, op
+  if k = N_NUM then begin fok := true; return e[1] end
+  if k = N_NAME then begin
+    if lookup_local(e[1]) < 0 and nm_kind[e[1]] = SYM_CONST then begin
+      fok := true
+      return nm_val[e[1]]
+    end
+    fok := false
+    return 0
+  end
+  if k = N_NEG then begin
+    a := fold(e[1])
+    return -a
+  end
+  if k = N_BIN or k = N_CMP then begin
+    a := fold(e[2])
+    oka := fok
+    b := fold(e[3])
+    if not oka or not fok then begin fok := false; return 0 end
+    op := e[1]
+    if k = N_CMP then begin
+      fok := true
+      if op = C_EQ then return a = b
+      if op = C_NE then return a <> b
+      if op = C_LT then return a < b
+      if op = C_LE then return a <= b
+      if op = C_GT then return a > b
+      return a >= b
+    end
+    fok := true
+    if op = B_ADD then return a + b
+    if op = B_SUB then return a - b
+    if op = B_MUL then return a * b
+    if op = B_DIV or op = B_MOD then begin
+      if b = 0 then begin fok := false; return 0 end
+      return op = B_DIV -> a / b, a mod b
+    end
+    if op = B_SHL then return a << b
+    if op = B_SHR then return a >> b
+    if op = B_AND then return a & b
+    return a | b
+  end
+  fok := false
+  return 0
+end
+
+-- ---------------------------------------------------------------------
+-- operands
+-- ---------------------------------------------------------------------
+proc mkop(kind, v) = v * 16 + kind
+proc opkind(op) = (op mod 16 + 16) mod 16
+proc opval(op) = (op - opkind(op)) / 16
+
+proc imm(v)
+begin
+  if v >= -ADDR_MAX and v <= ADDR_MAX then return mkop(OP_IMM, v)
+  litring[litpos] := v
+  v := mkop(OP_LIT, litpos)
+  litpos := (litpos + 1) mod 64
+  return v
+end
+
+proc pop_(op)
+begin
+  var k := opkind(op), v := opval(op)
+  if k = OP_IMM then begin punch('#'); pnum(v) end
+  else if k = OP_LIT then begin punch('='); pnum(litring[v]) end
+  else if k = OP_LOCAL then begin pnum(v); pstr("(FP)") end
+  else if k = OP_GLOBAL then begin pstr("G_"); pstr(nm_text[v]) end
+  else if k = OP_PROC then begin pstr("#P_"); pstr(nm_text[v]) end
+  else if k = OP_STRLAB then begin pstr("#S"); pnum(v) end
+  else begin punch('#'); plabel(v) end
+end
+
+proc insop(s, op)
+begin
+  ins(s); pop_(op); pnl()
+end
+
+-- ---------------------------------------------------------------------
+-- static data
+-- ---------------------------------------------------------------------
+proc data(kind, a, b)
+begin
+  if ndata >= MAXDATA then fail("too much data")
+  dr_kind[ndata] := kind
+  dr_a[ndata] := a
+  dr_b[ndata] := b
+  ndata := ndata + 1
+end
+
+proc string_label(s)
+begin
+  for i := 0 to nstrs - 1 do
+    if streq(strs[i], s) then return i + 1
+  if nstrs >= MAXSTR then fail("too many strings")
+  strs[nstrs] := s
+  nstrs := nstrs + 1
+  data(DR_STR, nstrs, s)
+  return nstrs
+end
+
+proc sv(kind, v)
+begin
+  var r := alloc(2)
+  r[0] := kind
+  r[1] := v
+  return r
+end
+
+proc static_value(e)
+begin
+  var v := fold(e)
+  if fok then return sv(SV_NUM, v)
+  if e[0] = N_STR then return sv(SV_STR, string_label(e[1]))
+  if e[0] = N_TABLE then return sv(SV_TABLE, table_label(e))
+  if e[0] = N_NAME and lookup_local(e[1]) < 0 and nm_kind[e[1]] = SYM_PROC then
+    return sv(SV_PROC, e[1])
+  if e[0] = N_ADDR and nm_kind[e[1]] = SYM_GLOBAL then return sv(SV_GLOBAL, e[1])
+  fail("initialiser must be a constant, string, table or proc")
+end
+
+proc table_label(e)
+begin
+  var lab := newlabel(), items := e[1], vals
+  vals := alloc(items[0] + 1)
+  vals[0] := items[0]
+  for i := 1 to items[0] do vals[i] := static_value(items[i])
+  data(DR_TABLE, lab, vals)
+  return lab
+end
+
+proc gen_global(i)
+begin
+  var n
+  if da[i] <> 0 then begin
+    n := fold(da[i])
+    if not fok or n < 0 then fail("vector size must be a non-negative constant")
+    if db[i] <> 0 then fail("a global vector cannot have an initialiser")
+    data(DR_GVEC, dname[i], n)
+  end else
+    data(DR_GVAR, dname[i], db[i] <> 0 -> static_value(db[i]), sv(SV_NUM, 0))
+end
+
+proc psv(r)
+begin
+  var k := r[0]
+  if k = SV_NUM then pnum(r[1])
+  else if k = SV_STR then begin punch('S'); pnum(r[1]) end
+  else if k = SV_TABLE then plabel(r[1])
+  else if k = SV_PROC then begin pstr("P_"); pstr(nm_text[r[1]]) end
+  else begin pstr("G_"); pstr(nm_text[r[1]]) end
+end
+
+proc punch_data()
+begin
+  var k, s, v
+  for i := 0 to ndata - 1 do begin
+    k := dr_kind[i]
+    if k = DR_STR then begin
+      s := dr_b[i]
+      punch('S'); pnum(dr_a[i]); pstr(":  DATA "); pnum(s[0])
+      for j := 1 to s[0] do begin pstr(", "); pnum(s[j]) end
+      pnl()
+    end else if k = DR_TABLE then begin
+      v := dr_b[i]
+      plabel(dr_a[i]); pstr(":  DATA ")
+      for j := 1 to v[0] do begin
+        if j > 1 then pstr(", ")
+        psv(v[j])
+      end
+      pnl()
+    end else if k = DR_GVEC then begin
+      pstr("G_"); pstr(nm_text[dr_a[i]]); pstr(":  DATA V_")
+      pstr(nm_text[dr_a[i]]); pnl()
+      pstr("V_"); pstr(nm_text[dr_a[i]]); pstr(":  BSS "); pnum(dr_b[i]); pnl()
+    end else begin
+      pstr("G_"); pstr(nm_text[dr_a[i]]); pstr(":  DATA "); psv(dr_b[i]); pnl()
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- expressions
+-- ---------------------------------------------------------------------
+-- the operand for e, if e can be one: a constant, a variable, a string
+proc simple(e)
+begin
+  var v := fold(e), k := e[0], i
+  if fok then return imm(v)
+  if k = N_NAME then begin
+    i := lookup_local(e[1])
+    if i >= 0 then return mkop(OP_LOCAL, sc_slot[i])
+    if nm_kind[e[1]] = SYM_GLOBAL then return mkop(OP_GLOBAL, e[1])
+    if nm_kind[e[1]] = SYM_PROC then return mkop(OP_PROC, e[1])
+    failname("undeclared name", e[1])
+  end
+  if k = N_STR then return mkop(OP_STRLAB, string_label(e[1]))
+  if k = N_TABLE then return mkop(OP_TABLAB, table_label(e))
+  return 0
+end
+
+proc var_operand(name)
+begin
+  var i := lookup_local(name)
+  if i >= 0 then return mkop(OP_LOCAL, sc_slot[i])
+  if nm_kind[name] = SYM_GLOBAL then return mkop(OP_GLOBAL, name)
+  if nm_kind[name] = 0 then failname("undeclared name", name)
+  failname("cannot assign to", name)
+end
+
+proc gen_expr(e)
+begin
+  var op := simple(e), k := e[0], a, i, lend, lelse, ci, cok, vop
+  if op <> 0 then begin insop("LD   R1, ", op); return end
+  if k = N_NEG then begin
+    a := simple(e[1])
+    if a <> 0 then insop("NEG  R1, ", a)
+    else begin gen_expr(e[1]); insl("NEG  R1, #0(R1)") end
+  end else if k = N_ADDR then begin
+    i := lookup_local(e[1])
+    if i >= 0 then insfp("LEA  R1, ", sc_slot[i])
+    else if nm_kind[e[1]] = SYM_GLOBAL then begin
+      ins("LD   R1, #G_"); pstr(nm_text[e[1]]); pnl()
+    end else if nm_kind[e[1]] = SYM_PROC then begin
+      ins("LD   R1, #P_"); pstr(nm_text[e[1]]); pnl()
+    end else if nm_kind[e[1]] = 0 then failname("undeclared name", e[1])
+    else fail("cannot take the address of a constant")
+  end else if k = N_BIN then gen_binary(e)
+  else if k = N_CMP then begin
+    gen_compare(e[2], e[3])
+    ins("SEL  R1, #"); pnum(seltable[e[1]]); pnl()
+  end else if k = N_AND or k = N_OR then begin
+    lend := newlabel()
+    gen_expr(e[1])
+    insl("TST  #0(R1)")
+    inslab(k = N_AND -> "JNP  ", "JNN  ", lend)
+    gen_expr(e[2])
+    place(lend)
+  end else if k = N_COND then begin
+    lelse := newlabel()
+    lend := newlabel()
+    gen_cond(e[1], lelse)
+    gen_expr(e[2])
+    inslab("JMP  ", lend)
+    place(lelse)
+    gen_expr(e[3])
+    place(lend)
+  end else if k = N_CALL then gen_call(e)
+  else if k = N_INDEX then begin
+    ci := fold(e[2])
+    cok := fok
+    vop := simple(e[1])
+    if cok and vop <> 0 and ci >= -ADDR_MAX and ci <= ADDR_MAX then begin
+      insop("LD   R2, ", vop)
+      ins("LD   R1, "); pnum(ci); pstr("(R2)"); pnl()
+    end else begin
+      gen_index_addr(e[1], e[2])
+      insl("LD   R1, 0(R1)")
+    end
+  end else fail("cannot compile this expression")
+end
+
+proc gen_index_addr(vec, idx)
+begin
+  var vop := simple(vec), iop
+  if vop <> 0 then begin
+    gen_expr(idx)
+    insop("ADD  R1, ", vop)
+  end else begin
+    iop := simple(idx)
+    if iop <> 0 then begin
+      gen_expr(vec)
+      insop("ADD  R1, ", iop)
+    end else begin
+      gen_expr(idx)
+      insl("PUSH R1")
+      gen_expr(vec)
+      insl("POP  R2")
+      insl("ADD  R1, #0(R2)")
+    end
+  end
+end
+
+proc gen_binary(e)
+begin
+  var op := e[1], a := e[2], b := e[3], cb, bop
+  if op = B_SHR then begin
+    cb := fold(b)
+    if fok then begin
+      gen_expr(a)
+      insop("SHF  R1, ", imm(-cb))
+      return
+    end
+    gen_expr(b)
+    insl("NEG  R1, #0(R1)")
+    insl("PUSH R1")
+    gen_expr(a)
+    insl("POP  R2")
+    insl("SHF  R1, #0(R2)")
+    return
+  end
+  bop := simple(b)
+  if bop <> 0 then begin
+    gen_expr(a)
+    ins(arith[op]); pstr(" R1, "); pop_(bop); pnl()
+  end else begin
+    gen_expr(b)
+    insl("PUSH R1")
+    gen_expr(a)
+    insl("POP  R2")
+    ins(arith[op]); pstr(" R1, #0(R2)"); pnl()
+  end
+end
+
+proc gen_compare(a, b)
+begin
+  var op := simple(b)
+  if op <> 0 then begin
+    gen_expr(a)
+    insop("CMP  R1, ", op)
+  end else begin
+    gen_expr(b)
+    insl("PUSH R1")
+    gen_expr(a)
+    insl("POP  R2")
+    insl("CMP  R1, #0(R2)")
+  end
+end
+
+proc gen_test(e)
+begin
+  if e[0] = N_BIN and e[1] = B_SUB then gen_compare(e[2], e[3])
+  else begin
+    gen_expr(e)
+    insl("TST  #0(R1)")
+  end
+end
+
+-- jump to false_lab unless e is true
+proc gen_cond(e, false_lab)
+begin
+  var k := e[0], v := fold(e), true_lab, a
+  if fok then begin
+    if v <= 0 then inslab("JMP  ", false_lab)
+    return
+  end
+  if k = N_CMP then begin
+    gen_compare(e[2], e[3])
+    ins(jumpfalse[e[1]]); punch(' '); plabel(false_lab); pnl()
+  end else if k = N_AND then begin
+    gen_cond(e[1], false_lab)
+    gen_cond(e[2], false_lab)
+  end else if k = N_OR then begin
+    true_lab := newlabel()
+    a := e[1]
+    if a[0] = N_CMP then begin
+      gen_compare(a[2], a[3])
+      ins(jumptrue[a[1]]); punch(' '); plabel(true_lab); pnl()
+    end else begin
+      gen_expr(a)
+      insl("TST  #0(R1)")
+      inslab("JP   ", true_lab)
+      inslab("JZ   ", false_lab)
+    end
+    gen_cond(e[2], false_lab)
+    place(true_lab)
+  end else if k = N_NEG and e[1][0] = N_CMP then begin
+    a := e[1]
+    gen_compare(a[2], a[3])
+    ins(jumptrue[a[1]]); punch(' '); plabel(false_lab); pnl()
+  end else begin
+    gen_expr(e)
+    insl("TST  #0(R1)")
+    inslab("JNP  ", false_lab)
+  end
+end
+
+proc gen_args_to_regs(args)
+begin
+  var n := args[0]
+  for i := 1 to n do begin gen_expr(args[i]); insl("PUSH R1") end
+  for i := n to 1 by -1 do begin ins("POP  R"); pnum(i); pnl() end
+end
+
+proc gen_call(e)
+begin
+  var name := e[1], args := e[2], i := lookup_local(name), op
+  if i < 0 and nm_kind[name] = 0 and name >= I_FIRST and
+     name < I_FIRST + NINTR then return gen_intrinsic(e)
+  if i < 0 and nm_kind[name] = 0 then failname("undeclared procedure", name)
+  for j := 1 to args[0] do begin gen_expr(args[j]); insl("PUSH R1") end
+  if i < 0 and nm_kind[name] = SYM_PROC then begin
+    if nm_val[name] <> args[0] then failname("wrong number of arguments to", name)
+    ins("CALL P_"); pstr(nm_text[name]); pnl()
+  end else begin
+    op := var_operand(name)
+    insop("LD   R2, ", op)
+    insl("CALL 0(R2)")
+  end
+end
+
+proc gen_intrinsic(e)
+begin
+  var name := e[1], args := e[2], p, n, pok, bop, aop, s, resume, op
+  if inargs[name - I_FIRST] <> args[0] then
+    failname("wrong number of arguments to", name)
+  if name = I_PEEK then begin gen_expr(args[1]); insl("LD   R1, 0(R1)") end
+  else if name = I_POKE then begin gen_args_to_regs(args); insl("ST   R2, 0(R1)") end
+  else if name = I_PUTC then begin gen_expr(args[1]); insl("SVC  1") end
+  else if name = I_GETC then insl("SVC  2")
+  else if name = I_EXIT then begin gen_expr(args[1]); insl("SVC  0") end
+  else if name = I_TTYC then begin gen_expr(args[1]); insl("SVC  3") end
+  else if name = I_PUNCH then begin gen_expr(args[1]); insl("SVC  5") end
+  else if name = I_SVC then begin
+    n := fold(args[1])
+    if not fok then fail("svc number must be constant")
+    gen_expr(args[2])
+    ins("SVC  "); pnum(n); pnl()
+  end else if name = I_XTR then begin
+    p := fold(args[2])
+    pok := fok
+    n := fold(args[3])
+    if pok and fok then begin
+      gen_expr(args[1])
+      ins("XTR  R1, #"); pnum(27 * n + p); pnl()
+    end else begin
+      gen_expr(args[3])
+      insl("MUL  R1, #27")
+      insl("PUSH R1")
+      gen_expr(args[2])
+      insl("POP  R2")
+      insl("ADD  R2, #0(R1)")
+      insl("PUSH R2")
+      gen_expr(args[1])
+      insl("POP  R2")
+      insl("XTR  R1, #0(R2)")
+    end
+  end else if name = I_TRIT then begin
+    gen_args_to_regs(args)
+    insl("TRT  R1, #0(R2)")
+    insl("SEL  R1, #8")
+  end else if name = I_CLOCK then insl("TIM  R1")
+  else if name = I_TALLY then begin gen_expr(args[1]); insl("TAL  R1, 0(R1)") end
+  else if name = I_TCLEAR then insl("TCL")
+  else if name = I_RCS or name = I_RKS or name = I_RMAP then begin
+    gen_expr(args[1])
+    insl(name = I_RCS -> "RCS  R1, 0(R1)", name = I_RKS -> "RKS  R1, 0(R1)",
+         "RMAP R1, 0(R1)")
+  end else if name = I_WCS or name = I_WKS or name = I_WMAP then begin
+    gen_args_to_regs(args)
+    insl(name = I_WCS -> "WCS  R2, 0(R1)", name = I_WKS -> "WKS  R2, 0(R1)",
+         "WMAP R2, 0(R1)")
+  end else if name = I_HEAPBASE then insl("LD   R1, #END_OF_PROGRAM")
+  else if name = I_CODEBASE then insl("LD   R1, #START")
+  else if name = I_CODEEND then insl("LD   R1, #CODE_END")
+  else if name >= I_FADD and name <= I_FDIV or name = I_FCMP then begin
+    s := name = I_FADD -> "FAD ", name = I_FSUB -> "FSB ",
+         name = I_FMUL -> "FMP ", name = I_FDIV -> "FDV ", "FCM "
+    bop := simple(args[2])
+    aop := simple(args[1])
+    if bop <> 0 then begin
+      gen_expr(args[1])
+      ins(s); pstr(" R1, "); pop_(bop); pnl()
+    end else if aop <> 0 and (name = I_FADD or name = I_FMUL) then begin
+      gen_expr(args[2])
+      ins(s); pstr(" R1, "); pop_(aop); pnl()
+    end else begin
+      gen_args_to_regs(args)
+      ins(s); pstr(" R1, #0(R2)"); pnl()
+    end
+    if name = I_FCMP then insl("SEL  R1, #8")
+  end else if name = I_FLOAT or name = I_FIX then begin
+    s := name = I_FLOAT -> "FLT ", "FIX "
+    op := simple(args[1])
+    if op <> 0 then begin ins(s); pstr(" R1, "); pop_(op); pnl() end
+    else begin gen_expr(args[1]); ins(s); pstr(" R1, #0(R1)"); pnl() end
+  end else if name = I_HASFPU then insl("SVC  4")
+  else if name = I_STACKPTR then insl("LD   R1, #0(SP)")
+  else if name = I_CATCH then begin
+    resume := newlabel()
+    gen_expr(args[1])
+    insl("ST   FP, 0(R1)")
+    insl("ST   SP, 1(R1)")
+    inslab("LD   R2, #", resume)
+    insl("ST   R2, 2(R1)")
+    insl("LD   R1, #0")
+    place(resume)
+  end else if name = I_THROW then begin
+    gen_args_to_regs(args)
+    insl("LD   FP, 0(R1)")
+    insl("LD   SP, 1(R1)")
+    insl("LD   R3, 2(R1)")
+    insl("LD   R1, #0(R2)")
+    insl("JMP  0(R3)")
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- statements
+-- ---------------------------------------------------------------------
+proc gen_block(s)
+begin
+  var top := sc_top, base := sc_base
+  sc_base := sc_top
+  gen_stmt(s)
+  sc_top := top
+  sc_base := base
+end
+
+proc gen_stmt(s)
+begin
+  var k := s[0]
+  if k = S_BLOCK then begin
+    var top := sc_top, base := sc_base, list := s[1]
+    sc_base := sc_top
+    for i := 1 to list[0] do gen_stmt(list[i])
+    sc_top := top
+    sc_base := base
+  end else if k = S_VAR then s_var(s)
+  else if k = S_EXPR then gen_expr(s[1])
+  else if k = S_ASSIGN then s_assign(s)
+  else if k = S_IF then s_if(s)
+  else if k = S_WHILE then s_while(s)
+  else if k = S_REPEAT then s_repeat(s)
+  else if k = S_FOR then s_for(s)
+  else if k = S_SIGN then s_sign(s)
+  else if k = S_RETURN then begin
+    if s[1] <> 0 then gen_expr(s[1]) else insl("LD   R1, #0")
+    inslab("JMP  ", ret_label)
+  end else if k = S_BREAK or k = S_NEXT then begin
+    if lp_top = 0 then fail("break or next outside a loop")
+    inslab("JMP  ", k = S_BREAK -> lp_brk[lp_top - 1], lp_cont[lp_top - 1])
+  end
+end
+
+proc s_var(s)
+begin
+  var list := s[1], d, n, base, slot
+  for i := 1 to list[0] do begin
+    d := list[i]
+    for j := sc_base to sc_top - 1 do
+      if sc_name[j] = d[0] then failname("already declared in this block:", d[0])
+    if d[1] <> 0 then begin
+      n := fold(d[1])
+      if not fok or n < 0 then fail("local vector size must be a constant")
+      base := new_slot(n)
+      slot := new_slot(1)
+      add_local(d[0], slot)
+      insfp("LEA  R1, ", base)
+      insfp("ST   R1, ", slot)
+    end else begin
+      slot := new_slot(1)
+      add_local(d[0], slot)
+      if d[2] <> 0 then begin
+        gen_expr(d[2])
+        insfp("ST   R1, ", slot)
+      end else insfp("ST   R0, ", slot)
+    end
+  end
+end
+
+proc s_assign(s)
+begin
+  var target := s[1], rhs := s[2], op, vec, idx, ci, cok, vop, rop
+  if target[0] = N_NAME then begin
+    op := var_operand(target[1])
+    gen_expr(rhs)
+    insop("ST   R1, ", op)
+    return
+  end
+  vec := target[1]
+  idx := target[2]
+  ci := fold(idx)
+  cok := fok
+  vop := simple(vec)
+  if cok and vop <> 0 and ci >= -ADDR_MAX and ci <= ADDR_MAX then begin
+    gen_expr(rhs)
+    insop("LD   R2, ", vop)
+    ins("ST   R1, "); pnum(ci); pstr("(R2)"); pnl()
+    return
+  end
+  rop := simple(rhs)
+  if rop <> 0 then begin
+    gen_index_addr(vec, idx)
+    insop("LD   R2, ", rop)
+    insl("ST   R2, 0(R1)")
+    return
+  end
+  gen_expr(rhs)
+  insl("PUSH R1")
+  gen_index_addr(vec, idx)
+  insl("POP  R2")
+  insl("ST   R2, 0(R1)")
+end
+
+proc s_if(s)
+begin
+  var lelse := newlabel(), lend
+  gen_cond(s[1], lelse)
+  gen_block(s[2])
+  if s[3] <> 0 then begin
+    lend := newlabel()
+    inslab("JMP  ", lend)
+    place(lelse)
+    gen_block(s[3])
+    place(lend)
+  end else place(lelse)
+end
+
+proc loop_push(brk, cnt)
+begin
+  if lp_top >= MAXLOOP then fail("loops nested too deeply")
+  lp_brk[lp_top] := brk
+  lp_cont[lp_top] := cnt
+  lp_top := lp_top + 1
+end
+
+proc s_while(s)
+begin
+  var top := newlabel(), lend := newlabel()
+  place(top)
+  gen_cond(s[1], lend)
+  loop_push(lend, top)
+  gen_block(s[2])
+  lp_top := lp_top - 1
+  inslab("JMP  ", top)
+  place(lend)
+end
+
+proc s_repeat(s)
+begin
+  var top := newlabel(), test := newlabel(), lend := newlabel()
+  place(top)
+  loop_push(lend, test)
+  gen_block(s[1])
+  lp_top := lp_top - 1
+  place(test)
+  gen_cond(s[2], top)
+  place(lend)
+end
+
+proc s_for(s)
+begin
+  var st := fold(s[4]), stok := fok, slot, lim, stslot := 0, top, base,
+      ltop, lcont, lend, up, go
+  if stok and st = 0 then fail("the step of a for loop must not be zero")
+  top := sc_top
+  base := sc_base
+  slot := new_slot(1)
+  lim := new_slot(1)
+  -- the bounds are evaluated outside the loop's own scope
+  gen_expr(s[2])
+  insfp("ST   R1, ", slot)
+  gen_expr(s[3])
+  insfp("ST   R1, ", lim)
+  if not stok then begin
+    stslot := new_slot(1)
+    gen_expr(s[4])
+    insfp("ST   R1, ", stslot)
+  end
+  sc_base := sc_top
+  add_local(s[1], slot)
+  ltop := newlabel()
+  lcont := newlabel()
+  lend := newlabel()
+  place(ltop)
+  if stok then begin
+    insfp("LD   R1, ", slot)
+    insfp("CMP  R1, ", lim)
+    inslab(st > 0 -> "JP   ", "JN   ", lend)
+  end else begin
+    up := newlabel()
+    go := newlabel()
+    insfp("TST  ", stslot)
+    inslab("JZ   ", lend)
+    inslab("JP   ", up)
+    insfp("LD   R1, ", slot)
+    insfp("CMP  R1, ", lim)
+    inslab("JN   ", lend)
+    inslab("JMP  ", go)
+    place(up)
+    insfp("LD   R1, ", slot)
+    insfp("CMP  R1, ", lim)
+    inslab("JP   ", lend)
+    place(go)
+  end
+  loop_push(lend, lcont)
+  gen_stmt(s[5])
+  lp_top := lp_top - 1
+  sc_top := top
+  sc_base := base
+  place(lcont)
+  insfp("LD   R1, ", slot)
+  if stok then insop("ADD  R1, ", imm(st)) else insfp("ADD  R1, ", stslot)
+  insfp("ST   R1, ", slot)
+  inslab("JMP  ", ltop)
+  place(lend)
+end
+
+proc s_sign(s)
+begin
+  var tbl, lend, labs[3]
+  gen_test(s[1])
+  tbl := newlabel()
+  lend := newlabel()
+  for k := 0 to 2 do labs[k] := s[k + 2] <> 0 -> newlabel(), lend
+  inslab("J3   ", tbl)
+  inslab("JMP  ", labs[0])
+  place(tbl)
+  inslab("JMP  ", labs[1])
+  inslab("JMP  ", labs[2])
+  for k := 0 to 2 do
+    if s[k + 2] <> 0 then begin
+      place(labs[k])
+      gen_block(s[k + 2])
+      inslab("JMP  ", lend)
+    end
+  place(lend)
+end
+
+-- the size of a procedure's frame, counted before its code is made
+proc slots(s)
+begin
+  var k, n := 0, list, d, v
+  if s = 0 then return 0
+  k := s[0]
+  if k = S_BLOCK then begin
+    list := s[1]
+    for i := 1 to list[0] do n := n + slots(list[i])
+  end else if k = S_VAR then begin
+    list := s[1]
+    for i := 1 to list[0] do begin
+      d := list[i]
+      if d[1] <> 0 then begin v := fold(d[1]); n := n + v + 1 end
+      else n := n + 1
+    end
+  end else if k = S_IF then n := slots(s[2]) + slots(s[3])
+  else if k = S_WHILE then n := slots(s[2])
+  else if k = S_REPEAT then n := slots(s[1])
+  else if k = S_FOR then begin
+    v := fold(s[4])
+    n := (fok -> 2, 3) + slots(s[5])
+  end else if k = S_SIGN then n := slots(s[2]) + slots(s[3]) + slots(s[4])
+  return n
+end
+
+proc gen_proc(i)
+begin
+  var params := da[i], body := db[i], n, frame
+  n := params[0]
+  sc_top := 0
+  sc_base := 0
+  lp_top := 0
+  for j := 1 to n do begin
+    for m := 0 to sc_top - 1 do
+      if sc_name[m] = params[j] then failname("parameter repeated:", params[j])
+    add_local(params[j], 2 + (n - j))
+  end
+  nlocals := 0
+  ret_label := newlabel()
+  frame := slots(body)
+  pstr("; proc "); pstr(nm_text[dname[i]]); punch('(')
+  for j := 1 to n do begin
+    if j > 1 then pstr(", ")
+    pstr(nm_text[params[j]])
+  end
+  punch(')'); pnl()
+  pstr("P_"); pstr(nm_text[dname[i]]); punch(':'); pnl()
+  insl("PUSH FP")
+  insl("LEA  FP, 0(SP)")
+  if frame > 0 then begin ins("LEA  SP, -"); pnum(frame); pstr("(SP)"); pnl() end
+  sc_base := sc_top
+  gen_stmt(body)
+  insl("LD   R1, #0")
+  place(ret_label)
+  insl("LEA  SP, 0(FP)")
+  insl("POP  FP")
+  if n > 0 then begin ins("RET  "); pnum(n); pnl() end else insl("RET")
+  if nlocals <> frame then fail("internal error: frame size")
+end
+
+-- ---------------------------------------------------------------------
+-- the compiler
+-- ---------------------------------------------------------------------
+proc main()
+begin
+  var name
+  intern_all(kwnames, NKW)
+  intern_all(innames, NINTR)
+  intern("main")
+  intern("neg")
+  intern("zero")
+  intern("pos")
+  la1 := getc()
+  la2 := la1 < 0 -> -1, getc()
+  advance()
+  lex()
+  module()
+  -- the declarations, in order
+  for i := 0 to ndecl - 1 do begin
+    name := dname[i]
+    if nm_kind[name] <> 0 then failname("declared twice:", name)
+    if dkind[i] = D_CONST then begin
+      nm_val[name] := fold(da[i])
+      if not fok then failname("not a constant expression:", name)
+      nm_kind[name] := SYM_CONST
+    end else if dkind[i] = D_GLOBAL then nm_kind[name] := SYM_GLOBAL
+    else begin
+      if name >= I_FIRST and name < I_FIRST + NINTR then
+        failname("a built-in cannot be redefined:", name)
+      nm_kind[name] := SYM_PROC
+      nm_val[name] := da[i][0]
+    end
+  end
+  if nm_kind[NM_MAIN] <> SYM_PROC then fail("no proc main")
+  pstr("; SALISH compiler output\n")
+  pstr("        ENTRY START\n")
+  pstr("START:  CALL P_main\n")
+  pstr("        SVC  0\n")
+  for i := 0 to ndecl - 1 do if dkind[i] = D_GLOBAL then gen_global(i)
+  for i := 0 to ndecl - 1 do if dkind[i] = D_PROC then gen_proc(i)
+  pstr("CODE_END:\n")
+  punch_data()
+  prints("SALISH/S: "); print(ndecl); prints(" declarations, ")
+  print(nnames - NKW - NINTR - 4); prints(" names, ")
+  print(nlabel); prints(" labels.\n")
+  return 0
+end

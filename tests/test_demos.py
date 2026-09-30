@@ -109,7 +109,11 @@ class TestGood(unittest.TestCase):
         from tests.helpers import run_salish
         with open(os.path.join(ROOT, "programs/good/chess.sal")) as f:
             src = f.read()
-        src = re.sub(r"const PERFT = 0 ", "const PERFT = 3 ", src)
+        with open(os.path.join(ROOT, "programs/good/chessbase.sal")) as f:
+            base = f.read()
+        base, n = re.subn(r"const PERFT = 0 ", "const PERFT = 3 ", base)
+        self.assertEqual(n, 1)
+        src = src.replace('get "chessbase"', base)
         out, res = run_salish(src)
         # checked against an independent implementation of the rules
         self.assertIn("perft 1 10\nperft 2 100\nperft 3 1212\n", out)
@@ -133,3 +137,43 @@ class TestGood(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def run_variant(path, replacements):
+    """Run a demonstration with some of its constants changed."""
+    with open(os.path.join(ROOT, path)) as f:
+        src = f.read()
+    for a, b in replacements:
+        assert a in src, a
+        src = src.replace(a, b)
+    base = os.path.dirname(os.path.join(ROOT, path))
+    src = src.replace('get "chessbase"', f'get "{base}/chessbase.sal"')
+    sat = run_job("//JOB V\n//SALISH OPT\n" + src + "\n//EXEC\n")
+    job = sat.jobs[0]
+    if job.failed:
+        raise AssertionError("\n".join(job.log))
+    return job.steps[0].output, job.steps[0].result
+
+
+class TestCopycat(unittest.TestCase):
+    def test_answers(self):
+        out, res = run_variant("programs/hofstadter/copycat.sal", [
+            ("const RUNS = 30 ", "const RUNS = 12 "),
+            ('  problem("iijjkk")\n', ""), ('  problem("mrrjjj")\n', ""),
+            ('  problem("xyz")\n', "")])
+        self.assertEqual(res[:2], (0, 0), out)
+        ijk = out.split("ijk -> ?")[1].split("kji -> ?")[0].split()
+        self.assertEqual(ijk[0], "ijl")                 # the commonest answer
+        kji = out.split("kji -> ?")[1]
+        self.assertIn("kjh", kji)                       # the change slips
+        self.assertIn("lji", kji)                       # the position slips
+
+
+class TestFiveYearPlan(unittest.TestCase):
+    def test_a_short_match(self):
+        out, res = run_variant("programs/good/fiveyear.sal", [
+            ("const GAMEPLIES = 80 ", "const GAMEPLIES = 6 "),
+            ("const OPENINGS = 3", "const OPENINGS = 1")])
+        self.assertEqual(res[:2], (0, 0), out)
+        self.assertEqual(out.count("result:"), 2)
+        self.assertIn("positions searched per move", out)
