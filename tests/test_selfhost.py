@@ -12,10 +12,11 @@ COMPILER = os.path.join(ROOT, "programs/selfhost/salish.sal")
 RUNTIME = os.path.join(ROOT, "duwamish/lib/runtime.sal")
 
 
-def compile_on_the_duwamish(path):
+def compile_on_the_duwamish(path, optimise=False):
     """Generation 0 compiles one program; returns (the punched deck, step)."""
     sat = run_job(f"//JOB S\n//SALISH FROM={COMPILER}\n//EXEC\n"
-                  f"//DATA FROM={path}\n//DATA FROM={RUNTIME}\n")
+                  + ("//DATA\n-- OPT\n" if optimise else "")
+                  + f"//DATA FROM={path}\n//DATA FROM={RUNTIME}\n")
     step = sat.jobs[0].steps[0]
     return step.punched, step
 
@@ -31,6 +32,40 @@ class TestSalishS(unittest.TestCase):
                 want, _ = salish.compile_source(f.read(), path)
             self.assertEqual(step.result[0], 0, step.output)
             self.assertEqual(deck, want, name)
+
+    def test_optimising_like_the_satellite(self):
+        """With -- OPT on its first card, SALISH/S punches what SALISH/O
+        prints: the register plan, the peephole pass and all."""
+        for name in ("programs/kleene.sal", "programs/good/banburismus.sal"):
+            path = os.path.join(ROOT, name)
+            deck, step = compile_on_the_duwamish(path, optimise=True)
+            with open(path) as f:
+                want, _ = salish.compile_source(f.read(), path, optimise=True)
+            self.assertEqual(deck, want, name)
+
+    def test_random_programs_both_ways(self):
+        import tempfile
+        from tests.test_optimise import RandomProgram
+        for seed in (3, 17, 29):
+            src = RandomProgram(seed).program()
+            with tempfile.NamedTemporaryFile("w", suffix=".sal",
+                                             delete=False) as f:
+                f.write(src)
+            try:
+                for o in (False, True):
+                    deck, _ = compile_on_the_duwamish(f.name, optimise=o)
+                    want, _ = salish.compile_source(src, f.name, optimise=o)
+                    self.assertEqual(deck, want, f"seed {seed} opt={o}")
+            finally:
+                os.unlink(f.name)
+
+    def test_generation_one_is_the_optimised_compiler(self):
+        """The plain compiler, optimising itself, punches exactly the
+        satellite's optimised compilation of it (jobs/improve.job, step 1)."""
+        deck, step = compile_on_the_duwamish(COMPILER, optimise=True)
+        with open(COMPILER) as f:
+            want, _ = salish.compile_source(f.read(), COMPILER, optimise=True)
+        self.assertEqual(deck, want)
 
     def test_errors_are_reported(self):
         sat = run_job(f"//JOB S\n//SALISH FROM={COMPILER}\n//EXEC\n"

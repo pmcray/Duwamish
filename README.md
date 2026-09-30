@@ -22,7 +22,7 @@ This repository contains the whole machine, and software that runs on it:
 | **TRIAD** | the symbolic assembler |
 | **SALISH** | a BCPL-like language with three-valued logic, three-way `sign … of`, and **BlooP certification** of termination |
 | **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
-| **SALISH/S** | the SALISH compiler written in SALISH: it compiles itself on the Duwamish, card for card identical to the satellite's compiler |
+| **SALISH/S** | the SALISH compiler written in SALISH, optimiser included: it compiles itself on the Duwamish, card for card identical to the satellite's compilers, and builds a faster copy of itself |
 | **TRILISP** | a LISP 1.5-style interpreter written in SALISH, with one-trit type tags, tail calls and garbage collection |
 
 ## Quick start
@@ -38,7 +38,8 @@ python -m duwamish run jobs/draughts.job --model 90    # Samuel's draughts learn
 python -m duwamish run jobs/chess.job --model 90       # Los Alamos chess (about a minute)
 python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play (about two minutes)
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
-python -m duwamish run jobs/bootstrap.job --model 90   # the compiler compiles itself (half a minute)
+python -m duwamish run jobs/bootstrap.job --model 90   # the compiler compiles itself (a minute and a half)
+python -m duwamish run jobs/improve.job --model 90     # ... and makes a faster copy of itself (four minutes)
 python -m duwamish run jobs/copycat.job --model 90     # Copycat's analogies (half a minute)
 python -m duwamish run jobs/fiveyear.job --model 90    # Good's five-year plan v. Shannon (six minutes)
 python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
@@ -142,9 +143,12 @@ shows, and what it does not.
 * `sequences.sal` / `floop.sal`: BlooP certified, FlooP refused.
 * `metacircular.lsp`: a tower of interpreters with a strange loop at the top.
 * `selfhost/salish.sal`: the SALISH compiler written in SALISH. On the
-  Duwamish it compiles itself and punches 8,813 cards identical to the
+  Duwamish it compiles itself and punches 15,154 cards identical to the
   satellite's own compilation, so the next generation is the same program:
-  the loop closes on itself (`jobs/bootstrap.job`).
+  the loop closes on itself (`jobs/bootstrap.job`). It carries the
+  optimiser too, so it can build an optimised copy of itself, 16% faster
+  and punching exactly the same cards. That copy's successor is itself:
+  the improvement happens once and stops (`jobs/improve.job`).
 * `diagonal.lsp`: Contracrostipunctus. A halting oracle and the record it
   cannot play.
 
@@ -160,7 +164,7 @@ double precision. The job compiles it twice, plainly and with SALISH/O.
 |---|---:|---:|---:|
 | plain SALISH | 0.070 | 0.0064 | 0.065 |
 | SALISH/O | 0.184 | 0.0078 | 0.216 |
-| SALISH/O, with the look-ahead unit | 0.264 | 0.0078 | 0.315 |
+| SALISH/O, with the look-ahead unit | 0.264 | 0.0080 | 0.315 |
 
 The unit made floating point ten times faster, but under the plain
 compiler no faster than fixed point: the machine was limited by issuing

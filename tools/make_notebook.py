@@ -378,7 +378,7 @@ Because generation 0 punches exactly the code it was made from,
 generation 1 *is* generation 0, and the loop closes on itself at once.
 This is Hofstadter's strange loop, a program that reproduces itself one
 level up. It is also Good's machine that can build its own successor. It
-takes about half a minute.
+takes about a minute and a half.
 """)
 
 code(r"""
@@ -395,6 +395,48 @@ The first cards generation 0 punched for itself:
 
 code(r"""
 print("\n".join(boot.jobs[0].steps[0].punched.splitlines()[:24]))
+""")
+
+md(r"""
+### The compiler improves itself, once
+
+SALISH/S also carries the optimiser. With `-- OPT` on its first card it
+compiles exactly as SALISH/O does: registers by usage counts, fixed
+vectors, rotated loops, the peephole pass. So the plain generation 0 can
+compile an *optimised* generation 1 of itself. `jobs/improve.job` does
+that on the Duwamish (about four minutes):
+
+| step | compiler | instructions to compile SALISH/S | its deck |
+|---|---|---:|---|
+| 1 | generation 0 (plain) | 104.0 million | 13,378 cards, the satellite's optimised compilation, card for card |
+| 2 | generation 1 (optimised) | 87.2 million | identical |
+| 3 | generation 2 | 87.2 million | identical |
+
+Generation 1 is 16% faster and thinks exactly the same thoughts, so its
+successor is itself. The improvement happens once and stops: a fixed
+point. The cell below shows the same thing in seconds. Generation 1 is
+taken from the satellite (the tests check it is identical to what
+generation 0 punches). Then both generations compile a few programs.
+""")
+
+code(r"""
+def compile_with(generation_opt, program):
+    deck = ("//JOB G\n//SALISH FROM=programs/selfhost/salish.sal"
+            + (" OPT" if generation_opt else "") + "\n//EXEC\n//DATA\n-- OPT\n"
+            + f"//DATA FROM={program}\n//DATA FROM=duwamish/lib/runtime.sal\n")
+    sat = satellite.Satellite([(deck, "g.job")], model=90, out=lambda s: None)
+    sat.run()
+    st = sat.jobs[0].steps[0]
+    return st.punched, st.result[4]
+rows = []
+for prog in ("programs/hello.sal", "programs/kleene.sal", "programs/hofstadter/miu.sal"):
+    d0, n0 = compile_with(False, prog)
+    d1, n1 = compile_with(True, prog)
+    print(f"{prog:32} same deck: {d0 == d1}   generation 0: {n0:,}   generation 1: {n1:,}"
+          f"   ({100 * (n0 - n1) / n0:.0f}% fewer)")
+    rows.append((prog.split("/")[-1], [n0, n1]))
+panel.show_bars("instructions to compile, optimising", rows,
+                ["generation 0 (plain)", "generation 1 (optimised)"])
 """)
 
 md(r"""

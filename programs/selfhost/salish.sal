@@ -41,6 +41,10 @@ const LSTACK = 20000
 const MAXSCOPE = 600
 const MAXLOOP = 100
 const ADDR_MAX = 21523360     -- (3^16 - 1) / 2: the largest address field
+const LBSIZE = 36000           -- characters of one procedure's code, held
+const MAXLINES = 1800          -- for the peephole pass
+const MAXCAND = 600            -- register candidates in one procedure
+const MAXLAB = 2400            -- labels in one procedure
 
 -- token kinds
 const T_EOF = 0
@@ -212,6 +216,9 @@ const OP_GLOBAL = 4            -- G_name
 const OP_PROC = 5              -- #P_name
 const OP_STRLAB = 6            -- #Sk
 const OP_TABLAB = 7            -- #Lk
+const OP_REG = 8               -- #0(Rk): a register variable
+const OP_R1 = 9                -- #0(R1)
+const OP_STATIC = 10           -- V_name+c, or V_name+c(Rk): the ring holds them
 
 -- static values in the data section: [kind, value]
 const SV_NUM = 1
@@ -242,18 +249,45 @@ global lst[LSTACK], lsp := 0           -- where lists are built
 
 global dkind[MAXDECL], dname[MAXDECL], da[MAXDECL], db[MAXDECL], ndecl := 0
 
-global sc_name[MAXSCOPE], sc_slot[MAXSCOPE], sc_top := 0, sc_base := 0
+global sc_name[MAXSCOPE], sc_slot[MAXSCOPE], sc_reg[MAXSCOPE]
+global sc_top := 0, sc_base := 0
 global lp_brk[MAXLOOP], lp_cont[MAXLOOP], lp_top := 0
 global nlocals, ret_label, nlabel := 0
 
 global dr_kind[MAXDATA], dr_a[MAXDATA], dr_b[MAXDATA], ndata := 0
 global strs[MAXSTR], nstrs := 0
 global litring[64], litpos := 0
+global sx_name[64], sx_c[64], sx_r[64], sxpos := 0
 global fok                                -- did the last fold succeed?
+
+-- the optimiser (see the second half of this program)
+global opt := false                       -- the first card says -- OPT
+global buffering := false
+global lb[LBSIZE], lbtop := 0, curstart := 0
+global ln_start[MAXLINES], ln_len[MAXLINES], nlines := 0
 
 -- ---------------------------------------------------------------------
 -- errors, and punching
 -- ---------------------------------------------------------------------
+-- All code goes out through outc.  Normally it goes straight to the
+-- punch; when optimising, a procedure's lines are held in the line
+-- buffer, improved by the peephole pass, and then punched.
+proc outc(c)
+begin
+  if not buffering then begin punch(c); return end
+  if c = '\n' then begin
+    if nlines >= MAXLINES then fail("a procedure too long to optimise")
+    ln_start[nlines] := curstart
+    ln_len[nlines] := lbtop - curstart
+    nlines := nlines + 1
+    curstart := lbtop
+  end else begin
+    if lbtop >= LBSIZE then fail("a procedure too long to optimise")
+    lb[lbtop] := c
+    lbtop := lbtop + 1
+  end
+end
+
 proc fail(msg)
 begin
   prints("*** SALISH/S: line "); print(tline); prints(": "); prints(msg)
@@ -271,28 +305,28 @@ end
 
 proc pstr(s)
 begin
-  for i := 1 to s[0] do punch(s[i])
+  for i := 1 to s[0] do outc(s[i])
 end
 
 proc pnum(n)
 begin
   var buf[14], k := 0, m := n
-  if m = 0 then begin punch('0'); return end
-  if m < 0 then begin punch('-'); m := -m end
+  if m = 0 then begin outc('0'); return end
+  if m < 0 then begin outc('-'); m := -m end
   for i := 1 to 14 do
     if m > 0 then begin buf[k] := m mod 10; m := m / 10; k := k + 1 end
-  for i := k - 1 to 0 by -1 do punch('0' + buf[i])
+  for i := k - 1 to 0 by -1 do outc('0' + buf[i])
 end
 
-proc pnl() = punch('\n')
+proc pnl() = outc('\n')
 proc plabel(k)
 begin
-  punch('L'); pnum(k)
+  outc('L'); pnum(k)
 end
 
 proc place(k)
 begin
-  plabel(k); punch(':'); pnl()
+  plabel(k); outc(':'); pnl()
 end
 
 -- an instruction: eight spaces, then the text
@@ -357,7 +391,7 @@ proc advance()
 begin
   la0 := la1
   la1 := la2
-  la2 := la1 < 0 -> -1, getc()
+  la2 := la1 < 0 -> -1, nextc()
 end
 
 proc is_letter(c) = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c = '_'
@@ -793,6 +827,7 @@ begin
       arms[0] := 0
       arms[1] := 0
       arms[2] := 0
+      from := lsp
       while not at_kw(K_END) do begin
         if at_op(';') then lex()
         else begin
@@ -808,10 +843,13 @@ begin
           lex()
           expect_op(':')
           arms[key + 1] := stmt()
+          push(arms[key + 1])
         end
       end
       lex()
-      return node(S_SIGN, e, arms[0], arms[1], arms[2])
+      d := node(S_SIGN, e, arms[0], arms[1], arms[2])
+      -- the arms in the order written: the register plan numbers them so
+      return node2(d, mklist(from))
     end
     if tval = K_RETURN then begin
       lex()
@@ -920,8 +958,19 @@ begin
   if sc_top >= MAXSCOPE then fail("too many local names")
   sc_name[sc_top] := name
   sc_slot[sc_top] := slot
+  sc_reg[sc_top] := 0
   sc_top := sc_top + 1
 end
+
+-- a local that lives in register r
+proc add_reg(name, r)
+begin
+  add_local(name, 0)
+  sc_reg[sc_top - 1] := r
+end
+
+proc local_op(i) = sc_reg[i] <> 0 -> mkop(OP_REG, sc_reg[i]), mkop(OP_LOCAL, sc_slot[i])
+proc reg_of(op) = opkind(op) = OP_REG -> opval(op), 0
 
 proc new_slot(size)
 begin
@@ -999,13 +1048,21 @@ end
 proc pop_(op)
 begin
   var k := opkind(op), v := opval(op)
-  if k = OP_IMM then begin punch('#'); pnum(v) end
-  else if k = OP_LIT then begin punch('='); pnum(litring[v]) end
+  if k = OP_IMM then begin outc('#'); pnum(v) end
+  else if k = OP_LIT then begin outc('='); pnum(litring[v]) end
   else if k = OP_LOCAL then begin pnum(v); pstr("(FP)") end
+  else if k = OP_REG then begin pstr("#0(R"); pnum(v); outc(')') end
+  else if k = OP_R1 then pstr("#0(R1)")
+  else if k = OP_STATIC then begin
+    pstr("V_"); pstr(nm_text[sx_name[v]])
+    if sx_c[v] >= 0 then outc('+')
+    pnum(sx_c[v])
+    if sx_r[v] <> 0 then begin pstr("(R"); pnum(sx_r[v]); outc(')') end
+  end
   else if k = OP_GLOBAL then begin pstr("G_"); pstr(nm_text[v]) end
   else if k = OP_PROC then begin pstr("#P_"); pstr(nm_text[v]) end
   else if k = OP_STRLAB then begin pstr("#S"); pnum(v) end
-  else begin punch('#'); plabel(v) end
+  else begin outc('#'); plabel(v) end
 end
 
 proc insop(s, op)
@@ -1082,7 +1139,7 @@ proc psv(r)
 begin
   var k := r[0]
   if k = SV_NUM then pnum(r[1])
-  else if k = SV_STR then begin punch('S'); pnum(r[1]) end
+  else if k = SV_STR then begin outc('S'); pnum(r[1]) end
   else if k = SV_TABLE then plabel(r[1])
   else if k = SV_PROC then begin pstr("P_"); pstr(nm_text[r[1]]) end
   else begin pstr("G_"); pstr(nm_text[r[1]]) end
@@ -1095,7 +1152,7 @@ begin
     k := dr_kind[i]
     if k = DR_STR then begin
       s := dr_b[i]
-      punch('S'); pnum(dr_a[i]); pstr(":  DATA "); pnum(s[0])
+      outc('S'); pnum(dr_a[i]); pstr(":  DATA "); pnum(s[0])
       for j := 1 to s[0] do begin pstr(", "); pnum(s[j]) end
       pnl()
     end else if k = DR_TABLE then begin
@@ -1126,11 +1183,12 @@ begin
   if fok then return imm(v)
   if k = N_NAME then begin
     i := lookup_local(e[1])
-    if i >= 0 then return mkop(OP_LOCAL, sc_slot[i])
+    if i >= 0 then return local_op(i)
     if nm_kind[e[1]] = SYM_GLOBAL then return mkop(OP_GLOBAL, e[1])
     if nm_kind[e[1]] = SYM_PROC then return mkop(OP_PROC, e[1])
     failname("undeclared name", e[1])
   end
+  if k = N_INDEX and opt then return static_index(e[1], e[2])
   if k = N_STR then return mkop(OP_STRLAB, string_label(e[1]))
   if k = N_TABLE then return mkop(OP_TABLAB, table_label(e))
   return 0
@@ -1139,7 +1197,7 @@ end
 proc var_operand(name)
 begin
   var i := lookup_local(name)
-  if i >= 0 then return mkop(OP_LOCAL, sc_slot[i])
+  if i >= 0 then return local_op(i)
   if nm_kind[name] = SYM_GLOBAL then return mkop(OP_GLOBAL, name)
   if nm_kind[name] = 0 then failname("undeclared name", name)
   failname("cannot assign to", name)
@@ -1155,6 +1213,7 @@ begin
     else begin gen_expr(e[1]); insl("NEG  R1, #0(R1)") end
   end else if k = N_ADDR then begin
     i := lookup_local(e[1])
+    if i >= 0 and sc_reg[i] <> 0 then fail("internal error: address of a register variable")
     if i >= 0 then insfp("LEA  R1, ", sc_slot[i])
     else if nm_kind[e[1]] = SYM_GLOBAL then begin
       ins("LD   R1, #G_"); pstr(nm_text[e[1]]); pnl()
@@ -1188,8 +1247,15 @@ begin
     cok := fok
     vop := simple(e[1])
     if cok and vop <> 0 and ci >= -ADDR_MAX and ci <= ADDR_MAX then begin
+      if reg_of(vop) <> 0 then begin
+        ins("LD   R1, "); pnum(ci); pstr("(R"); pnum(reg_of(vop)); outc(')'); pnl()
+        return
+      end
       insop("LD   R2, ", vop)
       ins("LD   R1, "); pnum(ci); pstr("(R2)"); pnl()
+    end else if is_static_vec(e[1]) then begin
+      gen_expr(e[2])
+      ins("LD   R1, V_"); pstr(nm_text[e[1][1]]); pstr("(R1)"); pnl()
     end else begin
       gen_index_addr(e[1], e[2])
       insl("LD   R1, 0(R1)")
@@ -1251,8 +1317,10 @@ end
 
 proc gen_compare(a, b)
 begin
-  var op := simple(b)
-  if op <> 0 then begin
+  var op := simple(b), ra := opt -> reg_of(simple(a)), 0
+  if op <> 0 and ra <> 0 then begin
+    ins("CMP  R"); pnum(ra); pstr(", "); pop_(op); pnl()
+  end else if op <> 0 then begin
     gen_expr(a)
     insop("CMP  R1, ", op)
   end else begin
@@ -1267,6 +1335,7 @@ end
 proc gen_test(e)
 begin
   if e[0] = N_BIN and e[1] = B_SUB then gen_compare(e[2], e[3])
+  else if opt and simple(e) <> 0 then insop("TST  ", simple(e))
   else begin
     gen_expr(e)
     insl("TST  #0(R1)")
@@ -1283,7 +1352,7 @@ begin
   end
   if k = N_CMP then begin
     gen_compare(e[2], e[3])
-    ins(jumpfalse[e[1]]); punch(' '); plabel(false_lab); pnl()
+    ins(jumpfalse[e[1]]); outc(' '); plabel(false_lab); pnl()
   end else if k = N_AND then begin
     gen_cond(e[1], false_lab)
     gen_cond(e[2], false_lab)
@@ -1292,7 +1361,7 @@ begin
     a := e[1]
     if a[0] = N_CMP then begin
       gen_compare(a[2], a[3])
-      ins(jumptrue[a[1]]); punch(' '); plabel(true_lab); pnl()
+      ins(jumptrue[a[1]]); outc(' '); plabel(true_lab); pnl()
     end else begin
       gen_expr(a)
       insl("TST  #0(R1)")
@@ -1304,7 +1373,10 @@ begin
   end else if k = N_NEG and e[1][0] = N_CMP then begin
     a := e[1]
     gen_compare(a[2], a[3])
-    ins(jumptrue[a[1]]); punch(' '); plabel(false_lab); pnl()
+    ins(jumptrue[a[1]]); outc(' '); plabel(false_lab); pnl()
+  end else if opt and simple(e) <> 0 then begin
+    insop("TST  ", simple(e))
+    inslab("JNP  ", false_lab)
   end else begin
     gen_expr(e)
     insl("TST  #0(R1)")
@@ -1314,7 +1386,22 @@ end
 
 proc gen_args_to_regs(args)
 begin
-  var n := args[0]
+  var n := args[0], bop, aop
+  if opt and n = 2 then begin
+    bop := simple(args[2])
+    if bop <> 0 then begin
+      gen_expr(args[1])
+      insop("LD   R2, ", bop)
+      return
+    end
+    aop := simple(args[1])
+    if aop <> 0 then begin
+      gen_expr(args[2])
+      insl("LD   R2, #0(R1)")
+      insop("LD   R1, ", aop)
+      return
+    end
+  end
   for i := 1 to n do begin gen_expr(args[i]); insl("PUSH R1") end
   for i := n to 1 by -1 do begin ins("POP  R"); pnum(i); pnl() end
 end
@@ -1412,7 +1499,17 @@ begin
     if op <> 0 then begin ins(s); pstr(" R1, "); pop_(op); pnl() end
     else begin gen_expr(args[1]); ins(s); pstr(" R1, #0(R1)"); pnl() end
   end else if name = I_HASFPU then insl("SVC  4")
-  else if name = I_STACKPTR then insl("LD   R1, #0(SP)")
+  else if name = I_STACKPTR then begin
+    if opt then begin
+      -- a conservative collector scans the stack for roots, so every
+      -- register variable is stored there first
+      if spill_at = 0 then spill_at := new_slot(4) + 3
+      for r := 3 to 6 do begin
+        ins("ST   R"); pnum(r); pstr(", "); pnum(spill_at - (r - 3)); pstr("(FP)"); pnl()
+      end
+    end
+    insl("LD   R1, #0(SP)")
+  end
   else if name = I_CATCH then begin
     resume := newlabel()
     gen_expr(args[1])
@@ -1422,6 +1519,7 @@ begin
     insl("ST   R2, 2(R1)")
     insl("LD   R1, #0")
     place(resume)
+    restore_saved()
   end else if name = I_THROW then begin
     gen_args_to_regs(args)
     insl("LD   FP, 0(R1)")
@@ -1472,19 +1570,29 @@ end
 
 proc s_var(s)
 begin
-  var list := s[1], d, n, base, slot
+  var list := s[1], d, n, base, slot, r
   for i := 1 to list[0] do begin
     d := list[i]
     for j := sc_base to sc_top - 1 do
       if sc_name[j] = d[0] then failname("already declared in this block:", d[0])
+    r := opt -> regof(CV, s, i), 0
     if d[1] <> 0 then begin
       n := fold(d[1])
       if not fok or n < 0 then fail("local vector size must be a constant")
       base := new_slot(n)
+      if r <> 0 then begin
+        add_reg(d[0], r)
+        ins("LEA  R"); pnum(r); pstr(", "); pnum(base); pstr("(FP)"); pnl()
+        next
+      end
       slot := new_slot(1)
       add_local(d[0], slot)
       insfp("LEA  R1, ", base)
       insfp("ST   R1, ", slot)
+    end else if r <> 0 then begin
+      add_reg(d[0], r)
+      if d[2] <> 0 then gen_into(mkop(OP_REG, r), d[2])
+      else begin ins("LD   R"); pnum(r); pstr(", #0"); pnl() end
     end else begin
       slot := new_slot(1)
       add_local(d[0], slot)
@@ -1498,22 +1606,52 @@ end
 
 proc s_assign(s)
 begin
-  var target := s[1], rhs := s[2], op, vec, idx, ci, cok, vop, rop
+  var target := s[1], rhs := s[2], op, vec, idx, ci, cok, vop, rop, sop, r
   if target[0] = N_NAME then begin
     op := var_operand(target[1])
+    r := reg_of(op)
+    if r <> 0 then begin
+      if not gen_update(r, target, rhs) then gen_into(op, rhs)
+      return
+    end
     gen_expr(rhs)
     insop("ST   R1, ", op)
     return
   end
   vec := target[1]
   idx := target[2]
+  sop := static_index(vec, idx)
+  if sop <> 0 then begin
+    gen_expr(rhs)
+    insop("ST   R1, ", sop)
+    return
+  end
   ci := fold(idx)
   cok := fok
   vop := simple(vec)
   if cok and vop <> 0 and ci >= -ADDR_MAX and ci <= ADDR_MAX then begin
     gen_expr(rhs)
+    if reg_of(vop) <> 0 then begin
+      ins("ST   R1, "); pnum(ci); pstr("(R"); pnum(reg_of(vop)); outc(')'); pnl()
+      return
+    end
     insop("LD   R2, ", vop)
     ins("ST   R1, "); pnum(ci); pstr("(R2)"); pnl()
+    return
+  end
+  if is_static_vec(vec) then begin
+    rop := simple(rhs)
+    if rop <> 0 then begin
+      gen_expr(idx)
+      insop("LD   R2, ", rop)
+      ins("ST   R2, V_"); pstr(nm_text[vec[1]]); pstr("(R1)"); pnl()
+      return
+    end
+    gen_expr(rhs)
+    insl("PUSH R1")
+    gen_expr(idx)
+    insl("POP  R2")
+    ins("ST   R2, V_"); pstr(nm_text[vec[1]]); pstr("(R1)"); pnl()
     return
   end
   rop := simple(rhs)
@@ -1581,6 +1719,7 @@ begin
   var st := fold(s[4]), stok := fok, slot, lim, stslot := 0, top, base,
       ltop, lcont, lend, up, go
   if stok and st = 0 then fail("the step of a for loop must not be zero")
+  if opt and stok then return s_for_rotated(s, st)
   top := sc_top
   base := sc_base
   slot := new_slot(1)
@@ -1696,13 +1835,13 @@ begin
   nlocals := 0
   ret_label := newlabel()
   frame := slots(body)
-  pstr("; proc "); pstr(nm_text[dname[i]]); punch('(')
+  pstr("; proc "); pstr(nm_text[dname[i]]); outc('(')
   for j := 1 to n do begin
     if j > 1 then pstr(", ")
     pstr(nm_text[params[j]])
   end
-  punch(')'); pnl()
-  pstr("P_"); pstr(nm_text[dname[i]]); punch(':'); pnl()
+  outc(')'); pnl()
+  pstr("P_"); pstr(nm_text[dname[i]]); outc(':'); pnl()
   insl("PUSH FP")
   insl("LEA  FP, 0(SP)")
   if frame > 0 then begin ins("LEA  SP, -"); pnum(frame); pstr("(SP)"); pnl() end
@@ -1716,9 +1855,881 @@ begin
   if nlocals <> frame then fail("internal error: frame size")
 end
 
+-- =====================================================================
+--  THE OPTIMISER.  With -- OPT on its first card, SALISH/S compiles as
+--  the satellite's optimising compiler, SALISH/O, does -- card for card
+--  (duwamish/optimise.py; docs/SALISH.md).  So it can make a faster copy
+--  of itself.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- the register plan: usage counts and scopes, taken before the code of
+-- a procedure is made, and the registers R3-R6 they earn
+-- ---------------------------------------------------------------------
+const CP = 1                   -- a parameter
+const CV = 2                   -- a variable of a var statement
+const CF = 3                   -- a for loop's control variable
+const CL = 4                   -- a for loop's computed limit
+const THRESHOLD = 10           -- about one use inside a loop
+
+global cd_kind[MAXCAND], cd_node[MAXCAND], cd_idx[MAXCAND], cd_w[MAXCAND]
+global cd_s[MAXCAND], cd_e[MAXCAND], cd_ok[MAXCAND], cd_reg[MAXCAND]
+global cd_done[MAXCAND], alloc_order[MAXCAND], nalloc, ncand
+global pl_name[MAXSCOPE], pl_cand[MAXSCOPE], pl_top, pl_pos, pl_catch
+global saved[4], nsaved
+global cur_params
+
+proc weight(d)
+begin
+  var w := 1
+  for i := 1 to min(d, 6) do w := w * 10
+  return w
+end
+
+proc newcand(kind, node, idx, w, start)
+begin
+  if ncand >= MAXCAND then fail("too many variables to plan")
+  cd_kind[ncand] := kind
+  cd_node[ncand] := node
+  cd_idx[ncand] := idx
+  cd_w[ncand] := w
+  cd_s[ncand] := start
+  cd_e[ncand] := -1
+  cd_ok[ncand] := true
+  cd_reg[ncand] := 0
+  cd_done[ncand] := false
+  ncand := ncand + 1
+  return ncand - 1
+end
+
+proc pl_bind(name, c)
+begin
+  if pl_top >= MAXSCOPE then fail("too many local names")
+  pl_name[pl_top] := name
+  pl_cand[pl_top] := c
+  pl_top := pl_top + 1
+end
+
+proc pl_find(name)
+begin
+  for i := pl_top - 1 to 0 by -1 do
+    if pl_name[i] = name then return pl_cand[i]
+  return -1
+end
+
+proc pl_expr(e, d)
+begin
+  var k, c, list
+  if e = 0 then return 0
+  k := e[0]
+  if k = N_NAME then begin
+    c := pl_find(e[1])
+    if c >= 0 then cd_w[c] := cd_w[c] + weight(d)
+  end else if k = N_ADDR then begin
+    c := pl_find(e[1])
+    if c >= 0 then cd_ok[c] := false        -- it must live in core
+  end else if k = N_CALL then begin
+    c := pl_find(e[1])
+    if c >= 0 then cd_w[c] := cd_w[c] + weight(d)
+    else if e[1] = I_CATCH and nm_kind[I_CATCH] <> SYM_PROC then pl_catch := true
+    list := e[2]
+    for i := 1 to list[0] do pl_expr(list[i], d)
+  end else if k = N_TABLE then begin
+    list := e[1]
+    for i := 1 to list[0] do pl_expr(list[i], d)
+  end else if k = N_NEG then pl_expr(e[1], d)
+  else if k = N_BIN or k = N_CMP then begin pl_expr(e[2], d); pl_expr(e[3], d) end
+  else if k = N_AND or k = N_OR or k = N_INDEX then begin
+    pl_expr(e[1], d)
+    pl_expr(e[2], d)
+  end else if k = N_COND then begin
+    pl_expr(e[1], d); pl_expr(e[2], d); pl_expr(e[3], d)
+  end
+end
+
+-- every candidate made since `from` that is still open ends here
+proc pl_close_since(from)
+begin
+  for c := from to ncand - 1 do if cd_e[c] < 0 then cd_e[c] := pl_pos
+end
+
+proc pl_declare(st, d)
+begin
+  var list := st[1], dcl, c
+  for i := 1 to list[0] do begin
+    dcl := list[i]
+    if dcl[2] <> 0 then pl_expr(dcl[2], d)
+    pl_pos := pl_pos + 1
+    c := newcand(CV, st, i, weight(d), pl_pos)
+    pl_bind(dcl[0], c)
+  end
+end
+
+proc pl_stmt(s, d)
+begin
+  var k, top, from, list, c, fb
+  if s = 0 then return 0
+  pl_pos := pl_pos + 1
+  k := s[0]
+  if k = S_BLOCK then begin
+    top := pl_top
+    from := ncand
+    list := s[1]
+    for i := 1 to list[0] do
+      if list[i][0] = S_VAR then pl_declare(list[i], d) else pl_stmt(list[i], d)
+    pl_close_since(from)
+    pl_top := top
+  end else if k = S_VAR then begin
+    top := pl_top
+    from := ncand
+    pl_declare(s, d)
+    pl_close_since(from)
+    pl_top := top
+  end else if k = S_EXPR then pl_expr(s[1], d)
+  else if k = S_ASSIGN then begin pl_expr(s[1], d); pl_expr(s[2], d) end
+  else if k = S_IF then begin
+    pl_expr(s[1], d)
+    pl_stmt(s[2], d)
+    if s[3] <> 0 then pl_stmt(s[3], d)
+  end else if k = S_WHILE then begin pl_expr(s[1], d + 1); pl_stmt(s[2], d + 1) end
+  else if k = S_REPEAT then begin pl_stmt(s[1], d + 1); pl_expr(s[2], d + 1) end
+  else if k = S_FOR then begin
+    pl_expr(s[2], d)
+    pl_expr(s[3], d)
+    pl_expr(s[4], d)
+    pl_pos := pl_pos + 1
+    from := ncand
+    -- the increment and the test use it on every pass
+    c := newcand(CF, s, 0, 3 * weight(d + 1), pl_pos)
+    fb := fold(s[3])
+    if not fok then newcand(CL, s, 0, weight(d + 1), pl_pos)
+    top := pl_top
+    pl_bind(s[1], c)
+    pl_stmt(s[5], d + 1)
+    pl_pos := pl_pos + 1
+    pl_close_since(from)
+    pl_top := top
+  end else if k = S_SIGN then begin
+    pl_expr(s[1], d)
+    list := s[5]
+    for i := 1 to list[0] do pl_stmt(list[i], d)
+  end else if k = S_RETURN then pl_expr(s[1], d)
+end
+
+proc plan(params, body)
+begin
+  var best, bw, r, busy[7]
+  ncand := 0
+  pl_top := 0
+  pl_pos := 0
+  pl_catch := false
+  for i := 1 to params[0] do pl_bind(params[i], newcand(CP, 0, i, 0, 0))
+  pl_stmt(body, 0)
+  pl_pos := pl_pos + 1
+  for c := 0 to ncand - 1 do if cd_e[c] < 0 then cd_e[c] := pl_pos
+  nalloc := 0
+  if not pl_catch then
+    -- the heaviest candidates first; a register a candidate does not
+    -- overlap in scope may be shared
+    while true do begin
+      best := -1
+      for c := 0 to ncand - 1 do
+        if cd_ok[c] and not cd_done[c] and cd_w[c] >= THRESHOLD and
+           (best < 0 or cd_w[c] > bw) then begin best := c; bw := cd_w[c] end
+      if best < 0 then break
+      cd_done[best] := true
+      for j := 3 to 6 do busy[j] := false
+      for m := 0 to nalloc - 1 do begin
+        r := alloc_order[m]
+        if cd_s[r] <= cd_e[best] and cd_s[best] <= cd_e[r] then busy[cd_reg[r]] := true
+      end
+      for j := 3 to 6 do
+        if cd_reg[best] = 0 and not busy[j] then cd_reg[best] := j
+      if cd_reg[best] <> 0 then begin
+        alloc_order[nalloc] := best
+        nalloc := nalloc + 1
+      end
+    end
+  -- a procedure with a catchpoint saves every register
+  nsaved := 0
+  for j := 3 to 6 do begin
+    r := pl_catch
+    for m := 0 to nalloc - 1 do if cd_reg[alloc_order[m]] = j then r := true
+    if r then begin saved[nsaved] := j; nsaved := nsaved + 1 end
+  end
+end
+
+proc regof(kind, node, idx)
+begin
+  for c := 0 to ncand - 1 do
+    if cd_kind[c] = kind and cd_node[c] = node and cd_idx[c] = idx then
+      return cd_reg[c]
+  return 0
+end
+
+proc pcandname(c)
+begin
+  var k := cd_kind[c], n := cd_node[c]
+  if k = CP then pstr(nm_text[cur_params[cd_idx[c]]])
+  else if k = CV then pstr(nm_text[n[1][cd_idx[c]][0]])
+  else if k = CF then pstr(nm_text[n[1]])
+  else begin pstr(nm_text[n[1]]); pstr("-limit") end
+end
+
+-- ---------------------------------------------------------------------
+-- vectors at fixed addresses: global vectors the program never
+-- reassigns, and whose address it never takes
+-- ---------------------------------------------------------------------
+global sv_gone[MAXNAMES], sv_static[MAXNAMES]
+
+proc sv_expr(e)
+begin
+  var k, list
+  if e = 0 then return 0
+  k := e[0]
+  if k = N_ADDR then sv_gone[e[1]] := true
+  else if k = N_CALL or k = N_TABLE then begin
+    list := k = N_CALL -> e[2], e[1]
+    for i := 1 to list[0] do sv_expr(list[i])
+  end else if k = N_NEG then sv_expr(e[1])
+  else if k = N_BIN or k = N_CMP then begin sv_expr(e[2]); sv_expr(e[3]) end
+  else if k = N_AND or k = N_OR or k = N_INDEX then begin sv_expr(e[1]); sv_expr(e[2]) end
+  else if k = N_COND then begin sv_expr(e[1]); sv_expr(e[2]); sv_expr(e[3]) end
+end
+
+proc sv_stmt(s)
+begin
+  var k, list, dcl
+  if s = 0 then return 0
+  k := s[0]
+  if k = S_BLOCK then begin
+    list := s[1]
+    for i := 1 to list[0] do sv_stmt(list[i])
+  end else if k = S_VAR then begin
+    list := s[1]
+    for i := 1 to list[0] do begin
+      dcl := list[i]
+      sv_expr(dcl[1])
+      sv_expr(dcl[2])
+    end
+  end else if k = S_EXPR or k = S_RETURN then sv_expr(s[1])
+  else if k = S_ASSIGN then begin
+    if s[1][0] = N_NAME then sv_gone[s[1][1]] := true
+    sv_expr(s[1])
+    sv_expr(s[2])
+  end else if k = S_IF then begin sv_expr(s[1]); sv_stmt(s[2]); sv_stmt(s[3]) end
+  else if k = S_WHILE then begin sv_expr(s[1]); sv_stmt(s[2]) end
+  else if k = S_REPEAT then begin sv_stmt(s[1]); sv_expr(s[2]) end
+  else if k = S_FOR then begin
+    sv_expr(s[2]); sv_expr(s[3]); sv_expr(s[4]); sv_stmt(s[5])
+  end else if k = S_SIGN then begin
+    sv_expr(s[1]); sv_stmt(s[2]); sv_stmt(s[3]); sv_stmt(s[4])
+  end
+end
+
+proc static_vectors()
+begin
+  for i := 0 to ndecl - 1 do
+    if dkind[i] = D_GLOBAL then begin sv_expr(da[i]); sv_expr(db[i]) end
+    else if dkind[i] = D_PROC then sv_stmt(db[i])
+  for i := 0 to ndecl - 1 do
+    if dkind[i] = D_GLOBAL and da[i] <> 0 and sv_gone[dname[i]] <> true then
+      sv_static[dname[i]] := true
+end
+
+-- ---------------------------------------------------------------------
+-- code that knows about registers and fixed vectors
+-- ---------------------------------------------------------------------
+global spill_at := 0, saveslot[4]
+
+proc mkstatic(name, c, r)
+begin
+  var k := sxpos
+  sx_name[k] := name
+  sx_c[k] := c
+  sx_r[k] := r
+  sxpos := (sxpos + 1) mod 64
+  return mkop(OP_STATIC, k)
+end
+
+proc is_static_vec(vec)
+begin
+  -- (the flags start at 0, which in SALISH is unknown, not false)
+  if not opt or vec[0] <> N_NAME or sv_static[vec[1]] <> true then return false
+  return lookup_local(vec[1]) < 0 and nm_kind[vec[1]] = SYM_GLOBAL
+end
+
+-- vec[idx] as one operand: V_vec+c, or V_vec+c(Rk) with Rk an index register
+proc static_index(vec, idx)
+begin
+  var c, r := 0, ca, cok, cb
+  if not is_static_vec(vec) then return 0
+  c := fold(idx)
+  if fok then return mkstatic(vec[1], c, 0)
+  c := 0
+  if idx[0] = N_NAME then r := reg_of(simple(idx))
+  else if idx[0] = N_BIN and (idx[1] = B_ADD or idx[1] = B_SUB) then begin
+    ca := fold(idx[2])
+    cok := fok
+    cb := fold(idx[3])
+    if fok and idx[2][0] = N_NAME then begin
+      r := reg_of(simple(idx[2]))
+      c := idx[1] = B_ADD -> cb, -cb
+    end else if cok and idx[1] = B_ADD and idx[3][0] = N_NAME then begin
+      r := reg_of(simple(idx[3]))
+      c := ca
+    end
+  end
+  return r <> 0 -> mkstatic(vec[1], c, r), 0
+end
+
+proc store_r1(op)
+begin
+  if reg_of(op) <> 0 then begin ins("LD   R"); pnum(reg_of(op)); pstr(", #0(R1)"); pnl() end
+  else insop("ST   R1, ", op)
+end
+
+-- evaluate e into the variable operand op
+proc gen_into(op, e)
+begin
+  var r := reg_of(op), src := 0
+  if r <> 0 then src := simple(e)
+  if src <> 0 then begin ins("LD   R"); pnum(r); pstr(", "); pop_(src); pnl() end
+  else begin
+    gen_expr(e)
+    store_r1(op)
+  end
+end
+
+proc same_name(n, target) = n[0] = N_NAME and n[1] = target[1]
+
+-- x := x op e, with x in register r: one instruction on r
+proc gen_update(r, target, rhs)
+begin
+  var a, b, t, s, name, cb, bop, list
+  if rhs[0] = N_BIN and rhs[1] <> B_SHR then begin
+    a := rhs[2]
+    b := rhs[3]
+    s := arith[rhs[1]]
+    if not same_name(a, target) and same_name(b, target) and
+       (rhs[1] = B_ADD or rhs[1] = B_MUL or rhs[1] = B_AND or rhs[1] = B_OR) then begin
+      t := a; a := b; b := t
+    end
+    if not same_name(a, target) then return false
+  end else if rhs[0] = N_BIN and rhs[1] = B_SHR and same_name(rhs[2], target) then begin
+    cb := fold(rhs[3])
+    if not fok then return false
+    ins("SHF  R"); pnum(r); pstr(", "); pop_(imm(-cb)); pnl()
+    return true
+  end else if rhs[0] = N_CALL and rhs[1] >= I_FADD and rhs[1] <= I_FDIV and
+              lookup_local(rhs[1]) < 0 and nm_kind[rhs[1]] = 0 and
+              rhs[2][0] = 2 then begin
+    list := rhs[2]
+    a := list[1]
+    b := list[2]
+    name := rhs[1]
+    s := name = I_FADD -> "FAD ", name = I_FSUB -> "FSB ",
+         name = I_FMUL -> "FMP ", "FDV "
+    if not same_name(a, target) and same_name(b, target) and
+       (name = I_FADD or name = I_FMUL) then begin t := a; a := b; b := t end
+    if not same_name(a, target) then return false
+  end else return false
+  bop := simple(b)
+  if bop = 0 then begin
+    gen_expr(b)
+    bop := mkop(OP_R1, 0)
+  end
+  ins(s); pstr(" R"); pnum(r); pstr(", "); pop_(bop); pnl()
+  return true
+end
+
+-- a counted loop with the test at the bottom: one conditional jump a pass
+global rot_r, rot_vop, rot_lim, rot_limc, rot_limok
+proc rot_test(r, vop, limop, limc, limok)
+begin
+  var op := limok -> imm(limc), limop
+  if r <> 0 then begin ins("CMP  R"); pnum(r); pstr(", "); pop_(op); pnl() end
+  else begin
+    insop("LD   R1, ", vop)
+    insop("CMP  R1, ", op)
+  end
+end
+
+proc s_for_rotated(s, st)
+begin
+  var r := regof(CF, s, 0), vop, slot := 0, cb, limok, limop := 0, lr, ltop, lcont,
+      lend, top, base
+  if r <> 0 then vop := mkop(OP_REG, r)
+  else begin
+    slot := new_slot(1)
+    vop := mkop(OP_LOCAL, slot)
+  end
+  gen_into(vop, s[2])
+  cb := fold(s[3])
+  limok := fok
+  if not limok then begin
+    lr := regof(CL, s, 0)
+    limop := lr <> 0 -> mkop(OP_REG, lr), mkop(OP_LOCAL, new_slot(1))
+    gen_into(limop, s[3])
+  end
+  ltop := newlabel()
+  lcont := newlabel()
+  lend := newlabel()
+  top := sc_top
+  base := sc_base
+  sc_base := sc_top
+  if r <> 0 then add_reg(s[1], r) else add_local(s[1], slot)
+  rot_test(r, vop, limop, cb, limok)
+  inslab(st > 0 -> "JP   ", "JN   ", lend)
+  place(ltop)
+  loop_push(lend, lcont)
+  gen_stmt(s[5])
+  lp_top := lp_top - 1
+  sc_top := top
+  sc_base := base
+  place(lcont)
+  if r <> 0 then begin ins("ADD  R"); pnum(r); pstr(", "); pop_(imm(st)); pnl() end
+  else begin
+    insop("LD   R1, ", vop)
+    insop("ADD  R1, ", imm(st))
+    insop("ST   R1, ", vop)
+  end
+  rot_test(r, vop, limop, cb, limok)
+  inslab(st > 0 -> "JNP  ", "JNN  ", ltop)
+  place(lend)
+end
+
+proc restore_saved()
+begin
+  for k := 0 to nsaved - 1 do begin
+    ins("LD   R"); pnum(saved[k]); pstr(", "); pnum(saveslot[k]); pstr("(FP)"); pnl()
+  end
+end
+
+-- a procedure, optimised: its lines are held, improved, then punched
+proc gen_proc_opt(i)
+begin
+  var params := da[i], body := db[i], n, r, frame_line, first, m
+  n := params[0]
+  cur_params := params
+  sc_top := 0
+  sc_base := 0
+  plan(params, body)
+  lp_top := 0
+  spill_at := 0
+  for j := 1 to n do begin
+    for k := 0 to sc_top - 1 do
+      if sc_name[k] = params[j] then failname("parameter repeated:", params[j])
+    r := regof(CP, 0, j)
+    if r <> 0 then add_reg(params[j], r) else add_local(params[j], 2 + (n - j))
+  end
+  nlocals := 0
+  ret_label := newlabel()
+  lab_base := ret_label
+  buffering := true
+  lbtop := 0
+  curstart := 0
+  nlines := 0
+  pstr("; proc "); pstr(nm_text[dname[i]]); outc('(')
+  for j := 1 to n do begin
+    if j > 1 then pstr(", ")
+    pstr(nm_text[params[j]])
+  end
+  outc(')')
+  if nalloc > 0 then begin
+    pstr("   registers: ")
+    first := true
+    for rr := 3 to 6 do
+      for k := 0 to nalloc - 1 do begin
+        m := alloc_order[k]
+        if cd_reg[m] = rr then begin
+          if not first then pstr(", ")
+          first := false
+          outc('R'); pnum(rr); outc('='); pcandname(m)
+        end
+      end
+  end
+  pnl()
+  pstr("P_"); pstr(nm_text[dname[i]]); outc(':'); pnl()
+  insl("PUSH FP")
+  insl("LEA  FP, 0(SP)")
+  frame_line := nlines
+  pnl()                                    -- the frame, when its size is known
+  -- callee saves: the registers this procedure uses
+  for k := 0 to nsaved - 1 do begin
+    saveslot[k] := new_slot(1)
+    ins("ST   R"); pnum(saved[k]); pstr(", "); pnum(saveslot[k]); pstr("(FP)"); pnl()
+  end
+  for j := 1 to n do begin
+    r := regof(CP, 0, j)
+    if r <> 0 then begin
+      ins("LD   R"); pnum(r); pstr(", "); pnum(2 + (n - j)); pstr("(FP)"); pnl()
+    end
+  end
+  sc_base := sc_top
+  gen_stmt(body)
+  insl("LD   R1, #0")
+  place(ret_label)
+  restore_saved()
+  insl("LEA  SP, 0(FP)")
+  insl("POP  FP")
+  if n > 0 then begin ins("RET  "); pnum(n); pnl() end else insl("RET")
+  if nlocals > 0 then begin
+    ins("LEA  SP, -"); pnum(nlocals); pstr("(SP)"); pnl()
+    nlines := nlines - 1
+    ln_start[frame_line] := ln_start[nlines]
+    ln_len[frame_line] := ln_len[nlines]
+  end else begin
+    for k := frame_line to nlines - 2 do begin
+      ln_start[k] := ln_start[k + 1]
+      ln_len[k] := ln_len[k + 1]
+    end
+    nlines := nlines - 1
+  end
+  buffering := false
+  peephole()
+  for k := 0 to nlines - 1 do begin
+    for j := ln_start[k] to ln_start[k] + ln_len[k] - 1 do punch(lb[j])
+    punch('\n')
+  end
+end
+
+-- ---------------------------------------------------------------------
+-- the peephole pass, over one procedure's lines, pass after pass until
+-- nothing changes (duwamish/optimise.py, rule for rule)
+-- ---------------------------------------------------------------------
+const PK_OTHER = 0
+const PK_LABEL = 1
+const PK_OP = 2
+global mnem := table("JMP", "RET", "JN", "JZ", "JP", "JNN", "JNZ", "JNP", "J3",
+                     "SEL", "ST", "LD", "TST", "POP", "PUSH", "CALL", "SVC",
+                     "JSR", "ADD", "SUB", "MUL", "DIV", "MOD", "NEG", "AND",
+                     "OR", "EQV", "SHF", "XTR")
+const M_JMP = 1
+const M_RET = 2
+const M_JN = 3
+const M_JNP = 8
+const M_J3 = 9
+const M_SEL = 10
+const M_ST = 11
+const M_LD = 12
+const M_TST = 13
+const M_POP = 14
+const M_PUSH = 15
+const M_CALL = 16
+const M_SVC = 17
+const M_JSR = 18
+const M_ADD = 19
+const NMNEM = 29
+global pk[MAXLINES], pmn[MAXLINES], pos_[MAXLINES], pln[MAXLINES]
+global pas[MAXLINES], pal[MAXLINES], plab[MAXLINES]
+global dead[MAXLINES], prot[MAXLINES]
+global lab_pos[MAXLAB], lab_first[MAXLAB], lab_ref[MAXLAB], lab_st[MAXLAB]
+global lab_fst[MAXLAB], lab_rst[MAXLAB], pstamp := 0
+global lab_base                -- the procedure's first label: labels count from it
+
+proc is_word(c) = is_letter(c) or is_digit(c)
+proc condj(m) = m >= M_JN and m <= M_JNP
+proc reads_c(m) = (m >= M_JN and m <= M_J3) or m = M_SEL
+proc sets_c(m) = m = M_LD or m = M_SEL or m = M_POP or (m >= M_ADD and m <= NMNEM)
+
+-- does the text at lb[a .. a+n-1] equal the string s?
+proc lbeq(a, n, s)
+begin
+  if n <> s[0] then return false
+  for i := 1 to n do if lb[a + i - 1] <> s[i] then return false
+  return true
+end
+
+proc lbsame(a, n, b, m)
+begin
+  if n <> m then return false
+  for i := 0 to n - 1 do if lb[a + i] <> lb[b + i] then return false
+  return true
+end
+
+-- the number of a label L<digits> at lb[a..a+n-1], or -1
+proc labnum(a, n)
+begin
+  var v := 0
+  if n < 2 or lb[a] <> 'L' then return -1
+  for i := a + 1 to a + n - 1 do begin
+    if not is_digit(lb[i]) then return -1
+    v := 10 * v + lb[i] - '0'
+  end
+  v := v - lab_base
+  return v >= 0 and v < MAXLAB -> v, -1
+end
+
+proc parse_line(i)
+begin
+  var a := ln_start[i], n := ln_len[i], j, e, m
+  pk[i] := PK_OTHER
+  plab[i] := -1
+  if n > 8 and lb[a] = ' ' and lb[a + 7] = ' ' and lb[a + 8] <> ' ' and
+     lb[a + 8] <> ';' then begin
+    for k := 0 to 7 do if lb[a + k] <> ' ' then return 0
+    pk[i] := PK_OP
+    j := a + 8
+    while j < a + n and lb[j] <> ' ' do j := j + 1
+    pos_[i] := a + 8
+    pln[i] := j - (a + 8)
+    m := 0
+    for k := 0 to NMNEM - 1 do
+      if m = 0 and lbeq(a + 8, pln[i], mnem[k]) then m := k + 1
+    pmn[i] := m = 0 -> 99, m
+    while j < a + n and lb[j] = ' ' do j := j + 1
+    e := a + n
+    while e > j and lb[e - 1] = ' ' do e := e - 1
+    pas[i] := j
+    pal[i] := e - j
+  end else if n > 1 and lb[a + n - 1] = ':' and is_letter(lb[a]) then begin
+    for k := a to a + n - 2 do if not is_word(lb[k]) and lb[k] <> '.' then return 0
+    pk[i] := PK_LABEL
+    pas[i] := a
+    pal[i] := n - 1
+    plab[i] := labnum(a, n - 1)
+  end
+end
+
+-- the next instruction after line i, skipping comments; -1 if a label
+-- or anything else comes first
+proc nxt(i)
+begin
+  var j := i + 1
+  while j < nlines and pk[j] = PK_OTHER and lb[ln_start[j]] = ';' do j := j + 1
+  return j < nlines and pk[j] = PK_OP -> j, -1
+end
+
+-- does lb[a..a+n-1] mention R2 or SP as a word?
+proc mentions_r2_sp(a, n)
+begin
+  var c1, c2, before, after
+  for i := a to a + n - 2 do begin
+    c1 := lb[i]
+    c2 := lb[i + 1]
+    if (c1 = 'R' and c2 = '2') or (c1 = 'S' and c2 = 'P') then begin
+      before := i = a -> ' ', lb[i - 1]
+      after := i + 2 >= a + n -> ' ', lb[i + 2]
+      if not is_word(before) and not is_word(after) then return true
+    end
+  end
+  return false
+end
+
+proc lbput(c)
+begin
+  if lbtop >= LBSIZE then fail("a procedure too long to optimise")
+  lb[lbtop] := c
+  lbtop := lbtop + 1
+end
+
+-- rewrite line i as the instruction `op args`, from other lines' text
+proc set_line(i, oa, on, aa, an)
+begin
+  var start := lbtop
+  for k := 1 to 8 do lbput(' ')
+  for k := 0 to on - 1 do lbput(lb[oa + k])
+  for k := on to 3 do lbput(' ')
+  lbput(' ')
+  for k := 0 to an - 1 do lbput(lb[aa + k])
+  ln_start[i] := start
+  ln_len[i] := lbtop - start
+end
+
+proc set_ld_r2(i)
+begin
+  var start := lbtop, s := "        LD   R2, #0(R1)"
+  for k := 1 to s[0] do lbput(s[k])
+  ln_start[i] := start
+  ln_len[i] := s[0]
+end
+
+proc peephole()
+begin
+  var changed := true, n, t, j, k, y, after, ok, m, g, a, cnt
+  while changed do begin
+    changed := false
+    n := nlines
+    pstamp := pstamp + 1
+    for i := 0 to n - 1 do begin
+      parse_line(i)
+      dead[i] := false
+      prot[i] := false
+    end
+    for i := 0 to n - 1 do
+      if pk[i] = PK_LABEL and plab[i] >= 0 then begin
+        lab_pos[plab[i]] := i
+        lab_st[plab[i]] := pstamp
+      end
+    -- J3 dispatch tables are positional: never touch their jumps
+    for i := 0 to n - 1 do
+      if pk[i] = PK_OP and pmn[i] = M_J3 then begin
+        g := labnum(pas[i], pal[i])
+        if g >= 0 and lab_st[g] = pstamp then begin
+          t := lab_pos[g]
+          for d := -1 to 2 do
+            if d <> 0 and t + d >= 0 and t + d < n then prot[t + d] := true
+        end
+      end
+    -- 1. unreferenced compiler labels
+    for i := 0 to n - 1 do
+      if pk[i] = PK_OP then begin
+        a := pas[i]
+        for c := a to a + pal[i] - 1 do
+          if lb[c] = 'L' and (c = a or not is_word(lb[c - 1])) then begin
+            j := c + 1
+            g := 0
+            while j < a + pal[i] and is_digit(lb[j]) do begin g := 10 * g + lb[j] - '0'; j := j + 1 end
+            g := g - lab_base
+            if j > c + 1 and (j = a + pal[i] or not is_word(lb[j])) and g >= 0 and
+               g < MAXLAB then lab_rst[g] := pstamp
+          end
+      end
+    for i := 0 to n - 1 do
+      if pk[i] = PK_LABEL and plab[i] >= 0 and lab_rst[plab[i]] <> pstamp then begin
+        dead[i] := true
+        changed := true
+      end
+    -- jump threading: a jump to a jump goes straight to the end
+    for i := 0 to n - 1 do
+      if pk[i] = PK_LABEL and plab[i] >= 0 then begin
+        j := i + 1
+        while j < n and pk[j] = PK_LABEL do j := j + 1
+        if j < n and pk[j] = PK_OP and not prot[j] then begin
+          lab_first[plab[i]] := j
+          lab_fst[plab[i]] := pstamp
+        end
+      end
+    for i := 0 to n - 1 do
+      if pk[i] = PK_OP and (pmn[i] = M_JMP or condj(pmn[i])) and not prot[i] then begin
+        g := labnum(pas[i], pal[i])
+        if g >= 0 and lab_fst[g] = pstamp then begin
+          j := lab_first[g]
+          if pmn[j] = M_JMP and labnum(pas[j], pal[j]) >= 0 and
+             not lbsame(pas[j], pal[j], pas[i], pal[i]) then begin
+            set_line(i, pos_[i], pln[i], pas[j], pal[j])
+            changed := true
+          end
+        end
+      end
+    for i := 0 to n - 1 do
+      if pk[i] = PK_OP and not dead[i] then begin
+        m := pmn[i]
+        -- 2. unreachable code after an unconditional transfer
+        if (m = M_JMP or m = M_RET) and not prot[i] then begin
+          j := i + 1
+          while j < n and pk[j] = PK_OP and not prot[j] do begin
+            dead[j] := true
+            changed := true
+            j := j + 1
+          end
+        end
+        -- 3. a jump to the very next instruction
+        if m = M_JMP and not prot[i] then begin
+          j := i + 1
+          while j < n and (pk[j] = PK_LABEL or dead[j]) do begin
+            if pk[j] = PK_LABEL and lbsame(pas[j], pal[j], pas[i], pal[i]) then begin
+              dead[i] := true
+              changed := true
+              break
+            end
+            j := j + 1
+          end
+        end
+        j := nxt(i)
+        if j >= 0 and not dead[j] then begin
+          k := nxt(j)
+          after := k >= 0 -> pmn[k], 0
+          a := pas[i]
+          -- 4. a load of what was just stored
+          if m = M_ST and pal[i] >= 3 and lb[a] = 'R' and lb[a + 1] = '1' and
+             lb[a + 2] = ',' and pmn[j] = M_LD and
+             lbsame(pas[j], pal[j], a, pal[i]) and not reads_c(after) then begin
+            dead[j] := true
+            changed := true
+          end
+          if m = M_LD and pal[i] = 10 and lb[a] = 'R' and lb[a + 1] >= '3' and
+             lb[a + 1] <= '6' and lbeq(a + 2, 8, ", #0(R1)") and pmn[j] = M_LD and
+             pal[j] = 10 and lbeq(pas[j], 8, "R1, #0(R") and
+             lb[pas[j] + 8] = lb[a + 1] and lb[pas[j] + 9] = ')' and
+             not reads_c(after) then begin
+            dead[j] := true
+            changed := true
+          end
+          -- 5. a test of what was just computed
+          if pmn[j] = M_TST and lbeq(pas[j], pal[j], "#0(R1)") and
+             ((sets_c(m) and pal[i] >= 3 and lb[a] = 'R' and lb[a + 1] = '1' and
+               lb[a + 2] = ',') or (m = M_POP and lbeq(a, pal[i], "R1"))) then begin
+            dead[j] := true
+            changed := true
+          end
+        end
+        -- 6. PUSH R1 ... POP R2 becomes a register move
+        if m = M_PUSH and lbeq(pas[i], pal[i], "R1") then begin
+          j := i + 1
+          ok := true
+          while j < n do begin
+            if dead[j] then j := j + 1
+            else begin
+              if pk[j] <> PK_OP then begin ok := false; break end
+              if pmn[j] = M_POP then break
+              y := pmn[j]
+              if y = M_PUSH or y = M_CALL or y = M_RET or y = M_SVC or y = M_JSR or
+                 y = M_JMP or y = M_J3 or condj(y) or
+                 mentions_r2_sp(pas[j], pal[j]) then begin ok := false; break end
+              j := j + 1
+            end
+          end
+          if ok and j < n and pk[j] = PK_OP and pmn[j] = M_POP and
+             lbeq(pas[j], pal[j], "R2") then begin
+            k := nxt(j)
+            if k < 0 or not reads_c(pmn[k]) then begin
+              set_ld_r2(i)
+              dead[j] := true
+              changed := true
+            end
+          end
+        end
+      end
+    -- keep the living lines
+    cnt := 0
+    for i := 0 to n - 1 do
+      if not dead[i] then begin
+        ln_start[cnt] := ln_start[i]
+        ln_len[cnt] := ln_len[i]
+        cnt := cnt + 1
+      end
+    nlines := cnt
+  end
+end
+
 -- ---------------------------------------------------------------------
 -- the compiler
 -- ---------------------------------------------------------------------
+-- the first card, read ahead to see whether it says -- OPT, and then
+-- given back to the tokenizer if it does not
+global pb[300], pbn := 0, pbi := 0
+proc nextc()
+begin
+  if pbi < pbn then begin pbi := pbi + 1; return pb[pbi - 1] end
+  return getc()
+end
+
+proc first_card()
+begin
+  var c := getc(), tag := "-- OPT"
+  while c >= 0 and c <> '\n' and pbn < 298 do begin
+    pb[pbn] := c
+    pbn := pbn + 1
+    c := getc()
+  end
+  if c >= 0 then begin pb[pbn] := c; pbn := pbn + 1 end
+  opt := pbn >= tag[0]
+  for i := 1 to tag[0] do if opt and pb[i - 1] <> tag[i] then opt := false
+  if opt then begin pbn := 0; line := 2 end
+end
+
 proc main()
 begin
   var name
@@ -1728,8 +2739,9 @@ begin
   intern("neg")
   intern("zero")
   intern("pos")
-  la1 := getc()
-  la2 := la1 < 0 -> -1, getc()
+  first_card()
+  la1 := nextc()
+  la2 := la1 < 0 -> -1, nextc()
   advance()
   lex()
   module()
@@ -1750,12 +2762,18 @@ begin
     end
   end
   if nm_kind[NM_MAIN] <> SYM_PROC then fail("no proc main")
-  pstr("; SALISH compiler output\n")
+  pstr("; SALISH compiler output")
+  if opt then pstr(" (optimised)")
+  pnl()
   pstr("        ENTRY START\n")
   pstr("START:  CALL P_main\n")
   pstr("        SVC  0\n")
+  if opt then static_vectors()
   for i := 0 to ndecl - 1 do if dkind[i] = D_GLOBAL then gen_global(i)
-  for i := 0 to ndecl - 1 do if dkind[i] = D_PROC then gen_proc(i)
+  for i := 0 to ndecl - 1 do
+    if dkind[i] = D_PROC then begin
+      if opt then gen_proc_opt(i) else gen_proc(i)
+    end
   pstr("CODE_END:\n")
   punch_data()
   prints("SALISH/S: "); print(ndecl); prints(" declarations, ")

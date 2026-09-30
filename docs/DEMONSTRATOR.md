@@ -16,7 +16,8 @@ python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play
 python -m duwamish run jobs/tower.job          # LISP in LISP in LISP (about a minute)
 python -m duwamish run jobs/fiveyear.job --model 90  # Good's five-year plan v. Shannon (about six minutes)
 python -m duwamish run jobs/copycat.job --model 90   # Copycat's analogies (about half a minute)
-python -m duwamish run jobs/bootstrap.job --model 90 # the compiler compiles itself (about half a minute)
+python -m duwamish run jobs/bootstrap.job --model 90 # the compiler compiles itself (a minute and a half)
+python -m duwamish run jobs/improve.job --model 90   # ... and makes a faster copy of itself (four minutes)
 python -m duwamish run jobs/tour.job           # the machine and its languages
 ```
 
@@ -397,36 +398,59 @@ Each costs about 100–160 times the level below. The top interpreter is the
 same *text* as the one below it, read as data: the program has become its
 own subject.
 
-### 15. The compiler that compiles itself — `programs/selfhost/salish.sal`
+### 15. The compiler that compiles itself, and improves itself once — `programs/selfhost/salish.sal`
 
-SALISH/S is the SALISH compiler written in SALISH: about a thousand lines,
-following the satellite's compiler part for part. It reads a program from
+SALISH/S is the SALISH compiler written in SALISH: about 2,800 lines,
+following the satellite's compilers part for part. It reads a program from
 the card reader and punches TRIAD code on the card punch (SVC 5). The
 control card `//TRIAD PUNCHED` assembles the cards a step punched, so one
-job deck can feed a compiler's output to the next step. `jobs/bootstrap.job`:
+job deck can feed a compiler's output to the next step.
+
+**The fixed point** (`jobs/bootstrap.job`, about a minute and a half):
 
 1. **Generation 0**, compiled by the satellite, compiles SALISH/S on the
-   Duwamish (23 million instructions; 8,813 cards).
+   Duwamish: 44 million instructions, 15,154 cards.
 2. The satellite assembles those cards into **generation 1**, and reports
    that they are *identical, card for card, to its own compilation*.
-   Generation 1 compiles SALISH/S again: the same 8,813 cards.
+   Generation 1 compiles SALISH/S again: the same 15,154 cards.
 3. **Generation 2** compiles a small program, and step 4 runs it.
 
 Because generation 0 reproduces exactly the code it was made from,
 generation 1 *is* generation 0. The loop closes on itself at once, a
 **fixed point** of compilation. It is the strange loop in its most literal
 form: a program whose output, one level up, is itself. (The quine, §10,
-does it at one level; this does it across two.) It is also Good's
-condition for an intelligence explosion in miniature: a machine that can
-build its own successor. The successor here is not yet better. Built by
-SALISH/O instead, generation 0 punches exactly the same cards in 9% fewer
-instructions: same output, faster maker. Teaching SALISH/S the
-optimiser's own tricks would carry that into every generation after it.
+does it at one level; this does it across two.)
+
+**The improvement** (`jobs/improve.job`, about four minutes). SALISH/S
+also carries the optimiser. With `-- OPT` on its first card it compiles
+exactly as SALISH/O does: the register plan by usage counts, fixed
+vectors, rotated loops and the peephole pass, card for card. So the
+machine can build a *better* successor:
+
+| step | compiler | instructions to compile SALISH/S, optimising | its deck |
+|---|---|---:|---|
+| 1 | generation 0 (plain) | 104.0 million | 13,378 cards: the satellite's optimised compilation, card for card |
+| 2 | generation 1 (optimised) | 87.2 million | identical |
+| 3 | generation 2 | 87.2 million | identical |
+
+This is Good's condition for an intelligence explosion, in miniature: a
+machine that improves the machine that improves machines. And it shows
+where the argument needs one more premise. Generation 1 is 16% faster,
+but it is the *same compiler*: it makes the same decisions and punches the
+same cards. So its successor is itself, and the improvement happens
+exactly once. A faster mind that thinks the same thoughts builds the same
+successor. Explosion needs each generation to be better at *designing*,
+not just quicker at it, and nothing here supplies that. The
+microcode-inventing demonstration (§1) reaches the same fixed point from
+the other side: its gains, too, converge.
 
 The tests check that SALISH/S agrees card for card with the satellite's
-compiler on the demonstration programs and on itself. That makes the two
-compilers each other's specification: a change to either that the other
-does not copy shows up as a difference.
+compilers, with and without OPT, on the demonstration programs, on random
+programs and on itself. That makes the compilers each other's
+specification. Mirroring the peephole pass found a real flaw in the
+Python one: removing an unused label did not count as a change, so a
+procedure could stop one step short of its best form, depending on what
+its neighbours were doing. Both are now fixed the same way.
 
 ### 16. Contracrostipunctus — `diagonal.lsp`
 

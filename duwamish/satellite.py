@@ -211,7 +211,8 @@ class Satellite:
                         o = "OPT" in args or self.optimise
                         pending_obj, asm, comp = translate_salish(
                             src, path, optimise=o)
-                        job.translations.append((sname, asm))
+                        job.translations.append(
+                            (sname + (" with OPT" if o else ""), asm))
                         msg = (f"SALISH{'/O' if o else ''}: {sname}: "
                                f"{len(pending_obj.words)}"
                                f" words, {len(comp.procs)} procedures")

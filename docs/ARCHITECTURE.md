@@ -362,7 +362,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | Executive | resident monitor | `duwamish/executive.tri` |
 | SALISH | BCPL-like systems language, three-valued logic, BlooP certification | [SALISH.md](SALISH.md) |
 | SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
-| SALISH/S | the SALISH compiler written in SALISH; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compiler | `programs/selfhost/salish.sal` |
+| SALISH/S | the SALISH compiler written in SALISH, with the optimiser; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compilers, with or without OPT | `programs/selfhost/salish.sal` |
 | TRILISP | LISP 1.5-style interpreter written in SALISH, ternary-tagged | [TRILISP.md](TRILISP.md) |
 
 ## 11. Speed
@@ -451,13 +451,13 @@ identical.
 
 | kernel | flops | fixed | soft float | FPU |
 |---|---:|---:|---:|---:|
-| 1 hydro fragment | 500 | 0.2918 | 0.0076 | 0.3498 |
+| 1 hydro fragment | 500 | 0.2918 | 0.0077 | 0.3498 |
 | 3 inner product | 200 | 0.2816 | 0.0082 | 0.4452 |
-| 5 tri-diagonal elimination | 198 | 0.2251 | 0.0073 | 0.3187 |
+| 5 tri-diagonal elimination | 198 | 0.2251 | 0.0074 | 0.3187 |
 | 7 equation of state | 1,600 | 0.2537 | 0.0083 | 0.4406 |
-| 11 first sum | 99 | 0.2721 | 0.0097 | 0.2339 |
-| 12 first difference | 100 | 0.2721 | 0.0066 | 0.2339 |
-| **harmonic mean** | | **0.2641** | **0.0078** | **0.3147** |
+| 11 first sum | 99 | 0.2721 | 0.0101 | 0.2339 |
+| 12 first difference | 100 | 0.2721 | 0.0071 | 0.2339 |
+| **harmonic mean** | | **0.2641** | **0.0080** | **0.3147** |
 
 Plainly compiled code gains little from the stack: 0.065 → 0.075 with the
 FPU. Its loops are about 20 instructions, mostly core references.

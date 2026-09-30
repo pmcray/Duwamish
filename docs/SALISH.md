@@ -220,15 +220,21 @@ benchmark.
 `programs/selfhost/salish.sal` is a SALISH compiler written in SALISH.
 It runs on the Duwamish, reads a program from the card reader, and
 punches TRIAD code on the card punch. Its output is the same, card for
-card, as the satellite's compiler without OPT. It follows that compiler
-part for part:
+card, as the satellite's compiler. If the first card is `-- OPT`, it is the
+same as SALISH/O's. It follows those compilers part for part:
 
 * a tokenizer that reads the cards as they come, with three characters of
   lookahead;
 * a recursive-descent parser that builds the tree in the heap;
 * a pass over the declarations;
-* a code generator that punches as it goes. It counts each procedure's
-  frame first, so that no card has to be held back.
+* a plain code generator that punches as it goes. It counts each
+  procedure's frame first, so that no card has to be held back.
+* the optimiser:
+  * the register plan by usage counts, and the search for vectors at
+    fixed addresses;
+  * the optimising code generator;
+  * the peephole pass. It holds one procedure's lines at a time, since
+    none of its rules reaches across a procedure.
 
 The cards are the program followed by `duwamish/lib/runtime.sal`, which
 the satellite's compiler includes by itself. It accepts all of SALISH
@@ -245,6 +251,11 @@ procedures. BlooP programs compile, but are not certified.
 //EXEC
 ```
 
+Put a card reading `-- OPT` before the program to have it optimise.
+
 `jobs/bootstrap.job` has it compile itself. The deck it punches is
 identical to the satellite's own compilation, so the next generation is
-the same program: see [DEMONSTRATOR.md](DEMONSTRATOR.md).
+the same program. `jobs/improve.job` has the plain compiler compile an
+optimised copy of itself. That copy is 16% faster, punches exactly the
+same cards, and so rebuilds itself unchanged: see
+[DEMONSTRATOR.md](DEMONSTRATOR.md).

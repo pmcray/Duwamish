@@ -274,7 +274,9 @@ def peephole(lines):
                 j += 1
             return j if j < n and p[j][0] == "op" else None
 
-        # 1. unreferenced compiler labels
+        # 1. unreferenced compiler labels.  Removing one counts as a change:
+        # it can expose more dead code, and each procedure must reach its
+        # own fixed point whatever its neighbours do
         refs = set()
         for x in p:
             if x[0] == "op":
@@ -284,6 +286,7 @@ def peephole(lines):
                     and x[1] not in refs:
                 dead[i] = True
                 note("unused labels")
+                changed = True
 
         # jump threading: a jump to a jump goes straight to the end
         first = {}

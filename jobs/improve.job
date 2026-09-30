@@ -1,0 +1,21 @@
+//JOB IMPROVE                    -- the compiler makes a faster copy of itself, and stops
+//SALISH FROM=../programs/selfhost/salish.sal OPT  -- for comparison: the satellite's optimised compilation
+//SALISH FROM=../programs/selfhost/salish.sal  -- generation 0: plain, made by the satellite
+//EXEC                           -- step 1: generation 0 compiles SALISH/S, optimising
+//DATA
+-- OPT
+//DATA FROM=../programs/selfhost/salish.sal
+//DATA FROM=../duwamish/lib/runtime.sal
+//TRIAD PUNCHED                  -- generation 1: SALISH/S, optimised
+//EXEC                           -- step 2: generation 1 does the same work
+//DATA
+-- OPT
+//DATA FROM=../programs/selfhost/salish.sal
+//DATA FROM=../duwamish/lib/runtime.sal
+//TRIAD PUNCHED                  -- generation 2
+//EXEC                           -- step 3: and generation 2
+//DATA
+-- OPT
+//DATA FROM=../programs/selfhost/salish.sal
+//DATA FROM=../duwamish/lib/runtime.sal
+//END
