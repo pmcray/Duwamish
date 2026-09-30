@@ -570,7 +570,118 @@ heapview.animate(heap)
 """)
 
 md(r"""
-## 14. Load your own program
+## 14. TRI-TRAN: FORTRAN on a ternary machine
+
+The laboratories who were to buy the Duwamish would bring FORTRAN, so the
+machine has a FORTRAN of 1966: TRI-TRAN (`docs/TRITRAN.md`). Its LOGICAL
+is three-valued, and `.AND.`, `.OR.` and `.EQV.` are single Kleene
+instructions. Its arithmetic IF, `IF (E) 10, 20, 30`, is one `J3`. Like
+FORTRAN I, it keeps each DO loop's index in an index register. Here is a
+small program and the code the compiler makes for it (without its
+library):
+""")
+
+code(r"""
+from duwamish import tritran
+SOURCE = '''
+      LOGICAL P, Q
+      DIMENSION A(100)
+      P = .TRUE.
+      Q = .UNKNOWN.
+      PRINT 10, P .AND. Q, P .OR. Q, .NOT. Q
+   10 FORMAT (1X, 3L2)
+      DO 20 K = 1, 100
+   20 A(K) = FLOAT(K - 50)
+      M = 0
+      N = 0
+      DO 30 K = 1, 100
+        IF (A(K)) 21, 22, 30
+   21   M = M + 1
+        GO TO 30
+   22   N = K
+   30 CONTINUE
+      PRINT 40, M, N
+   40 FORMAT (1X, I3, ' NEGATIVE; ZERO AT', I4)
+      END
+'''
+asm, comp = tritran.compile_source(SOURCE)
+print(asm.split("; SALISH compiler output")[0])
+sat = satellite.Satellite([("//JOB T\n//TRITRAN\n" + SOURCE + "\n//EXEC\n", "nb.job")],
+                          model=90, out=lambda s: None)
+sat.run()
+print(sat.jobs[0].steps[0].output)
+""")
+
+md(r"""
+The same six Livermore kernels, written in FORTRAN
+(`programs/livermore.ftn`), compute the same words to the last trit as
+the SALISH program's hardware column. Here is how fast each compiler's
+code runs them on the Model 90 with the floating-point unit. FORTRAN I's
+one idea, the index register, takes TRI-TRAN from plain SALISH's speed
+to within 1% of SALISH/O overall.
+""")
+
+code(r"""
+deck = '''//JOB A
+//SALISH FROM=programs/livermore.sal
+//EXEC
+//JOB B
+//TRITRAN FROM=programs/livermore.ftn
+//EXEC
+//JOB C
+//SALISH FROM=programs/livermore.sal OPT
+//EXEC
+'''
+sat = satellite.Satellite([(deck, "nb.job")], model=90, out=lambda s: None)
+sat.run()
+def salish_rates(out):
+    rows = re.findall(r"^\s*(\d+)\s+(\S.*?\S)\s+\d+\s+\d+\s+[\d.]+\s+\d+\s+[\d.]+"
+                      r"\s+\d+\s+([\d.]+)", out, re.M)
+    return [float(v) for k, name, v in rows]
+plain = salish_rates(sat.jobs[0].steps[0].output)
+fortran = [float(l.split()[3]) for l in sat.jobs[1].steps[0].output.splitlines()
+           if len(l.split()) == 5 and l.split()[0].isdigit()]
+best = salish_rates(sat.jobs[2].steps[0].output)
+names = ["1 hydro", "3 inner product", "5 tri-diagonal", "7 equation of state",
+         "11 first sum", "12 first difference"]
+panel.show_bars("Livermore kernels on the Model 90 with the FPU (MFLOPS)",
+                [(n, [a, b, c]) for n, a, b, c in zip(names, plain, fortran, best)],
+                ["plain SALISH", "TRI-TRAN", "SALISH/O"], fmt="{:.3f}")
+""")
+
+md(r"""
+## 15. Rosenblatt's perceptron, and Good's weight of evidence
+
+Rosenblatt's perceptron, in ternary (`programs/good/perceptron.sal`,
+and `docs/DEMONSTRATOR.md` §10). A 7 × 7 retina of ink (+1), paper (−1)
+and *unseen* (0) points; 243 association units wired at random to three
+nearby points by excitatory (+1) and inhibitory (−1) connections; a
+response of +1, −1 or 0, "I do not know". It learns to tell a vertical bar
+from a horizontal one by error correction. Against it is Good's method
+with the same units: count, in one pass, how each unit's testimony goes
+with each class, and add weights of evidence in decibans, answering only
+past 20 db. Then both are tested on new patterns, whole and with a third
+of the retina hidden. The run takes about half a minute.
+""")
+
+code(r"""
+sat = satellite.Satellite([("//JOB P\n//SALISH FROM=programs/good/perceptron.sal OPT\n//EXEC\n",
+                            "nb.job")], model=90, out=lambda s: None)
+sat.run()
+out = sat.jobs[0].steps[0].output
+print(out[out.index("2. TESTING"):])
+rows = []
+for part, label in (("the whole retina seen", "seen"), ("a third of the retina unseen", "a third unseen")):
+    text = out.split(part)[1].split("\n\n")[0]
+    for name in ("perceptron   ", "cautious perceptron", "Good's weight of evidence"):
+        line = [l for l in text.splitlines() if name in l][0]
+        rows.append((f"{name.strip()}, {label}", [int(x) for x in line.split()[-3:]]))
+panel.show_bars("200 new patterns: right, wrong, don't know", rows,
+                ["right", "wrong", "don't know"])
+""")
+
+md(r"""
+## 16. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long
@@ -598,8 +709,8 @@ panel.animate(mine, speed=80)
 
 md(r"""
 ---
-*See `docs/ARCHITECTURE.md` for the machine, `docs/SALISH.md` and
-`docs/TRILISP.md` for the languages, and `docs/DEMONSTRATOR.md` for the
+*See `docs/ARCHITECTURE.md` for the machine, `docs/SALISH.md`,
+`docs/TRILISP.md` and `docs/TRITRAN.md` for the languages, and `docs/DEMONSTRATOR.md` for the
 demonstrations of Good's and Hofstadter's ideas.*
 """)
 

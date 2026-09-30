@@ -1,0 +1,391 @@
+-- =====================================================================
+--  ROSENBLATT'S PERCEPTRON, IN TERNARY -- AND GOOD'S WEIGHT OF EVIDENCE
+--
+--  Frank Rosenblatt's perceptron (1958; the Mark I, 1960) had a retina
+--  of photocells, a layer of "association units" wired to the retina at
+--  random, some connections excitatory and some inhibitory, and a
+--  response unit whose weights were adjusted when it answered wrongly.
+--  On the Duwamish every part of it is naturally three-valued:
+--
+--    the retina      +1 ink, -1 paper, 0 not seen
+--    a connection    +1 excitatory, -1 inhibitory (0: none)
+--    an A-unit       +1 when its points match its connections, -1 when
+--                    they match the opposite, 0 otherwise
+--    the response    +1, -1, or 0: "I do not know"
+--
+--  Part 1 teaches it to tell a vertical bar from a horizontal one,
+--  anywhere on a 7 x 7 retina, with noise, by Rosenblatt's error
+--  correction: when the answer is not right, add the A-units' outputs,
+--  times the right answer, to the weights.
+--
+--  Part 2 asks what Good would have done with the same A-units: treat
+--  each as a witness, count how its testimony goes with each class in one
+--  pass, and add up weights of evidence in decibans -- as Banburismus
+--  added up the evidence of coinciding letters.  Both are tested on new
+--  patterns, then on patterns with a third of the retina unseen.
+--
+--  Part 3 is the limit Minsky and Papert proved in 1969: whether five
+--  points hold an odd number of ink spots (their parity) can be learned
+--  only by A-units that look at all five at once.
+-- =====================================================================
+
+const W = 7, NS = 49                  -- the retina
+const NA = 243, NA3 = 729             -- A-units, three connections each
+const NTRAIN = 800, NTEST = 200
+const MARGIN = 12                     -- the cautious perceptron's threshold
+const THRESH = 2000                   -- Good's threshold: 20 db, in cdb
+const S = 100000                      -- fixed point, for logarithms
+
+global seed := 1958                   -- Rosenblatt's first report
+global ret[NS]
+global ac[NA3], aw[NA3]               -- each A-unit's retina points, signs
+global a[NA]                          -- the A-units' outputs
+global v0[NA], vm[NA]                 -- two perceptrons' weights
+global nv[NA3], nh[NA3], ev[NA3]      -- Good: counts, and evidence (cdb)
+global count_v, count_h
+
+proc random(n)
+begin
+  seed := (seed * 7919 + 13) mod 1000003
+  return seed mod n
+end
+
+-- ---------------------------------------------------------------------
+--  the retina and the A-units
+-- ---------------------------------------------------------------------
+
+-- a vertical (cls +1) or horizontal (cls -1) bar of four, anywhere; one
+-- point in 25 is wrong; if hide, a third of the points are not seen
+proc make(cls, hide)
+begin
+  var r, c
+  for i := 0 to NS - 1 do ret[i] := -1
+  if cls > 0 then begin
+    c := random(W)
+    r := random(W - 3)
+    for i := 0 to 3 do ret[(r + i) * W + c] := 1
+  end else begin
+    r := random(W)
+    c := random(W - 3)
+    for i := 0 to 3 do ret[r * W + c + i] := 1
+  end
+  for i := 0 to NS - 1 do if random(25) = 0 then ret[i] := -ret[i]
+  if hide then for i := 0 to NS - 1 do if random(3) = 0 then ret[i] := 0
+end
+
+proc show_retina(title)
+begin
+  prints(title); newline()
+  for r := 0 to W - 1 do begin
+    spaces(8)
+    for c := 0 to W - 1 do begin
+      var x := ret[r * W + c]
+      putc(x > 0 -> '#', x < 0 -> '.', ' ')
+      putc(' ')
+    end
+    newline()
+  end
+end
+
+-- each A-unit looks at three different points near one another, with
+-- random signs
+proc wire()
+begin
+  var r, c, p, q, ok
+  for j := 0 to NA - 1 do begin
+    r := 1 + random(W - 2)
+    c := 1 + random(W - 2)
+    for k := 0 to 2 do begin
+      repeat
+        p := (r + random(3) - 1) * W + c + random(3) - 1
+        ok := true
+        for m := 0 to k - 1 do if ac[3 * j + m] = p then ok := false
+      until ok
+      ac[3 * j + k] := p
+      aw[3 * j + k] := random(2) = 0 -> 1, -1
+    end
+  end
+end
+
+proc sense()
+begin
+  var s, b
+  for j := 0 to NA - 1 do begin
+    b := 3 * j
+    s := aw[b] * ret[ac[b]] + aw[b + 1] * ret[ac[b + 1]] +
+         aw[b + 2] * ret[ac[b + 2]]
+    a[j] := s >= 2 -> 1, s <= -2 -> -1, 0
+  end
+end
+
+proc response(v)
+begin
+  var r := 0
+  for j := 0 to NA - 1 do r := r + v[j] * a[j]
+  return r
+end
+
+proc decide(r, theta) = r > theta -> 1, r < -theta -> -1, 0
+
+-- Rosenblatt's error correction; returns true if it had to correct
+proc learn(v, cls, theta)
+begin
+  if decide(response(v), theta) = cls then return false
+  for j := 0 to NA - 1 do v[j] := v[j] + cls * a[j]
+  return true
+end
+
+-- ---------------------------------------------------------------------
+--  Good's weight of evidence (logarithms as in banburismus.sal)
+-- ---------------------------------------------------------------------
+proc log2fix(num, den)
+begin
+  var k := 0, y, frac := 0, bit := S
+  for i := 1 to 20 do if den > 1000000 then begin num := num / 10; den := den / 10 end
+  for i := 1 to 60 do if num >= 2 * den then begin den := den * 2; k := k + 1 end
+  for i := 1 to 60 do if num < den then begin num := num * 2; k := k - 1 end
+  y := num * S / den
+  for i := 1 to 17 do begin
+    y := y * y / S
+    bit := bit / 2
+    if y >= 2 * S then begin y := y / 2; frac := frac + bit end
+  end
+  return k * S + frac
+end
+
+proc cdb(num, den) = log2fix(num, den) * 30103 / 10000000
+
+proc tally_evidence(cls)
+begin
+  for j := 0 to NA - 1 do
+    if cls > 0 then nv[3 * j + a[j] + 1] := nv[3 * j + a[j] + 1] + 1
+    else nh[3 * j + a[j] + 1] := nh[3 * j + a[j] + 1] + 1
+  if cls > 0 then count_v := count_v + 1 else count_h := count_h + 1
+end
+
+-- the weight of evidence of each A-unit's each output for "vertical":
+-- 10 log10 of P(output | vertical) / P(output | horizontal), with one
+-- added to every count so that nothing is impossible
+proc weigh()
+begin
+  for i := 0 to NA3 - 1 do
+    ev[i] := cdb((nv[i] + 1) * (count_h + 3), (nh[i] + 1) * (count_v + 3))
+end
+
+proc evidence()
+begin
+  var e := 0
+  for j := 0 to NA - 1 do e := e + ev[3 * j + a[j] + 1]
+  return e
+end
+
+proc printdb(c)
+begin
+  if c > 0 then putc('+')
+  printfix(c / 10, 1)
+  prints(" db")
+end
+
+-- ---------------------------------------------------------------------
+--  part 1: learning; part 2: testing
+-- ---------------------------------------------------------------------
+global right[9], wrong[9], dunno[9], worst_e
+
+proc score(k, answer, cls)
+begin
+  if answer = cls then right[k] := right[k] + 1
+  else if answer = 0 then dunno[k] := dunno[k] + 1
+  else wrong[k] := wrong[k] + 1
+end
+
+proc row(title, k)
+begin
+  prints(title)
+  printw(right[k], 7); printw(wrong[k], 7); printw(dunno[k], 11)
+  newline()
+end
+
+proc part1()
+begin
+  var cls, e0 := 0, em := 0
+  prints("1. LEARNING: vertical (+1) or horizontal (-1)?\n\n")
+  make(1, false); show_retina("     a vertical bar, with noise:")
+  make(-1, true); show_retina("     a horizontal bar, a third unseen:")
+  prints("\n     corrections in each 100 presentations of new patterns\n")
+  prints("     presentations      perceptron      cautious perceptron\n")
+  prints("                        (threshold 0)   (threshold ")
+  print(MARGIN); prints(")\n")
+  for n := 1 to NTRAIN do begin
+    cls := random(2) = 0 -> 1, -1
+    make(cls, false)
+    sense()
+    if learn(v0, cls, 0) then e0 := e0 + 1
+    if learn(vm, cls, MARGIN) then em := em + 1
+    tally_evidence(cls)
+    if n mod 100 = 0 then begin
+      printw(n, 18); printw(e0, 16); printw(em, 20); newline()
+      e0 := 0; em := 0
+    end
+  end
+  weigh()
+end
+
+proc part2()
+begin
+  var cls, e, k
+  prints("\n2. TESTING, on ")
+  print(NTEST)
+  prints(" new patterns of each kind\n\n")
+  prints("                                    right  wrong  don't know\n")
+  for hide := 0 to 1 do begin
+    for i := 0 to 8 do begin right[i] := 0; wrong[i] := 0; dunno[i] := 0 end
+    worst_e := 0
+    for n := 1 to NTEST do begin
+      cls := random(2) = 0 -> 1, -1
+      make(cls, hide = 1)
+      sense()
+      score(0, decide(response(v0), 0), cls)
+      score(1, decide(response(vm), MARGIN), cls)
+      e := evidence()
+      k := decide(e, THRESH)
+      score(2, k, cls)
+      if k <> 0 and k <> cls and abs(e) > worst_e then worst_e := abs(e)
+    end
+    prints(hide = 0 -> "   the whole retina seen\n",
+                       "   a third of the retina unseen\n")
+    row("     perceptron                 ", 0)
+    row("     cautious perceptron        ", 1)
+    row("     Good's weight of evidence  ", 2)
+    if worst_e > 0 then begin
+      prints("       (its surest wrong answer claimed ")
+      printdb(worst_e)
+      prints(")\n")
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------
+--  part 3: the limit -- parity
+-- ---------------------------------------------------------------------
+const NP = 32, NU = 81
+global pts[405], pws[405]             -- NU units, up to 5 points each
+global act_unit[2592], act_val[2592]  -- each pattern's active A-units
+global act_start[33]
+global pv[NU]
+global learned[6]
+global goal[NP]                       -- the right answer for each pattern
+
+proc spot(p, i) = (p / (i = 0 -> 1, i = 1 -> 2, i = 2 -> 4, i = 3 -> 8, 16)) mod 2
+proc target(p)
+begin
+  var n := 0
+  for i := 0 to 4 do n := n + spot(p, i)
+  return n mod 2 = 1 -> 1, -1
+end
+
+-- order k: each unit sees k of the five points; it answers +1 when all
+-- of them match its signs, -1 when all match the opposite, else 0
+proc parity(k)
+begin
+  var n := 0, s, ok, q, r, errs, epoch := 0, conv := 0, blank := true
+  for j := 0 to NU - 1 do
+    for m := 0 to k - 1 do begin
+      repeat
+        q := random(5)
+        ok := true
+        for u := 0 to m - 1 do if pts[5 * j + u] = q then ok := false
+      until ok
+      pts[5 * j + m] := q
+      pws[5 * j + m] := random(2) = 0 -> 1, -1
+    end
+  for p := 0 to NP - 1 do begin
+    act_start[p] := n
+    for j := 0 to NU - 1 do begin
+      s := 0
+      for m := 0 to k - 1 do
+        s := s + pws[5 * j + m] * (spot(p, pts[5 * j + m]) = 1 -> 1, -1)
+      if s = k or s = -k then begin
+        act_unit[n] := j
+        act_val[n] := s = k -> 1, -1
+        n := n + 1
+      end
+    end
+  end
+  act_start[NP] := n
+  for p := 0 to NP - 1 do goal[p] := target(p)
+  for j := 0 to NU - 1 do pv[j] := 0
+  repeat
+    epoch := epoch + 1
+    errs := 0
+    for p := 0 to NP - 1 do begin
+      r := 0
+      for i := act_start[p] to act_start[p + 1] - 1 do
+        r := r + pv[act_unit[i]] * act_val[i]
+      if decide(r, 0) <> goal[p] then begin
+        errs := errs + 1
+        for i := act_start[p] to act_start[p + 1] - 1 do
+          pv[act_unit[i]] := pv[act_unit[i]] + goal[p] * act_val[i]
+      end
+    end
+    if errs = 0 then conv := epoch
+    -- after the pass: does it now answer every pattern "I do not know"?
+    for p := 0 to NP - 1 do begin
+      r := 0
+      for i := act_start[p] to act_start[p + 1] - 1 do
+        r := r + pv[act_unit[i]] * act_val[i]
+      if r <> 0 then blank := false
+    end
+  until conv > 0 or epoch = 100
+  for i := 0 to 8 do begin right[i] := 0; wrong[i] := 0; dunno[i] := 0 end
+  for p := 0 to NP - 1 do begin
+    r := 0
+    for i := act_start[p] to act_start[p + 1] - 1 do
+      r := r + pv[act_unit[i]] * act_val[i]
+    score(0, decide(r, 0), goal[p])
+  end
+  printw(k, 10)
+  if conv > 0 then begin prints("      learned in "); printw(conv, 3); prints(" passes") end
+  else prints("      not learned in 100 passes")
+  printw(right[0], 9); printw(wrong[0], 7); printw(dunno[0], 11)
+  newline()
+  learned[k] := conv > 0
+  if k < 5 and not blank then silent := false
+end
+
+global silent := true
+proc part3()
+begin
+  var only := true
+  prints("\n3. THE LIMIT: is the number of ink spots among five points odd?\n\n")
+  prints("     81 A-units, each looking at k of the five points; the\n")
+  prints("     32 patterns shown again and again, up to 100 times\n\n")
+  prints("         k                                right  wrong  don't know\n")
+  for k := 1 to 5 do parity(k)
+  for k := 1 to 4 do if learned[k] then only := false
+  newline()
+  if only and learned[5] then begin
+    prints("     Only A-units that see all five points can learn parity, as\n")
+    prints("     Minsky and Papert proved in 1969: the predicate has order 5.\n")
+    prints("     No amount of training helps units of lower order.\n")
+    if silent then begin
+      prints("     After every pass of their training, those answered all 32\n")
+      prints("     patterns 0: \"I do not know\".\n")
+    end
+  end else begin
+    prints("     (Minsky and Papert's theorem says only order 5 can succeed;\n")
+    prints("     here the outcome was different: see above.)\n")
+  end
+end
+
+proc main()
+begin
+  prints("ROSENBLATT'S PERCEPTRON, IN TERNARY\n")
+  prints("a 7 x 7 retina (+1 ink, -1 paper, 0 unseen); 243 A-units, each wired\n")
+  prints("to three nearby points by +1 and -1 connections; a response of\n")
+  prints("+1, -1, or 0 for \"I do not know\"\n\n")
+  wire()
+  part1()
+  part2()
+  part3()
+  return 0
+end

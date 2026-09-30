@@ -177,3 +177,30 @@ class TestFiveYearPlan(unittest.TestCase):
         self.assertEqual(res[:2], (0, 0), out)
         self.assertEqual(out.count("result:"), 2)
         self.assertIn("positions searched per move", out)
+
+
+class TestPerceptron(unittest.TestCase):
+    def test_learning_evidence_and_the_limit(self):
+        out, res = run_file("programs/good/perceptron.sal", optimise=True)
+        self.assertEqual(res[:2], (0, 0), out)
+        seen, unseen = out.split("the whole retina seen")[1].split(
+            "a third of the retina unseen")
+        def row(text, name):
+            line = [l for l in text.splitlines() if name in l][0]
+            return [int(x) for x in line.split()[-3:]]
+        p, c, g = (row(seen, n) for n in ("perceptron   ", "cautious",
+                                          "Good's"))
+        self.assertGreater(p[0], 160)             # learned: over 80% right
+        self.assertLess(c[1], p[1])               # caution: fewer wrong ...
+        self.assertGreater(c[2], p[2])            # ... more "don't know"
+        self.assertGreater(g[0], 150)             # evidence counted in one pass
+        # half-seen patterns: the forced choice errs, the evidence abstains
+        p2, g2 = row(unseen, "perceptron   "), row(unseen, "Good's")
+        self.assertLess(g2[1], p2[1])
+        self.assertGreater(g2[2], p2[2])
+        # Minsky and Papert: only order 5 learns the parity of five points
+        self.assertIn("learned in", out.split("\n         5")[1].split("\n")[0])
+        for k in "1234":
+            self.assertIn("not learned", out.split(f"\n         {k}")[1]
+                          .split("\n")[0])
+        self.assertIn("After every pass", out)

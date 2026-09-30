@@ -44,6 +44,7 @@ python -m duwamish run jobs/improve.job --model 90     # ... and makes a faster 
 python -m duwamish run jobs/copycat.job --model 90     # Copycat's analogies (half a minute)
 python -m duwamish run jobs/fiveyear.job --model 90    # Good's five-year plan v. Shannon (six minutes)
 python -m duwamish run jobs/tritran.job --model 90     # FORTRAN: a tour, Livermore, Good's FFT (half a minute)
+python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
 python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
 python -m duwamish run jobs/livermore.job --model 90   # ... with the floating-point unit
 python -m duwamish compile --opt programs/livermore.sal  # see what the optimiser does
@@ -94,7 +95,8 @@ machine lit them. The notebook walks through:
 12. the look-ahead unit;
 13. TRILISP's heap, animated through allocation and garbage collection;
 14. TRI-TRAN, the Duwamish FORTRAN;
-15. a cell to load and watch your own program.
+15. Rosenblatt's perceptron against Good's weight of evidence;
+16. a cell to load and watch your own program.
 
 ```
 pip install notebook          # or jupyterlab; nothing else is needed
@@ -137,6 +139,16 @@ shows, and what it does not.
   and Good's index maps with no twiddles. Good's maps save 26% of the
   multiplications, but only 2.5% of the time. On a machine with a
   floating-point unit, multiplying was no longer the work.
+* `perceptron.sal`: Rosenblatt's perceptron, in ternary: ink, paper and
+  *unseen* on the retina; excitatory and inhibitory connections; and a
+  response that can be "I do not know". Against it, Good's method with
+  the same units: count their testimony once and add weights of evidence
+  in decibans. Counting once matches 800 error corrections. With a third
+  of the retina hidden, the evidence abstains where the perceptron errs,
+  though it overstates its odds (the units are not independent
+  witnesses). Minsky and Papert's limit follows: parity is learned only
+  by units that see every point. Below that order, the ternary perceptron
+  ends up answering "don't know" to all 32 patterns.
 * `backgammon.sal`: a game of chance, learned by temporal-difference
   self-play with a single layer of ten weights. It goes from 0 to 7 wins
   in 16 against a hand-written evaluation.

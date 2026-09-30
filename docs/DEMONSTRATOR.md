@@ -20,6 +20,7 @@ python -m duwamish run jobs/bootstrap.job --model 90 # the compiler compiles its
 python -m duwamish run jobs/improve.job --model 90   # ... and makes a faster copy of itself (four minutes)
 python -m duwamish run jobs/tour.job           # the machine and its languages
 python -m duwamish run jobs/tritran.job --model 90   # FORTRAN, and Good's prime-factor FFT (about half a minute)
+python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
 ```
 
 Add `--model 90` for the fast hardwired model (the explosion needs the
@@ -328,11 +329,92 @@ clock and prints it. The fast transforms themselves, not Good's refinement
 of them, are what take the time from 3.5 million cycles to under 0.2
 million.
 
+### 10. The perceptron, and the weight of evidence — `programs/good/perceptron.sal`
+
+Rosenblatt's perceptron (1958; the Mark I, 1960) had a retina of
+photocells, a layer of **association units** wired to the retina at
+random, some connections excitatory and some inhibitory, and a
+**response unit** whose weights were corrected whenever it answered
+wrongly. On the Duwamish every part of it is three-valued:
+
+| part | +1 | −1 | 0 |
+|---|---|---|---|
+| retina point | ink | paper | not seen |
+| connection | excitatory | inhibitory | none |
+| A-unit | its points match its connections | they match the opposite | neither |
+| response | vertical | horizontal | "I do not know" |
+
+The retina is 7 × 7. There are 3⁵ = 243 A-units, each wired to three
+nearby points. The task is to tell a vertical bar of four from a
+horizontal one, anywhere on the retina, with one point in 25 wrong.
+
+**1. Learning.** Two perceptrons learn by Rosenblatt's error correction
+from 800 new patterns. When the answer is not right, the A-units'
+outputs, times the right answer, are added to the weights. One answers
+whenever its sum is not zero. The "cautious" one answers only when the sum
+passes a threshold of 12. The corrections per hundred patterns fall from
+38 to 19.
+
+**2. What Good would have done.** The same A-units, read as witnesses.
+Count, in one pass over the same 800 patterns, how often each unit says
++1, 0 or −1 for each class. Its weight of evidence for "vertical" is then
+10 log₁₀ of the ratio of those frequencies, in decibans, computed as in
+Banburismus (§7). Add the weights, and answer only past ±20 db, odds of
+100 to 1; otherwise say "don't know". This is a sequential test that has
+run out of evidence. Tested on 200 new patterns (Model 90):
+
+| | right | wrong | don't know |
+|---|---:|---:|---:|
+| *the whole retina seen* | | | |
+| perceptron | 176 | 19 | 5 |
+| cautious perceptron | 150 | 7 | 43 |
+| Good's weight of evidence | 167 | 8 | 25 |
+| *a third of the retina unseen* | | | |
+| perceptron | 121 | 77 | 2 |
+| cautious perceptron | 104 | 53 | 43 |
+| Good's weight of evidence | 122 | 19 | 59 |
+
+Counting evidence once does about as well as 800 corrections. When a
+third of the retina is hidden, the perceptron that must answer is wrong
+77 times in 200. The weight of evidence is wrong 19 times, and says it
+does not know 59 times: an unseen point is 0, and 0 carries no evidence.
+But the evidence **overstates its case**. Its surest wrong answer claimed
++65 db, odds of three million to one. Good's rule adds evidence from
+*independent* witnesses, and A-units that share retina points are not
+independent.
+
+**3. The limit.** Is the number of ink spots among five points odd? Minsky
+and Papert proved in 1969 that this predicate, parity, has *order* 5: a
+perceptron can compute it only if some A-unit looks at all five points.
+The program trains 81 A-units of each order *k* from 1 to 5 on all 32
+patterns, up to 100 passes:
+
+| k | outcome | right | wrong | don't know |
+|---|---|---:|---:|---:|
+| 1–4 | not learned | 0 | 0 | 32 |
+| 5 | learned in 2 passes | 32 | 0 | 0 |
+
+Units of lower order do worse than fail. After every pass, the corrections
+have cancelled: the perceptron answers all 32 patterns 0, "I do not
+know". The program checks this after each pass. A binary perceptron would be forced to guess, and would be
+right half the time by chance. The ternary one reports that it has
+learned nothing.
+
+**What it shows:** the perceptron learning, and an honest comparison of
+error correction with Good's counting of evidence. Both are linear
+threshold rules over the same witnesses, with their weights got in
+different ways. The third output, "don't know", appears in all three
+parts: as caution, as a verdict the evidence has not reached, and as the
+answer to a question the machine cannot learn. **What it does not show:**
+a Mark I, which had 400 photocells and 512 A-units; any claim that one
+rule is better in general; or anything the committee could have known in
+1967 about Minsky and Papert's book of 1969.
+
 ---
 
 ## Douglas Hofstadter
 
-### 10. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
+### 11. Self-reference by arithmetic — `programs/hofstadter/selfref.sal`
 
 Gödel's diagonal lemma says that a sentence can state a property of its
 *own* Gödel number. The program's "sentence" is its own machine code.
@@ -348,7 +430,7 @@ claim is false. The program then
 
 Nothing is assumed: the true self-description is *computed*, as Gödel's is.
 
-### 11. Quining — `programs/hofstadter/quine.sal`
+### 12. Quining — `programs/hofstadter/quine.sal`
 
 A SALISH program whose output is exactly its own source text, byte for
 byte. The test suite checks this on every run. It follows Hofstadter's
@@ -356,7 +438,7 @@ byte. The test suite checks this on every run. It follows Hofstadter's
 using it. `tools/make_quine.py` shows how the text was constructed. TRILISP's
 tour includes the LISP version, checked in-machine by `(equal (eval q) q)`.
 
-### 12. The MU puzzle — `programs/hofstadter/miu.sal`
+### 13. The MU puzzle — `programs/hofstadter/miu.sal`
 
 This separates Hofstadter's **mechanical mode** from his **intelligent
 mode**. Working inside the MIU system, the machine derives all 216
@@ -367,7 +449,7 @@ last trit is 0", and the machine checks that trit on every theorem it
 derives. The table shows the count of I's in balanced ternary: the last
 trit is always 1 or T.
 
-### 13. Copycat: analogy as perception — `programs/hofstadter/copycat.sal`
+### 14. Copycat: analogy as perception — `programs/hofstadter/copycat.sal`
 
 "If abc changes to abd, what does ijk change to?" Hofstadter and Melanie
 Mitchell's Copycat (1988–1993; *Fluid Concepts and Creative Analogies*,
@@ -414,7 +496,7 @@ is honest to record: in Mitchell's runs xyd was far commoner than wyz.
 Here wyz comes up more often than that, though still less often than xyd,
 and still at the lowest temperature.
 
-### 14. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
+### 15. BlooP, FlooP and GlooP — `sequences.sal`, `floop.sal`
 
 With the word `bloop`, the SALISH compiler *certifies termination*. It
 accepts only bounded `for` loops, no recursion and no indirect calls, and
@@ -425,7 +507,7 @@ wondrous-numbers (Collatz) program is **refused** certification, with each
 unbounded loop named, and then runs as FlooP. Whether *every* number is
 wondrous is a GlooP question that no bounded loop can answer.
 
-### 15. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
+### 16. Levels, and the strange loop — `metacircular.lsp` (the `tower` job)
 
 The tower of interpreters: Python → microcode → TRIAD → SALISH (the TRILISP
 interpreter) → M-EVAL, McCarthy's LISP-in-LISP → M-EVAL again, running its
@@ -435,7 +517,7 @@ Each costs about 100–160 times the level below. The top interpreter is the
 same *text* as the one below it, read as data: the program has become its
 own subject.
 
-### 16. The compiler that compiles itself, and improves itself once — `programs/selfhost/salish.sal`
+### 17. The compiler that compiles itself, and improves itself once — `programs/selfhost/salish.sal`
 
 SALISH/S is the SALISH compiler written in SALISH: about 2,800 lines,
 following the satellite's compilers part for part. It reads a program from
@@ -455,7 +537,7 @@ job deck can feed a compiler's output to the next step.
 Because generation 0 reproduces exactly the code it was made from,
 generation 1 *is* generation 0. The loop closes on itself at once, a
 **fixed point** of compilation. It is the strange loop in its most literal
-form: a program whose output, one level up, is itself. (The quine, §11,
+form: a program whose output, one level up, is itself. (The quine, §12,
 does it at one level; this does it across two.)
 
 **The improvement** (`jobs/improve.job`, about four minutes). SALISH/S
@@ -489,7 +571,7 @@ Python one: removing an unused label did not count as a change, so a
 procedure could stop one step short of its best form, depending on what
 its neighbours were doing. Both are now fixed the same way.
 
-### 17. Contracrostipunctus — `diagonal.lsp`
+### 18. Contracrostipunctus — `diagonal.lsp`
 
 The Crab's record players and the Tortoise's records. `HALTS?` is an honest
 would-be oracle: it runs a program in M-EVAL with a step budget. It is right
@@ -498,7 +580,7 @@ about *itself* and does the opposite. The oracle says "runs forever";
 `CONTRARY` then halts. Raising the budget changes nothing. This is Turing's
 halting theorem, the engine of Gödel's.
 
-### 18. The tangled hierarchy — the machine as a whole
+### 19. The tangled hierarchy — the machine as a whole
 
 The deepest Hofstadterian feature is architectural. The writable control
 store lets software rewrite the microcode that runs it (§1). TRILISP can
@@ -511,6 +593,8 @@ explosion demonstration it reaches the bottom and alters it.
 
 ## Also from the committee
 
+* **Rosenblatt**: the perceptron, in ternary, against Good's weight of
+  evidence, and up against Minsky and Papert's limit (§10).
 * **Kleene and McCarthy logic** (`programs/kleene.sal`): three-valued
   truth tables, each connective a single ternary instruction.
 * **Beer**: every run can be profiled from the tallies

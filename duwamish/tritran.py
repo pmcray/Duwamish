@@ -199,7 +199,6 @@ def tokenize(s, err):
             toks.append(Tok("op", c))
             i += 1
         elif c == "'":
-            j = s.find("'", i + 1)
             err("a quoted string may appear only in a FORMAT")
         else:
             err(f"unexpected character {c!r}")
@@ -362,7 +361,6 @@ class Sym:
         self.result = False        # a function's result variable
         self.used = False
         self.data = {}             # offset -> word, from DATA
-        self.label = None
 
     @property
     def is_array(self):
@@ -992,7 +990,6 @@ class Compiler:
 
     def common(self, text):
         block = "_"
-        i = 0
         rest = text
         while rest:
             m = re.match(r"/([A-Z][A-Z0-9]*)?/", rest)
@@ -1027,7 +1024,6 @@ class Compiler:
                 self.err(f"{s.name} is in COMMON twice")
             s.common = (block, None)
             self.unit.commons.setdefault(block, []).append(s.name)
-            i += 1
 
     def layout_commons(self, unit):
         for block, names in unit.commons.items():
@@ -1802,8 +1798,6 @@ class Compiler:
         s = target[2]
         if target[0] == "var" and self.reg_of(s):
             self.err(f"{s.name} is the index of a DO loop that is running")
-        if target[0] == "var" and s.name in self.subprograms and not s.result:
-            pass
         value = self.resolve(rhs)
         if target[1] == "L" and value[1] != "L" or \
                 target[1] != "L" and value[1] == "L":

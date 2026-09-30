@@ -1,0 +1,4 @@
+//JOB PERCEPTRON                 -- Rosenblatt's perceptron, in ternary, and Good's weight of evidence
+//SALISH FROM=../programs/good/perceptron.sal OPT
+//EXEC
+//END
