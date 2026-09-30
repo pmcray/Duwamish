@@ -1,6 +1,9 @@
 # The Duwamish Computer — Principles of Operation
 
-*Report of the consulting committee to Universal Entropics, Seattle, 1967.*
+![Universal Entropics, Special Systems Section](images/ue-logo.svg)
+
+*Report of the consulting committee to the Special Systems Section,
+Universal Entropics, Seattle, 1967.*
 
 > **A note on authorship.** The committee is imaginary. The design is
 > written in the voice of a 1967 consultancy, and the ideas credited to
@@ -332,6 +335,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | TRIAD | symbolic assembler, literal pools, listings | `duwamish/triad.py` |
 | Executive | resident monitor | `duwamish/executive.tri` |
 | SALISH | BCPL-like systems language, three-valued logic, BlooP certification | [SALISH.md](SALISH.md) |
+| SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
 | TRILISP | LISP 1.5-style interpreter written in SALISH, ternary-tagged | [TRILISP.md](TRILISP.md) |
 
 ## 11. Speed
@@ -388,6 +392,12 @@ against double precision (`tools/livermore_reference.py`). Both float
 columns agree with it to one unit in 3⁻¹², and with each other exactly.
 Fixed point agrees to within about ten units.
 
+`jobs/livermore.job` compiles the program twice: plainly, and with the
+optimising compiler, SALISH/O ([SALISH.md](SALISH.md)). The answers are
+identical.
+
+**Plain SALISH**
+
 | kernel | flops | M30 fixed | M30 soft float | M30 + FPU | M90 fixed | M90 soft float | M90 FPU |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | 1 hydro fragment | 500 | 0.0363 | 0.0024 | 0.0509 | 0.1160 | 0.0065 | 0.1241 |
@@ -398,45 +408,61 @@ Fixed point agrees to within about ten units.
 | 12 first difference | 100 | 0.0173 | 0.0019 | 0.0157 | 0.0452 | 0.0050 | 0.0405 |
 | **harmonic mean** | | **0.0247** | **0.0024** | **0.0257** | **0.0699** | **0.0064** | **0.0653** |
 
+**SALISH/O**
+
+| kernel | flops | M30 fixed | M30 soft float | M30 + FPU | M90 fixed | M90 soft float | M90 FPU |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 hydro fragment | 500 | 0.0566 | 0.0029 | 0.1265 | 0.1996 | 0.0076 | 0.2739 |
+| 3 inner product | 200 | 0.0559 | 0.0032 | 0.1288 | 0.1808 | 0.0082 | 0.2610 |
+| 5 tri-diagonal elimination | 198 | 0.0505 | 0.0028 | 0.1036 | 0.1659 | 0.0073 | 0.2312 |
+| 7 equation of state | 1,600 | 0.0710 | 0.0032 | 0.1816 | 0.2537 | 0.0083 | 0.3823 |
+| 11 first sum | 99 | 0.0671 | 0.0039 | 0.0645 | 0.1652 | 0.0097 | 0.1503 |
+| 12 first difference | 100 | 0.0671 | 0.0027 | 0.0645 | 0.1652 | 0.0066 | 0.1503 |
+| **harmonic mean** | | **0.0604** | **0.0030** | **0.0970** | **0.1839** | **0.0078** | **0.2163** |
+
 (MFLOPS; for fixed point, arithmetic operations per microsecond counted as
 the kernel's floating-point operations. Run `python -m duwamish run
 jobs/livermore.job --model 90`, or `--model 30 --fpu`.)
 
 ### What the numbers say
 
-* **Against the 7600's peak of 36 MFLOPS**, the Model 90 with its unit is
-  about 550 times slower. Without the unit, the Model 30 is about 1,500
-  times slower in fixed point and about 15,000 times slower in software
-  floating point. Sustained 7600 performance on real codes was typically
-  quoted at a fraction of its peak, perhaps 10 MFLOPS, which divides
-  these ratios by three or four.
+* **Against the 7600's peak of 36 MFLOPS**, the best Duwamish (Model 90,
+  floating-point unit, SALISH/O) is about 170 times slower. The Model 30
+  without the unit, compiled plainly, is about 1,500 times slower in
+  fixed point and 15,000 times slower in software floating point.
+  Sustained 7600 performance on real codes was typically quoted at a
+  fraction of its peak, perhaps 10 MFLOPS, which divides these ratios by
+  three or four.
 * **What the unit bought.** Floating point became about ten times faster
   than the software library (0.0653 against 0.0064 on the Model 90), and
-  exact to the same trit. It became *as cheap as fixed point*, but no
-  cheaper. An earlier version of this section predicted that a unit
-  "would gain a factor of a hundred or more". Measurement shows ten,
-  because arithmetic was never the bottleneck. On the Model 30 the unit
-  also relieves the trit-serial multiply, so there it is slightly faster
-  than fixed point.
-* **Where the time goes now.** Here is the inner loop of kernel 3,
-  `s := fadd(s, fmul(fz[k], fy[k]))`, as SALISH compiles it:
+  exact to the same trit. Under the plain compiler it became *as cheap as
+  fixed point*, but no cheaper. An earlier version of this section
+  predicted that a unit "would gain a factor of a hundred or more".
+  Measurement showed ten, because arithmetic was not the bottleneck.
+* **What the compiler bought.** SALISH/O makes the hardware-float column
+  3.3 times faster on the Model 90, and 3.8 times on the Model 30 with the
+  feature. Fixed point gains 2.4–2.6 times. Software float gains only
+  1.2–1.3 times, because its time goes on calls into the library, which
+  the optimiser leaves alone. An earlier version of this section guessed
+  the compiler would be "worth more than the floating-point unit was".
+  It is worth a third as much (3.3 against 10), though the two multiply:
+  together they give 34 times over plain software float.
+* **Where the time goes now.** Kernel 3's inner loop,
+  `s := fadd(s, fmul(fz[k], fy[k]))`, was 20 instructions a pass. It is
+  now six:
 
   ```
-  L104: LD R1,-5(FP)   CMP R1,-6(FP)  JP L106        ; loop test
-        LD R1,-5(FP)   ADD R1,G_fz    LD R1,0(R1)    PUSH R1   ; fz[k]
-        LD R1,-5(FP)   ADD R1,G_fy    LD R1,0(R1)    PUSH R1   ; fy[k]
-        POP R2         POP R1
-        FMP R1,#0(R2)  FAD R1,-2(FP)  ST R1,-2(FP)   ; the arithmetic
-        LD R1,-5(FP)   ADD R1,#1      ST R1,-5(FP)   JMP L104  ; k := k+1
+  L104: LD   R1, V_fz+0(R3)     ; fz[k], k in R3 as an index register
+        FMP  R1, V_fy+0(R3)     ; times fy[k]
+        FAD  R4, #0(R1)         ; s, in R4, updated in place
+        ADD  R3, #1
+        CMP  R3, #99
+        JNP  L104
   ```
 
-  That is 20 instructions per pass, and two of them are floating point.
-  At 1 µs an instruction, the loop runs at about a tenth of what the unit
-  could do. The remaining gap is instruction issue: fetching and
-  decoding one instruction at a time from core, with index arithmetic
-  in memory, not registers. The 7600 attacked exactly this. It held the
-  loop in an instruction buffer, kept operands in registers, and
-  overlapped everything.
+  A pass costs 38 cycles on the Model 90: 30 to issue six instructions,
+  and 8 in the unit. Arithmetic is now a fifth of the time, not a tenth.
+  The rest is the cost of issuing one instruction at a time from core.
 * **Why.** The 7600 was built for exactly these loops: independent
   pipelined functional units, and an instruction buffer that held a whole
   inner loop so it ran without fetching instructions from memory. The
@@ -445,10 +471,9 @@ jobs/livermore.job --model 90`, or `--model 30 --fpu`.)
   that lets programs invent their own instructions. The explosion
   demonstration's fused instructions are a small version of the 7600's
   instruction buffer. They save fetches, but not the arithmetic.
-* **What would close the gap next.** An optimising compiler would help:
-  keeping `k` in a register, strength-reducing the subscripts and
-  dropping the PUSH/POP pairs would take the loop from 20 instructions to
-  about 7. That alone is worth more than the floating-point unit was.
-  After that would come overlapping fetch with execution, as the IBM
-  360/91 and the 7600 did. None of these touches what the machine is
-  for, which is the point of the committee's choices.
+* **What would close the gap next** is the hardware the 7600 had and the
+  Duwamish has not. It would overlap fetch with execution, as the IBM
+  360/91 and the 7600 did, and it would keep a loop in an instruction
+  buffer. It would also start a new floating-point operation before the
+  last one finishes. None of these touches what the machine is for, which
+  is the point of the committee's choices.

@@ -9,7 +9,8 @@
 
 Options for run/go:  --model 30|90   --wcs (enable the writable control
 store key)   --fpu / --no-fpu (fit or remove the floating-point unit;
-standard on the Model 90)   --list (print listings)   --time N (cycle
+standard on the Model 90)   --opt (compile SALISH with the optimising
+compiler; also for compile)   --list (print listings)   --time N (cycle
 limit, go only)
 """
 
@@ -37,6 +38,8 @@ def main(argv=None):
         p.add_argument("--no-fpu", dest="fpu", action="store_false")
     c = sub.add_parser("compile")
     c.add_argument("file")
+    for p in (r, g, c):
+        p.add_argument("--opt", action="store_true")
     a = sub.add_parser("asm")
     a.add_argument("file")
     sub.add_parser("micro")
@@ -45,15 +48,21 @@ def main(argv=None):
 
     if args.cmd == "run":
         satellite.run_decks(args.decks, model=args.model, wcs=args.wcs,
-                            listing=args.list, fpu=args.fpu)
+                            listing=args.list, fpu=args.fpu,
+                            optimise=args.opt)
     elif args.cmd == "go":
         satellite.run_program(args.file, data=args.data, model=args.model,
                               wcs=args.wcs, listing=args.list,
-                              time_limit=args.time, fpu=args.fpu)
+                              time_limit=args.time, fpu=args.fpu,
+                              optimise=args.opt)
     elif args.cmd == "compile":
         with open(args.file) as f:
-            asm, comp = salish.compile_source(f.read(), args.file)
+            asm, comp = salish.compile_source(f.read(), args.file,
+                                              optimise=args.opt)
         sys.stdout.write(asm)
+        if comp.peephole_counts:
+            print("; peephole: " + ", ".join(
+                f"{v} {k}" for k, v in sorted(comp.peephole_counts.items())))
         if comp.bloop_report:
             print(";", comp.bloop_report)
     elif args.cmd == "asm":

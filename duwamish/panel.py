@@ -579,6 +579,8 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .top{display:flex;align-items:center;gap:10px;padding:8px 12px;
  background:#101214;border-bottom:1px solid var(--edge);flex-wrap:wrap}
 .top h1{font-size:14px;margin:0 12px 0 0;color:var(--amber);letter-spacing:2px}
+.top .maker{font:bold 8px/10px Helvetica,Arial,sans-serif;letter-spacing:1.5px;
+ color:var(--dim);border-left:1px solid var(--edge);padding-left:8px;margin-right:6px}
 button{background:#2b2f35;color:var(--ink);border:1px solid #444;border-radius:4px;
  padding:4px 9px;font:inherit;cursor:pointer}
 button:hover{border-color:var(--amber)}
@@ -616,6 +618,8 @@ canvas{display:block;image-rendering:pixelated}
 .key{display:inline-block;width:9px;height:9px;margin-right:4px}
 </style></head><body>
 <div class="top">
+ <svg class="mark" viewBox="0 0 200 200" width="26" height="26" aria-label="Universal Entropics"><g fill="#e8e2cc"><path d="M24 20 H62 V112 A38 38 0 0 0 138 112 V20 H176 V112 A76 76 0 0 1 24 112 Z"/><rect x="62" y="20" width="58" height="30"/></g><rect x="62" y="80" width="40" height="30" fill="#ffb238"/></svg>
+ <span class="maker">UNIVERSAL ENTROPICS<br>SPECIAL SYSTEMS SECTION</span>
  <h1>DUWAMISH MODEL 30</h1>
  <button id="b0" title="back to the start">&#9198;</button>
  <button id="bb" title="back one micro-cycle">&#9664;&#9664;</button>

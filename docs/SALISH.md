@@ -147,3 +147,69 @@ Arguments are pushed left to right; `CALL`; the callee does
 `PUSH FP; LEA FP,0(SP); LEA SP,-n(SP)`. Argument *i* of *n* is at
 `FP + 2 + (n − i)` and locals are at `FP − 1, FP − 2, …`. The result comes
 back in R1, and `RET n` pops the arguments.
+
+In optimised code R3–R6 hold register variables. They are **callee
+saved**: a procedure that uses them stores them in its frame on entry and
+reloads them before `RET`. R1 and R2 remain scratch registers.
+
+## The optimising compiler, SALISH/O
+
+`//SALISH OPT` on the control card, `--opt` on the command line, or
+`optimise=True` from Python compiles with SALISH/O
+(`duwamish/optimise.py`). It works in the manner of FORTRAN I's index
+registers, the usage counts of FORTRAN H (Lowry and Medlock, 1969), and
+Allen and Cocke's program-optimisation work at IBM. The same program
+computes the same answers either way. A test runs hundreds of random
+programs, and the demonstrations, both ways and compares what they print.
+
+* **Register allocation by usage counts.** Before generating a procedure,
+  the compiler counts every use of each local, parameter and loop control.
+  A use inside *k* loops counts 10ᵏ. The heaviest candidates get R3–R6,
+  and two variables whose scopes do not overlap may share a register. A
+  variable must earn about one use inside a loop, or it stays in core.
+  Straight-line procedures therefore pay nothing for saving registers.
+  The listing names each assignment: `; proc main()   registers: R3=k,
+  R4=s`.
+* **Index-register addressing.** A global vector that the program never
+  reassigns, and whose address it never takes, stays at the address the
+  loader gave it. So `v[k + 3]`, with `k` in a register, is the single
+  operand `V_v+3(R3)`, as FORTRAN addressed its arrays.
+* **Updates in place.** `x := x + e`, `x +:= e`, `x := fadd(x, e)` and
+  similar, with `x` in a register, become one instruction on that
+  register. Compares and tests take register and memory operands
+  directly.
+* **Loop rotation.** A counted loop tests once on entry and then at the
+  bottom of each pass. A pass therefore costs one conditional jump and no
+  unconditional one.
+* **A peephole pass** over the generated TRIAD: jumps to jumps are
+  threaded, jumps to the next instruction and unreachable code are
+  removed, and a load of a word just stored is dropped. A test of a value
+  just computed is dropped, and a stack temporary becomes a register move
+  when nothing in between needs R2. `python -m duwamish compile --opt`
+  prints how many of each it made.
+
+Two built-ins cooperate with the register allocator:
+
+* `stackptr()` first stores R3–R6 in the procedure's frame. TRILISP's
+  conservative collector scans the stack for roots, so everything live
+  must be on the stack when it looks.
+* A procedure that calls `catchpoint` saves all four registers on entry.
+  It restores them where a `throw` lands, because the throw arrives
+  carrying its thrower's registers.
+
+What it buys, in the Livermore inner product
+`s := fadd(s, fmul(fz[k], fy[k]))`:
+
+```
+plain SALISH, 20 instructions a pass       SALISH/O, 6 instructions a pass
+L104: LD R1,-5(FP)  CMP R1,-6(FP)  JP L106  L104: LD   R1, V_fz+0(R3)
+      LD R1,-5(FP)  ADD R1,G_fz  LD R1,0(R1)      FMP  R1, V_fy+0(R3)
+      PUSH R1  LD R1,-5(FP)  ADD R1,G_fy           FAD  R4, #0(R1)
+      LD R1,0(R1)  PUSH R1  POP R2  POP R1         ADD  R3, #1
+      FMP R1,#0(R2)  FAD R1,-2(FP)  ST R1,-2(FP)   CMP  R3, #99
+      LD R1,-5(FP)  ADD R1,#1  ST R1,-5(FP)        JNP  L104
+      JMP L104
+```
+
+See [ARCHITECTURE.md §12](ARCHITECTURE.md) for what that does to the
+benchmark.

@@ -26,6 +26,7 @@ import re
 
 from . import isa
 from . import microasm
+from . import optimise as opt
 
 LIB_DIR = os.path.join(os.path.dirname(__file__), "lib")
 
@@ -566,8 +567,22 @@ class ProcInfo:
         self.loops = []
 
 
+_REGOP = re.compile(r"#0\((R[3-6])\)")
+
+
+def reg_of(op):
+    """The register named by a register-variable operand '#0(Rk)'."""
+    m = _REGOP.fullmatch(op) if op else None
+    return m.group(1) if m else None
+
+
 class Compiler:
-    def __init__(self, include_path=None):
+    def __init__(self, include_path=None, optimise=False):
+        self.optimise = optimise
+        self.regmap = {}
+        self.static_vecs = set()
+        self.save_slots = {}
+        self.peephole_counts = {}
         self.include_path = list(include_path or []) + [LIB_DIR]
         self.out = []
         self.data = []
@@ -709,13 +724,19 @@ class Compiler:
         if "main" not in self.procs:
             raise CompileError("no proc main")
 
-        self.out = ["; SALISH compiler output", "        ENTRY START",
+        self.out = ["; SALISH compiler output" +
+                    (" (optimised)" if self.optimise else ""),
+                    "        ENTRY START",
                     "START:  CALL P_main", "        SVC  0"]
+        if self.optimise:
+            self.static_vecs = opt.static_vectors(gdecls, self.procs)
         for fname_, d in gdecls:
             self.cur_file = fname_
             self.gen_global(d)
         for p in self.procs.values():
             self.gen_proc(p)
+        if self.optimise:
+            self.out, self.peephole_counts = opt.peephole(self.out)
         self.out.append("CODE_END:")
         self.out += self.data
         self.bloop_report = self.check_bloop()
@@ -778,22 +799,46 @@ class Compiler:
         self.nlocals = 0
         self.loop_stack = []
         scope = Scope(self.globals)
+        plan = opt.RegisterPlan(self, p) if self.optimise else None
+        self.regmap = plan.assign if plan else {}
+        self.spill_slots = None
         n = len(p.params)
+        loads = []
         for i, pn in enumerate(p.params):
             if pn in scope.names:
                 raise CompileError(f"{p.file}:{p.line}: parameter {pn} "
                                    "repeated")
-            scope.names[pn] = ("local", 2 + (n - 1 - i))
+            off = 2 + (n - 1 - i)
+            r = self.regmap.get(("param", i))
+            if r:
+                scope.names[pn] = ("reg", r)
+                loads.append(f"LD   {r}, {off}(FP)")
+            else:
+                scope.names[pn] = ("local", off)
         self.ret_label = self.label()
-        self.out.append(f"; proc {p.name}({', '.join(p.params)})")
+        regs = ""
+        if plan and self.regmap:
+            regs = "   registers: " + ", ".join(
+                f"{r}={self.reg_name(p, k)}" for k, r in
+                sorted(self.regmap.items(), key=lambda x: x[1]))
+        self.out.append(f"; proc {p.name}({', '.join(p.params)}){regs}")
         self.place(f"P_{p.name}")
         self.emit("PUSH FP")
         self.emit("LEA  FP, 0(SP)")
         frame_at = len(self.out)
         self.emit("")                     # placeholder for frame allocation
+        # callee saves: the registers this procedure uses
+        self.save_slots = {r: self.new_slot() for r in
+                           (plan.saved if plan else [])}
+        for r, sl in self.save_slots.items():
+            self.emit(f"ST   {r}, {sl}(FP)")
+        for ld in loads:
+            self.emit(ld)
         self.gen_stmt(p.body, scope)
         self.emit("LD   R1, #0")
         self.place(self.ret_label)
+        for r, sl in self.save_slots.items():
+            self.emit(f"LD   {r}, {sl}(FP)")
         self.emit("LEA  SP, 0(FP)")
         self.emit("POP  FP")
         self.emit(f"RET  {n}" if n else "RET")
@@ -801,6 +846,47 @@ class Compiler:
             self.out[frame_at] = f"        LEA  SP, -{self.nlocals}(SP)"
         else:
             del self.out[frame_at]
+
+    def reg_name(self, p, key):
+        """A readable name for a register candidate, for the listing."""
+        if key[0] == "param":
+            return p.params[key[1]]
+        found = []
+
+        def walk(n):
+            if found:
+                return
+            if isinstance(n, tuple) and n:
+                if id(n) == key[1]:
+                    found.append(n)
+                    return
+                for x in n:
+                    walk(x)
+            elif isinstance(n, (list, dict)):
+                for x in (n.values() if isinstance(n, dict) else n):
+                    walk(x)
+        walk(p.body)
+        if not found:
+            return "?"
+        st = found[0]
+        if key[0] == "var":
+            return st[2][key[2]][0]
+        return st[2] if key[0] == "for" else f"{st[2]}-limit"
+
+    def store_r1(self, op):
+        """Store R1 into a variable operand: core, or a register."""
+        r = reg_of(op)
+        self.emit(f"LD   {r}, #0(R1)" if r else f"ST   R1, {op}")
+
+    def gen_into(self, op, e, scope):
+        """Evaluate e into the variable operand op."""
+        r = reg_of(op)
+        src = self.simple(e, scope) if r else None
+        if src is not None:
+            self.emit(f"LD   {r}, {src}")
+        else:
+            self.gen_expr(e, scope)
+            self.store_r1(op)
 
     def new_slot(self, size=1):
         self.nlocals += size
@@ -817,18 +903,29 @@ class Compiler:
             self.gen_stmt(st, inner)
 
     def s_var(self, s, scope):
-        for name, size, init, line in s[2]:
+        for i, (name, size, init, line) in enumerate(s[2]):
             if name in scope.names:
                 self.err(s, f"{name} is already declared in this block")
+            r = self.regmap.get(("var", id(s), i))
             if size is not None:
                 n = self.fold(size, scope)
                 if n is None or n < 0:
                     self.err(s, "local vector size must be a constant")
                 base = self.new_slot(n)
+                if r:
+                    scope.names[name] = ("reg", r)
+                    self.emit(f"LEA  {r}, {base}(FP)")
+                    continue
                 slot = self.new_slot()
                 scope.names[name] = ("local", slot)
                 self.emit(f"LEA  R1, {base}(FP)")
                 self.emit(f"ST   R1, {slot}(FP)")
+            elif r:
+                scope.names[name] = ("reg", r)
+                if init is not None:
+                    self.gen_into(f"#0({r})", init, scope)
+                else:
+                    self.emit(f"LD   {r}, #0")
             else:
                 slot = self.new_slot()
                 scope.names[name] = ("local", slot)
@@ -845,16 +942,43 @@ class Compiler:
         target, rhs = s[2], s[3]
         if target[0] == "name":
             op = self.var_operand(target, scope, store=True)
+            r = reg_of(op)
+            if r:
+                if not self.gen_update(r, target, rhs, scope):
+                    self.gen_into(op, rhs, scope)
+                return
             self.gen_expr(rhs, scope)
             self.emit(f"ST   R1, {op}")
             return
         vec, idx = target[2], target[3]
+        sop = self.static_index(vec, idx, scope)
+        if sop is not None:
+            self.gen_expr(rhs, scope)
+            self.emit(f"ST   R1, {sop}")
+            return
         ci = self.fold(idx, scope)
         vop = self.simple(vec, scope)
         if ci is not None and vop is not None and fits_imm(ci):
             self.gen_expr(rhs, scope)
+            if reg_of(vop):
+                self.emit(f"ST   R1, {ci}({reg_of(vop)})")
+                return
             self.emit(f"LD   R2, {vop}")
             self.emit(f"ST   R1, {ci}(R2)")
+            return
+        if self.is_static_vec(vec, scope):
+            base = f"V_{vec[2]}"
+            rop = self.simple(rhs, scope)
+            if rop is not None:
+                self.gen_expr(idx, scope)
+                self.emit(f"LD   R2, {rop}")
+                self.emit(f"ST   R2, {base}(R1)")
+                return
+            self.gen_expr(rhs, scope)
+            self.emit("PUSH R1")
+            self.gen_expr(idx, scope)
+            self.emit("POP  R2")
+            self.emit(f"ST   R2, {base}(R1)")
             return
         rop = self.simple(rhs, scope)
         if rop is not None:
@@ -909,6 +1033,8 @@ class Compiler:
         st = self.fold(step, scope)
         if st == 0:
             self.err(s, "the step of a for loop must not be zero")
+        if self.optimise and st is not None:
+            return self.s_for_rotated(s, scope, st)
         inner = Scope(scope)
         slot = self.new_slot()
         lim = self.new_slot()
@@ -953,6 +1079,53 @@ class Compiler:
         self.emit(f"JMP  {top}")
         self.place(end)
 
+    def s_for_rotated(self, s, scope, st):
+        """A counted loop with the test at the bottom: one conditional jump
+        per pass.  The control variable and a computed limit live in
+        registers when the plan gives them one."""
+        _, line, v, a, b, step, body = s
+        inner = Scope(scope)
+        r = self.regmap.get(("for", id(s)))
+        if r:
+            vop = f"#0({r})"
+            inner.names[v] = ("reg", r, "loopvar")
+        else:
+            slot = self.new_slot()
+            vop = f"{slot}(FP)"
+            inner.names[v] = ("local", slot, "loopvar")
+        self.gen_into(vop, a, scope)
+        cb = self.fold(b, scope)
+        if cb is not None:
+            limop = self.imm(cb)
+        else:
+            lr = self.regmap.get(("lim", id(s)))
+            limop = f"#0({lr})" if lr else f"{self.new_slot()}(FP)"
+            self.gen_into(limop, b, scope)
+        top, cont, end = self.label(), self.label(), self.label()
+
+        def test():
+            if r:
+                self.emit(f"CMP  {r}, {limop}")
+            else:
+                self.emit(f"LD   R1, {vop}")
+                self.emit(f"CMP  R1, {limop}")
+        test()
+        self.emit(f"{'JP ' if st > 0 else 'JN '}  {end}")
+        self.place(top)
+        self.loop_stack.append((end, cont))
+        self.gen_stmt(body, inner)
+        self.loop_stack.pop()
+        self.place(cont)
+        if r:
+            self.emit(f"ADD  {r}, {self.imm(st)}")
+        else:
+            self.emit(f"LD   R1, {vop}")
+            self.emit(f"ADD  R1, {self.imm(st)}")
+            self.emit(f"ST   R1, {vop}")
+        test()
+        self.emit(f"{'JNP' if st > 0 else 'JNN'}  {top}")
+        self.place(end)
+
     def s_sign(self, s, scope):
         _, line, e, arms = s
         self.gen_test(e, scope)
@@ -992,6 +1165,8 @@ class Compiler:
         """Set C to the sign of e."""
         if e[0] == "bin" and e[2] == "-":
             self.gen_compare(e[3], e[4], scope)
+        elif self.optimise and self.simple(e, scope) is not None:
+            self.emit(f"TST  {self.simple(e, scope)}")
         elif e[0] == "cmp":
             self.gen_expr(e, scope)
             self.emit("TST  #0(R1)")
@@ -1001,7 +1176,10 @@ class Compiler:
 
     def gen_compare(self, a, b, scope):
         op = self.simple(b, scope)
-        if op is not None:
+        ra = reg_of(self.simple(a, scope)) if self.optimise else None
+        if op is not None and ra:
+            self.emit(f"CMP  {ra}, {op}")
+        elif op is not None:
             self.gen_expr(a, scope)
             self.emit(f"CMP  R1, {op}")
         else:
@@ -1047,6 +1225,9 @@ class Compiler:
             a = self.inline_cmp(e[2], scope)
             self.gen_compare(a[3], a[4], scope)
             self.emit(f"{JUMP_TRUE[a[2]]:4} {false_lab}")
+        elif self.optimise and self.simple(e, scope) is not None:
+            self.emit(f"TST  {self.simple(e, scope)}")
+            self.emit(f"JNP  {false_lab}")
         else:
             self.gen_expr(e, scope)
             self.emit("TST  #0(R1)")
@@ -1061,10 +1242,10 @@ class Compiler:
         s = scope.lookup(n)
         if s is None:
             self.err(e, f"undeclared name {n}")
-        if s[0] == "local":
+        if s[0] in ("local", "reg"):
             if store and len(s) > 2 and self.cur_file in self.bloop_modules:
                 self.err(e, f"BlooP: loop variable {n} may not be assigned")
-            return f"{s[1]}(FP)"
+            return f"{s[1]}(FP)" if s[0] == "local" else f"#0({s[1]})"
         if s[0] == "global":
             return s[1]
         self.err(e, f"cannot assign to {n}")
@@ -1081,10 +1262,14 @@ class Compiler:
                 self.err(e, f"undeclared name {e[2]}")
             if s[0] == "local":
                 return f"{s[1]}(FP)"
+            if s[0] == "reg":
+                return f"#0({s[1]})"
             if s[0] == "global":
                 return s[1]
             if s[0] == "proc":
                 return f"#{s[1]}"
+        if k == "index" and self.optimise:
+            return self.static_index(e[2], e[3], scope)
         if k == "str":
             return f"#{self.string_label(e[2])}"
         if k == "table":
@@ -1110,6 +1295,9 @@ class Compiler:
                 self.err(e, f"undeclared name {e[2]}")
             if s[0] == "local":
                 self.emit(f"LEA  R1, {s[1]}(FP)")
+            elif s[0] == "reg":
+                raise CompileError("internal error: address of a register "
+                                   f"variable {e[2]}")
             elif s[0] in ("global", "proc"):
                 self.emit(f"LD   R1, #{s[1]}")
             else:
@@ -1141,13 +1329,84 @@ class Compiler:
             ci = self.fold(idx, scope)
             vop = self.simple(vec, scope)
             if ci is not None and vop is not None and fits_imm(ci):
+                if reg_of(vop):
+                    self.emit(f"LD   R1, {ci}({reg_of(vop)})")
+                    return
                 self.emit(f"LD   R2, {vop}")
                 self.emit(f"LD   R1, {ci}(R2)")
+            elif self.is_static_vec(vec, scope):
+                self.gen_expr(idx, scope)
+                self.emit(f"LD   R1, V_{vec[2]}(R1)")
             else:
                 self.gen_index_addr(vec, idx, scope)
                 self.emit("LD   R1, 0(R1)")
         else:
             self.err(e, f"cannot compile expression {k}")
+
+    def is_static_vec(self, vec, scope):
+        if not self.optimise or vec[0] != "name" or \
+                vec[2] not in self.static_vecs:
+            return False
+        s = scope.lookup(vec[2])
+        return s is not None and s[0] == "global"
+
+    def static_index(self, vec, idx, scope):
+        """The operand for vec[idx] when vec is a vector at a fixed address
+        and idx is a constant, or a register variable plus a constant:
+        V_vec+c, or V_vec+c(Rk) with Rk as the index register."""
+        if not self.is_static_vec(vec, scope):
+            return None
+        base = f"V_{vec[2]}"
+        c = self.fold(idx, scope)
+        if c is not None:
+            return f"{base}{c:+d}"
+        r, c = None, 0
+        if idx[0] == "name":
+            r = reg_of(self.simple(idx, scope))
+        elif idx[0] == "bin" and idx[2] in ("+", "-"):
+            ca, cb = self.fold(idx[3], scope), self.fold(idx[4], scope)
+            if cb is not None and idx[3][0] == "name":
+                r = reg_of(self.simple(idx[3], scope))
+                c = cb if idx[2] == "+" else -cb
+            elif ca is not None and idx[2] == "+" and idx[4][0] == "name":
+                r = reg_of(self.simple(idx[4], scope))
+                c = ca
+        return f"{base}{c:+d}({r})" if r else None
+
+    def gen_update(self, r, target, rhs, scope):
+        """x := x op e, with x in register r: one instruction on r."""
+        def same(n):
+            return n[0] == "name" and n[2] == target[2]
+        if rhs[0] == "bin" and rhs[2] in ARITH:
+            op, a, b = rhs[2], rhs[3], rhs[4]
+            ins = ARITH[op]
+            if not same(a) and same(b) and op in ("+", "*", "&", "|"):
+                a, b = b, a
+            if not same(a):
+                return False
+        elif rhs[0] == "bin" and rhs[2] == ">>" and same(rhs[3]):
+            cb = self.fold(rhs[4], scope)
+            if cb is None:
+                return False
+            self.emit(f"SHF  {r}, {self.imm(-cb)}")
+            return True
+        elif rhs[0] == "call" and rhs[2] in ("fadd", "fsub", "fmul", "fdiv") \
+                and scope.lookup(rhs[2]) is None and len(rhs[3]) == 2:
+            a, b = rhs[3]
+            ins = {"fadd": "FAD", "fsub": "FSB", "fmul": "FMP",
+                   "fdiv": "FDV"}[rhs[2]]
+            if not same(a) and same(b) and rhs[2] in ("fadd", "fmul"):
+                a, b = b, a
+            if not same(a):
+                return False
+        else:
+            return False
+        bop = self.simple(b, scope)
+        if bop is None:
+            self.gen_expr(b, scope)
+            bop = "#0(R1)"
+        self.emit(f"{ins:4} {r}, {bop}")
+        return True
 
     def gen_index_addr(self, vec, idx, scope):
         vop = self.simple(vec, scope)
@@ -1196,6 +1455,18 @@ class Compiler:
     def gen_args_to_regs(self, args, scope):
         """Evaluate args; leave the last in R1 and the others in R2, R3..."""
         n = len(args)
+        if self.optimise and n == 2:
+            bop = self.simple(args[1], scope)
+            if bop is not None:
+                self.gen_expr(args[0], scope)
+                self.emit(f"LD   R2, {bop}")
+                return
+            aop = self.simple(args[0], scope)
+            if aop is not None:
+                self.gen_expr(args[1], scope)
+                self.emit("LD   R2, #0(R1)")
+                self.emit(f"LD   R1, {aop}")
+                return
         for a in args:
             self.gen_expr(a, scope)
             self.emit("PUSH R1")
@@ -1369,6 +1640,13 @@ class Compiler:
         elif name == "hasfpu":
             self.emit("SVC  4")
         elif name == "stackptr":
+            if self.optimise:
+                # a conservative collector scans the stack for roots, so
+                # every register variable is stored there first
+                if self.spill_slots is None:
+                    self.spill_slots = [self.new_slot() for _ in opt.REGS]
+                for r, sl in zip(opt.REGS, self.spill_slots):
+                    self.emit(f"ST   {r}, {sl}(FP)")
             self.emit("LD   R1, #0(SP)")
         elif name == "catchpoint":
             # save FP, SP and a resume address; returns 0 now, and later
@@ -1382,6 +1660,9 @@ class Compiler:
             self.emit("ST   R2, 2(R1)")
             self.emit("LD   R1, #0")
             self.place(resume)
+            # a throw lands with its thrower's registers: restore ours
+            for r, sl in self.save_slots.items():
+                self.emit(f"LD   {r}, {sl}(FP)")
         elif name == "throw":
             self.cur_proc.indirect = True
             self.gen_args_to_regs(args, scope)       # R1 = buffer, R2 = value
@@ -1461,8 +1742,10 @@ def isakit_source():
     return "\n".join(lines) + "\n"
 
 
-def compile_source(text, fname="<source>", include_path=None):
-    """Compile SALISH text to TRIAD assembly.  Returns (asm_text, compiler)."""
-    c = Compiler(include_path)
+def compile_source(text, fname="<source>", include_path=None,
+                   optimise=False):
+    """Compile SALISH text to TRIAD assembly.  Returns (asm_text, compiler).
+    optimise=True runs SALISH/O: see duwamish/optimise.py."""
+    c = Compiler(include_path, optimise)
     asm = c.compile(text, fname)
     return asm, c

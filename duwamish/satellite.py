@@ -9,8 +9,10 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
 
     //JOB name [TIME=cycles] [KEY=WCS]  start a job (KEY=WCS: the job
                                     needs the writable control store)
-    //SALISH [FROM=path] [LIST]     compile SALISH (the following cards, or a
-                                    file); LIST prints the TRIAD listing
+    //SALISH [FROM=path] [LIST] [OPT]
+                                    compile SALISH (the following cards, or a
+                                    file); LIST prints the TRIAD listing,
+                                    OPT runs the optimising compiler
     //TRIAD [FROM=path] [LIST]      assemble TRIAD source
     //EXEC [name]                   run the program just translated, or a
                                     catalogued program (e.g. TRILISP)
@@ -51,8 +53,8 @@ def assemble_executive():
         return triad.assemble(f.read())
 
 
-def translate_salish(text, fname, include_path=None):
-    asm, comp = salish.compile_source(text, fname, include_path)
+def translate_salish(text, fname, include_path=None, optimise=False):
+    asm, comp = salish.compile_source(text, fname, include_path, optimise)
     obj = triad.assemble(asm, origin=USER_ORIGIN)
     return obj, asm, comp
 
@@ -60,16 +62,18 @@ def translate_salish(text, fname, include_path=None):
 _catalogue_cache = {}
 
 
-def catalogued(name):
+def catalogued(name, optimise=False):
     name = name.upper()
     if name not in CATALOGUE:
         raise JobError(f"no program {name} in the catalogue")
-    if name not in _catalogue_cache:
+    key = (name, optimise)
+    if key not in _catalogue_cache:
         path = CATALOGUE[name]
         with open(path) as f:
-            obj, asm, comp = translate_salish(f.read(), path)
-        _catalogue_cache[name] = obj
-    return _catalogue_cache[name]
+            obj, asm, comp = translate_salish(f.read(), path,
+                                              optimise=optimise)
+        _catalogue_cache[key] = obj
+    return _catalogue_cache[key]
 
 
 class Step:
@@ -111,8 +115,10 @@ def parse_control(card):
 
 class Satellite:
     def __init__(self, decks, model=30, wcs=False, listing=False,
-                 out=None, base_dir=None, trace=False, fpu=None):
+                 out=None, base_dir=None, trace=False, fpu=None,
+                 optimise=False):
         self.model = model
+        self.optimise = optimise    # compile every SALISH step with OPT
         self.wcs = wcs
         self.fpu = (model == 90) if fpu is None else fpu
         self.listing = listing
@@ -182,8 +188,11 @@ class Satellite:
                         sname = f"{job.name} (inline)"
                     t0 = time.time()
                     if verb == "SALISH":
-                        pending_obj, asm, comp = translate_salish(src, path)
-                        msg = (f"SALISH: {sname}: {len(pending_obj.words)}"
+                        o = "OPT" in args or self.optimise
+                        pending_obj, asm, comp = translate_salish(
+                            src, path, optimise=o)
+                        msg = (f"SALISH{'/O' if o else ''}: {sname}: "
+                               f"{len(pending_obj.words)}"
                                f" words, {len(comp.procs)} procedures")
                         job.log.append(msg)
                         if comp.bloop_report:
@@ -199,7 +208,8 @@ class Satellite:
                     del t0
                 elif verb == "EXEC":
                     step = Step(job, "EXEC", args[0] if args else "GO")
-                    step.obj = catalogued(args[0]) if args else pending_obj
+                    step.obj = (catalogued(args[0], self.optimise) if args
+                                else pending_obj)
                     if step.obj is None:
                         raise JobError("//EXEC with nothing to execute")
                     job.steps.append(step)
@@ -332,7 +342,7 @@ def run_decks(paths, **kw):
 
 
 def run_program(path, data=None, model=30, wcs=False, listing=False,
-                time_limit=0, out=None, fpu=None):
+                time_limit=0, out=None, fpu=None, optimise=False):
     """Convenience: wrap one SALISH/TRIAD source file into a job."""
     kind = "TRIAD" if path.endswith(".tri") else "SALISH"
     name = re.sub(r"\W", "", os.path.splitext(os.path.basename(path))[0])
@@ -343,6 +353,6 @@ def run_program(path, data=None, model=30, wcs=False, listing=False,
     if data:
         deck.append(f"//DATA FROM={os.path.abspath(data)}")
     sat = Satellite([("\n".join(deck), path)], model=model, wcs=wcs, out=out,
-                    fpu=fpu)
+                    fpu=fpu, optimise=optimise)
     sat.run()
     return sat

@@ -1,11 +1,15 @@
 # Duwamish
 
+![Universal Entropics, Special Systems Section](docs/images/ue-logo.svg)
+
 **A balanced-ternary computer, designed as if in 1967, built as a
 demonstrator of the ideas of I. J. Good and Douglas Hofstadter.**
 
-Imagine that Universal Entropics of Seattle had hired Knuth, Good, Ashby,
-Beer, Pask, Cray, Rosenblatt and Nelson to design a "billion-dollar
-brain" on the lines of the Soviet Setun, using the best practice of 1967.
+Imagine that the Special Systems Section of Universal Entropics, Seattle,
+had hired Knuth, Good, Ashby, Beer, Pask, Cray, Rosenblatt and Nelson to
+design a "billion-dollar brain" on the lines of the Soviet Setun, using the
+best practice of 1967 (the Section's house style is in
+[docs/IDENTITY.md](docs/IDENTITY.md)).
 This repository contains the whole machine, and software that runs on it:
 
 | layer | |
@@ -17,6 +21,7 @@ This repository contains the whole machine, and software that runs on it:
 | **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//EXEC`, `//DATA`) |
 | **TRIAD** | the symbolic assembler |
 | **SALISH** | a BCPL-like language with three-valued logic, three-way `sign … of`, and **BlooP certification** of termination |
+| **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
 | **TRILISP** | a LISP 1.5-style interpreter written in SALISH, with one-trit type tags, tail calls and garbage collection |
 
 ## Quick start
@@ -34,6 +39,7 @@ python -m duwamish run jobs/backgammon.job --model 90  # backgammon by self-play
 python -m duwamish run jobs/tower.job --model 90       # LISP in LISP in LISP (about a minute)
 python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
 python -m duwamish run jobs/livermore.job --model 90   # ... with the floating-point unit
+python -m duwamish compile --opt programs/livermore.sal  # see what the optimiser does
 python -m duwamish go programs/hello.sal               # run one program
 python -m unittest discover -s tests -t .              # the test suite
 ```
@@ -41,7 +47,8 @@ python -m unittest discover -s tests -t .              # the test suite
 Options for `run` and `go`: `--model 30|90` (default 30); `--wcs` to turn
 the writable-control-store key; `--fpu` or `--no-fpu` to fit or remove the
 floating-point unit (by default the Model 90 has one and the Model 30 does
-not); `--list` for listings.
+not); `--opt` to compile every SALISH step with the optimising compiler
+(or put `OPT` on a `//SALISH` card); `--list` for listings.
 
 ## Inside the machine: the front-panel notebook
 
@@ -129,11 +136,19 @@ shows, and what it does not.
 loops by which the CDC 7600 was judged. It runs them three ways: in fixed
 point, in a software ternary floating point (`duwamish/lib/tfloat.sal`),
 and on the hardware floating-point unit, with answers checked against
-double precision. On the Model 90 the harmonic means are 0.070 MFLOPS in
-fixed point, 0.0064 in software float and 0.065 with the unit. The unit
-made floating point ten times faster, but no faster than fixed point: the
-machine is limited by issuing one instruction at a time, not by
-arithmetic. The 7600's peak was about 36 MFLOPS. See [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) for the full
+double precision. The job compiles it twice, plainly and with SALISH/O.
+
+| Model 90, harmonic mean MFLOPS | fixed point | software float | FPU |
+|---|---:|---:|---:|
+| plain SALISH | 0.070 | 0.0064 | 0.065 |
+| SALISH/O | 0.184 | 0.0078 | 0.216 |
+
+The unit made floating point ten times faster, but under the plain
+compiler no faster than fixed point: the machine was limited by issuing
+one instruction at a time. The optimiser cut the inner product from 20
+instructions a pass to 6, which gains another factor of 3.3. The 7600's
+peak was about 36 MFLOPS, about 170 times faster than the best Duwamish.
+See [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) for the full
 comparison.
 
 ## Documentation
@@ -144,16 +159,20 @@ comparison.
   language manuals
 * [docs/DEMONSTRATOR.md](docs/DEMONSTRATOR.md): the principles and their
   demonstrations
+* [docs/IDENTITY.md](docs/IDENTITY.md): the house style of the Special
+  Systems Section, which built the machine
 
 ## Layout
 
 ```
 duwamish/            the machine: ternary.py isa.py microasm.py machine.py
-                     triad.py salish.py satellite.py executive.tri profile.py
+                     triad.py salish.py optimise.py satellite.py fpu.py
+                     executive.tri profile.py
                      panel.py (the recorder and animated front panel)
 notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
-duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal
+duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal
+docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH and TRILISP programs (good/, hofstadter/, trilisp/)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing
