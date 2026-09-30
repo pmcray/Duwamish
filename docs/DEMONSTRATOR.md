@@ -1,4 +1,4 @@
-# The Demonstrator: Good and Hofstadter on the Duwamish
+# The Demonstrator: Good, Hofstadter and the committee on the Duwamish
 
 Every program here runs *on* the simulated machine: under its Executive, in
 its core, on its microcode. Each illustrates one principle of I. J. Good or
@@ -21,6 +21,13 @@ python -m duwamish run jobs/improve.job --model 90   # ... and makes a faster co
 python -m duwamish run jobs/tour.job           # the machine and its languages
 python -m duwamish run jobs/tritran.job --model 90   # FORTRAN, and Good's prime-factor FFT (about half a minute)
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
+python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat (ten seconds)
+python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, ternary trees, radix 3 (half a minute)
+python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
+python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi (twenty seconds)
+python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
+python -m duwamish run jobs/shrdlu.job --model 90      # micro-SHRDLU (half a minute)
+python -m duwamish run jobs/prolog.job --model 90      # a three-valued Prolog (about a minute)
 ```
 
 Add `--model 90` for the fast hardwired model (the explosion needs the
@@ -591,10 +598,223 @@ explosion demonstration it reaches the bottom and alters it.
 
 ---
 
+## The rest of the committee
+
+### 20. Ultrastability: Ashby's homeostat — `programs/ashby/homeostat.sal`
+
+Ashby's homeostat (1948; *Design for a Brain*, 1952) was four units, each a
+magnet swinging in water and driven by currents from all four. Each
+needle is an *essential variable* that must stay within bounds. When one
+does not, a relay steps that unit's **uniselector**, a stepping switch
+that rewires the unit's inputs at random. The machine never knows which
+wirings are stable. It only knows when a needle is out of bounds, and it
+changes something when one is. That is enough.
+
+On the Duwamish:
+- **The needles:** x′ = Ax, integrated in steps of 1/27.
+- **A uniselector:** it has **27 positions**, one for each 3-trit word giving the signs of the unit's three inputs. Ashby's had 25, wired from a table of random numbers.
+- **The relay:** it reads a **trit**: +1 above the bound, −1 below, 0 within. A `sign … of` statement (one J3) steps the switch when the trit is not 0.
+
+The program, not the homeostat, checks each field for stability, by the
+Routh–Hurwitz test on the characteristic polynomial. It draws a strip
+chart of the four needles, time running down the page:
+
+1. **Switched on** in an unstable field, the uniselectors move 20 times,
+   and the needles settle in a stable one.
+2. **Disturbed**: when a needle is pushed aside, the needles return
+   without any switch moving. That is homeostasis.
+3. **The environment changed**: the experimenter reverses a connection,
+   as Ashby did, choosing one that makes the field unstable. The
+   uniselectors move 4 times and find a new stable field. That is
+   adaptation.
+4. **The statistics**: 136 of 729 random fields are stable, about 1 in 5.
+   Switched on 20 times, the homeostat rests 18 times in a stable field,
+   after 7.6 moves on average. Only the units whose needles go out of
+   bounds move their switches, so what already works is kept. The other
+   2 came to rest in unstable fields whose needles had not yet left their
+   bounds. The homeostat can find out only through its needles. The
+   program says so.
+
+### 21. Conway's Life in Kleene's logic — `programs/knuth/life.sal`
+
+Let a live cell be +1 and a dead one −1. Then the tritwise instructions
+form a Boolean algebra:
+
+| operation | instruction |
+|---|---|
+| *and* | AND (the minimum) |
+| *or* | OR (the maximum) |
+| *not* | negation |
+| *same* | EQV (the product) |
+| exclusive or | −EQV |
+| parity of three | eqv(eqv(a, b), c) |
+
+A row of 27 cells is one word. A generation is full adders built from
+these operations, about 40 cycles a cell on the Model 90. The third value
+is the point: a cell of **0 is unknown**. Kleene's logic is *sound*:
+whatever it calls alive or dead is so in every world the unknown cells
+could stand for.
+
+1. **The ordinary game**, with nothing unknown. The test suite checks
+   that it is exactly Conway's rule.
+2. **A world partly unseen.** A blinker beside one unseen cell, a glider,
+   and a block two cells from another. The program runs all 16 worlds the
+   four unknown cells could stand for, and checks at every generation that
+   every cell Kleene called alive or dead was so in all of them. Then it
+   shows the other side: **the logic is sound but far from complete**. At
+   generation 8 it leaves 124 cells unknown, where in truth only 7 are.
+   It cannot see that *x* or not *x* is true when *x* is unknown, and
+   ignorance spreads through that blind spot faster than the facts
+   require. Both pictures are printed side by side.
+3. **The world beyond the edge unknown.** Ignorance comes in from every
+   side at one cell a generation, Conway's "speed of light", until the
+   whole world is fog at generation 14.
+
+### 22. Sorting when a comparison has three outcomes — `programs/knuth/sorting.sal`
+
+A comparison has three outcomes, and on the Duwamish one CMP and one J3
+branch on all three. With 3,000 keys, on the Model 90:
+
+| keys | Hoare (two-way) | Dijkstra (three-way) | Bentley–McIlroy (three-way) |
+|---|---:|---:|---:|
+| distinct | 48,766 comparisons, **3,258k cycles** | 40,256, 4,526k | 43,921, 4,716k |
+| ten values | 44,600, 3,469k | 9,800, **826k** | 11,953, 1,456k |
+| three values (trits) | 42,159, 3,474k | 6,062, **472k** | 6,062, 1,006k |
+| already sorted | 37,903, **2,391k** | 33,261, 3,841k | 32,869, 3,570k |
+
+Three-way partitioning is a large win when keys repeat: seven times
+faster on trit-valued keys. Hoare's tight two-way scans still win on
+distinct keys. In Bentley and McIlroy's partition the three-way branch
+does something real: the scan's own comparison has already said whether
+a key equals the pivot, so the extra equality tests a binary machine
+needs cost nothing.
+
+Heapsort with d-ary heaps: the ternary heap makes the fewest comparisons
+(58,269, against 60,286 for binary and 62,393 for 4-ary), as the cost
+d / ln d, least at *e*, predicts. The 4-ary heap moves the fewest words
+and takes the fewest cycles here. The program prints all three results
+and does not pick the one it likes.
+
+### 23. Ternary search trees, and radix 3 — `programs/knuth/tst.sal`, `programs/knuth/fft23.ftn`
+
+A **ternary search tree** stores strings a character at a time, with
+links for lower, equal and higher. Its search is one CMP and one J3 a
+node. Built from the 797 words of Genesis 1, it makes 6,665 character
+comparisons against a binary tree's 8,108. It finds all 797 words again in
+6,665 comparisons and 1.37M cycles, against 8,987 and 2.23M. It also lists
+words by prefix and by pattern ("l.ght", ".a."), which the program checks
+against Python. (The structure was named by Bentley and Sedgewick in
+1997, long after the committee.)
+
+**Radix 3 or radix 2?** It is often said that a ternary machine should use
+a radix-3 FFT because the butterflies need fewer multiplications. The
+program tests the claim, in TRI-TRAN. It transforms 256 points by radix 2
+and 243 by radix 3, counts real multiplications, times both, and divides
+by N log₂ N. The claim is wrong: radix 3 needs **1.35 times** the
+multiplications for the same work. But it takes **0.86 times** the cycles
+on every model, because it makes log₃ N passes over the data instead of
+log₂ N. So the advice is right for the wrong reason.
+
+---
+
+## The AI of the period, in TRILISP
+
+The committee met in 1967. These are the programs the field was writing
+around then, run on the Duwamish in its LISP. They share a small prelude
+(`programs/ai/prelude.lsp`). TRILISP interprets at about 7,000
+evaluations a second of simulated time, which kept each program small.
+
+### 24. ELIZA — `programs/ai/eliza.lsp` (the `eliza` job)
+
+Weizenbaum's program (1966), with the DOCTOR script. It finds the
+highest-ranked keyword, decomposes the sentence with that keyword's
+patterns, and reassembles it with "I" and "you" exchanged, using each
+decomposition's reassemblies in turn. It cuts a sentence at a comma, a
+full stop or BUT, and it remembers what was said after MY for later. The
+script is a reconstruction of the part of DOCTOR needed for **the
+conversation printed in Weizenbaum's paper, which it reproduces word for
+word**, from "MEN ARE ALL ALIKE." / "IN WHAT WAY" to "BULLIES." / "DOES
+THAT HAVE ANYTHING TO DO WITH THE FACT THAT YOUR BOYFRIEND MADE YOU COME
+HERE". The test suite checks every reply. That it can be done with so
+little is Weizenbaum's point.
+
+### 25. GPS — `programs/ai/gps.lsp`
+
+Newell, Shaw and Simon's General Problem Solver (1959) on the Tower of
+Hanoi, by means-ends analysis:
+- find the most important difference between the state and the goal: the largest misplaced disk;
+- reduce it with the operator the table of connections names;
+- when the operator does not yet apply, make that a subgoal.
+
+A state is an *n*-trit word, since each disk is on one of three pegs. It
+solves 3 to 6 disks in 2ⁿ − 1 moves, the fewest possible, and never
+searches: the ordering of the differences does all the work.
+
+### 26. STRIPS — `programs/ai/strips.lsp`
+
+Fikes and Nilsson's planner for Shakey (1971): operators with
+preconditions, a delete list and an add list, and a planner that works
+backwards from the goal. Shakey is in room 3, a box in room 1, and the
+light switch in room 2 is too high to reach. The goal is the light on.
+The plan has ten steps: through two doors, push the box back through
+one, push it under the switch, climb on it, turn the light on. The
+program then carries the plan out on a copy of the world, checking every
+precondition as it goes.
+
+### 27. Micro-SHRDLU — `programs/ai/shrdlu.lsp`
+
+Winograd's blocks world (1970–72), in miniature. The program parses a
+handful of sentence patterns, works out what the noun phrases refer to,
+and then answers or plans and carries out moves.
+- **Reference:** "the pyramid" is resolved by what was just said, as are "it" and "them".
+- **Descriptions** can nest: "a block which is taller than the one you are holding".
+- **Moves** are shown in brackets.
+
+The world is built so that the first dozen exchanges of the dialogue in
+*Understanding Natural Language* come out as printed:
+- "GRASP THE PYRAMID." / "I DON'T UNDERSTAND WHICH PYRAMID YOU MEAN."
+- "BY 'IT', I ASSUME YOU MEAN THE BLOCK WHICH IS TALLER THAN THE ONE I AM HOLDING."
+- "HOW MANY BLOCKS ARE NOT IN THE BOX?" / "FOUR OF THEM."
+- "CAN A PYRAMID SUPPORT A PYRAMID?" / **"I DON'T KNOW."**
+
+That last answer is Winograd's three-valued rule: *yes* if the world shows
+an example, *no* if the program knows a reason, and otherwise "I don't
+know". Asked to STACK UP TWO PYRAMIDS it says "I CAN'T". One exchange is
+ours, not Winograd's: asked again after trying, it answers "NO -- I HAVE
+TRIED." The unknown became false by experiment.
+
+### 28. A three-valued Prolog — `programs/ai/prolog.lsp`
+
+Horn clauses and SLD resolution (Colmerauer and Kowalski, 1972), with
+three answers instead of two:
+- **TRUE:** proved.
+- **FALSE:** the negation is proved, or the predicate is declared closed.
+- **UNKNOWN:** neither, or the search went past its depth bound.
+
+`NOT` is Kleene's negation and a body is Kleene's conjunction. Each
+answer is printed beside the one Prolog's negation as failure gives:
+
+| question | three values | Prolog |
+|---|---|---|
+| (GRANDPARENT TOM ANN) | TRUE | YES |
+| (PARENT ANN TOM), PARENT closed | FALSE | NO |
+| (FLIES OPUS), a penguin | FALSE | NO |
+| (FLIES TWEETY), nothing known of penguins | UNKNOWN | YES |
+| (PENGUIN TWEETY) | UNKNOWN | NO |
+| (LIKES BOB CAROL), with LIKES symmetric | UNKNOWN | no answer: it loops |
+
+Where Prolog says Tweety flies, it has assumed that what it cannot prove
+is false. Where the search goes round in circles, the bounded prover says
+UNKNOWN, because it cannot tell *not yet* from *never*. That is the lesson
+of FlooP (§15) in another form.
+
+---
+
 ## Also from the committee
 
 * **Rosenblatt**: the perceptron, in ternary, against Good's weight of
   evidence, and up against Minsky and Papert's limit (§10).
+* **Ashby** (§20) and **Knuth** (§21–23) are above.
 * **Kleene and McCarthy logic** (`programs/kleene.sal`): three-valued
   truth tables, each connective a single ternary instruction.
 * **Beer**: every run can be profiled from the tallies

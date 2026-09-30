@@ -45,6 +45,13 @@ python -m duwamish run jobs/copycat.job --model 90     # Copycat's analogies (ha
 python -m duwamish run jobs/fiveyear.job --model 90    # Good's five-year plan v. Shannon (six minutes)
 python -m duwamish run jobs/tritran.job --model 90     # FORTRAN: a tour, Livermore, Good's FFT (half a minute)
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
+python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat: ultrastability (ten seconds)
+python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sorting, ternary trees, radix 3
+python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
+python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
+python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
+python -m duwamish run jobs/shrdlu.job --model 90      # micro-SHRDLU's blocks world (half a minute)
+python -m duwamish run jobs/prolog.job --model 90      # a three-valued Prolog (about a minute)
 python -m duwamish run jobs/livermore.job              # Livermore loops (exact timing on Model 30)
 python -m duwamish run jobs/livermore.job --model 90   # ... with the floating-point unit
 python -m duwamish compile --opt programs/livermore.sal  # see what the optimiser does
@@ -96,7 +103,8 @@ machine lit them. The notebook walks through:
 13. TRILISP's heap, animated through allocation and garbage collection;
 14. TRI-TRAN, the Duwamish FORTRAN;
 15. Rosenblatt's perceptron against Good's weight of evidence;
-16. a cell to load and watch your own program.
+16. Kleene's logic in Conway's Life, and ELIZA;
+17. a cell to load and watch your own program.
 
 ```
 pip install notebook          # or jupyterlab; nothing else is needed
@@ -180,6 +188,44 @@ shows, and what it does not.
 * `diagonal.lsp`: Contracrostipunctus. A halting oracle and the record it
   cannot play.
 
+**The rest of the committee**
+* `ashby/homeostat.sal`: Ashby's homeostat. Four units whose uniselectors
+  have 27 positions, one for each 3-trit wiring, and a relay that reads a
+  trit. It hunts through random wirings until every needle stays in
+  bounds. It rides out disturbances, and re-adapts when the experimenter
+  reverses a connection.
+* `knuth/life.sal`: Conway's Life, 27 cells to a word. Live is +1 and
+  dead −1, so AND, OR, EQV and negation are a Boolean algebra, and 0 is
+  an *unknown* cell. Kleene's logic is sound: checked against every world
+  the unknown cells could stand for, whatever it calls alive or dead is
+  so. But it is badly incomplete: at generation 8 it leaves 124 cells
+  unknown where in truth 7 are. Both pictures are printed.
+* `knuth/sorting.sal`: quicksort and heapsort when a comparison has three
+  outcomes and J3 branches on all of them. Three-way partitioning is 7
+  times faster on trit-valued keys, but Hoare's two-way scans win on
+  distinct ones. The ternary heap makes the fewest comparisons, the 4-ary
+  the fewest moves.
+* `knuth/tst.sal`: a ternary search tree of the words of Genesis 1, one
+  J3 per node, with prefix and pattern search.
+* `knuth/fft23.ftn`: is radix 3 the right FFT for a ternary machine? It
+  needs 1.35 times radix 2's multiplications for the same work, but
+  0.86 times the cycles, because it makes fewer passes over the data.
+
+**The AI of the period, in TRILISP** (`programs/ai/`)
+* `eliza.lsp`: ELIZA and the DOCTOR script. It reproduces the
+  conversation in Weizenbaum's 1966 paper word for word.
+* `gps.lsp`: the General Problem Solver's means-ends analysis on the Tower
+  of Hanoi, with states as trit words.
+* `strips.lsp`: STRIPS plans Shakey's ten steps to turn on a light it
+  cannot reach, then carries them out, checking each precondition.
+* `shrdlu.lsp`: micro-SHRDLU follows the first dozen exchanges of
+  Winograd's dialogue, from "I DON'T UNDERSTAND WHICH PYRAMID YOU MEAN"
+  to "I DON'T KNOW".
+* `prolog.lsp`: a Prolog with three answers, TRUE, FALSE and UNKNOWN,
+  beside ordinary Prolog's. It will not say Tweety flies when it does not
+  know Tweety is no penguin, and it answers UNKNOWN where Prolog would
+  loop.
+
 ## How fast is it?
 
 `programs/livermore.sal` runs six of the Livermore Fortran Kernels, the
@@ -233,7 +279,8 @@ duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
                      tritran.sal (TRI-TRAN's FORMAT and mathematical library)
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH, TRILISP and TRI-TRAN (.ftn) programs (good/,
-                     hofstadter/, trilisp/, selfhost/: the compiler in SALISH)
+                     hofstadter/, ashby/, knuth/, ai/, trilisp/,
+                     selfhost/: the compiler in SALISH)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing
 tests/               unittest suite

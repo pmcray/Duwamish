@@ -681,7 +681,42 @@ panel.show_bars("200 new patterns: right, wrong, don't know", rows,
 """)
 
 md(r"""
-## 16. Load your own program
+## 16. Kleene's logic in Life, and ELIZA
+
+Conway's Life, 27 cells to a word (`programs/knuth/life.sal`): a live
+cell is +1 and a dead one −1, so the tritwise AND, OR, EQV and negation
+are a Boolean algebra, and a trit of 0 is a cell nobody has seen. Kleene's
+logic is sound: the program checks every world the four `?` cells could
+stand for. It is also incomplete, and the program shows how much. On
+the left is what Kleene's logic can say at generation 8; on the right is
+the truth, found by running all 16 worlds.
+""")
+
+code(r"""
+sat = satellite.Satellite([("//JOB L\n//SALISH FROM=programs/knuth/life.sal OPT\n//EXEC\n",
+                            "nb.job")], model=90, out=lambda s: None)
+sat.run()
+out = sat.jobs[0].steps[0].output
+print(out[out.index("2. A WORLD"):out.index("3. THE WORLD")])
+""")
+
+md(r"""
+And the most famous program of 1966: Weizenbaum's ELIZA with the DOCTOR
+script, running in TRILISP (`programs/ai/eliza.lsp`). It reproduces the
+conversation printed in his paper, word for word.
+""")
+
+code(r"""
+deck = ("//JOB E\n//EXEC TRILISP\n//DATA FROM=programs/ai/prelude.lsp\n"
+        "//DATA FROM=programs/ai/eliza.lsp\n")
+sat = satellite.Satellite([(deck, "nb.job")], model=90, out=lambda s: None)
+sat.run()
+out = sat.jobs[0].steps[0].output
+print(out[out.index("MEN ARE"):out.index("END OF CARDS")].rstrip())
+""")
+
+md(r"""
+## 17. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long

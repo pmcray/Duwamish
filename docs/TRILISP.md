@@ -39,7 +39,9 @@ ERROR EXPLODE IMPLODE GC ECHO`, and, reaching beneath the language:
 `WORD TAG PEEK POKE CLOCK EVALS TPRINT`.
 
 A string `"like this"` reads as a symbol that evaluates to itself, which is
-useful for messages. `(ECHO NIL)` stops the reader echoing each form and
+useful for messages. `(explode "...")` turns one into its characters,
+punctuation included (`"."` is a symbol, not a dot), which is how the AI
+programs in `programs/ai/` read sentences. `(ECHO NIL)` stops the reader echoing each form and
 its value.
 
 ## Storage
