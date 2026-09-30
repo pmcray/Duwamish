@@ -103,8 +103,10 @@ machine lit them. The notebook walks through:
 13. TRILISP's heap, animated through allocation and garbage collection;
 14. TRI-TRAN, the Duwamish FORTRAN;
 15. Rosenblatt's perceptron against Good's weight of evidence;
-16. Kleene's logic in Conway's Life, and ELIZA;
-17. a cell to load and watch your own program.
+16. Kleene's logic in Conway's Life, animated: its fog beside the truth;
+17. Ashby's homeostat, animated: meters, relays, uniselectors and a strip chart;
+18. ELIZA;
+19. a cell to load and watch your own program.
 
 ```
 pip install notebook          # or jupyterlab; nothing else is needed
@@ -272,7 +274,9 @@ duwamish/            the machine: ternary.py isa.py microasm.py machine.py
                      triad.py salish.py optimise.py tritran.py
                      satellite.py fpu.py
                      executive.tri profile.py
-                     panel.py (the recorder and animated front panel)
+                     panel.py (the recorder and animated front panel),
+                     heapview.py, lifeview.py, homeoview.py (animations
+                     of TRILISP's heap, Kleene Life and the homeostat)
 notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,

@@ -267,10 +267,9 @@ end
 
 global kalive, kdead, kunknown
 
-proc partial()
+-- the worlds of parts 2 and 3 (duwamish/lifeview.py animates them too)
+proc setup_partial()
 begin
-  var gens := table(1, 2, 3, 4, 8, 12, 16)
-  prints("2. A WORLD PARTLY UNSEEN: ? is a cell whose state we do not know\n\n")
   beyond(-1)
   clear()
   -- a blinker beside a cell we cannot see
@@ -283,6 +282,22 @@ begin
   -- a lone unseen cell in empty space
   put(22, 18, "?")
   for r := 1 to N do start[r] := g[r]
+end
+
+proc setup_outside()
+begin
+  beyond(0)
+  clear()
+  put(12, 12, "###")
+  glider(4, 4)
+  put(20, 18, "##"); put(21, 18, "##")
+end
+
+proc partial()
+begin
+  var gens := table(1, 2, 3, 4, 8, 12, 16)
+  prints("2. A WORLD PARTLY UNSEEN: ? is a cell whose state we do not know\n\n")
+  setup_partial()
   snap(0)
   header2()
   report(0)
@@ -315,11 +330,7 @@ end
 proc outside()
 begin
   prints("3. THE WORLD BEYOND THE EDGE UNKNOWN\n\n")
-  beyond(0)
-  clear()
-  put(12, 12, "###")
-  glider(4, 4)
-  put(20, 18, "##"); put(21, 18, "##")
+  setup_outside()
   snap(0)
   header()
   report(0)

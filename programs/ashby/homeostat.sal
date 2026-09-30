@@ -217,13 +217,12 @@ begin
 end
 
 -- ---------------------------------------------------------------------
-proc main()
-begin
-  var moves, ri, rj, found, n, total, nst
-  prints("ASHBY'S HOMEOSTAT, ON THE DUWAMISH\n")
-  prints("four units; * is a needle, : its bounds, < a uniselector moving\n\n")
-  build()
+global part := 0                      -- which part is running (for duwamish/homeoview.py)
 
+proc part1()
+begin
+  var moves
+  part := 1
   prints("1. SWITCHED ON: the needles are pushed off centre, and the\n")
   prints("   uniselectors start wherever they happen to be.\n")
   show_setting()
@@ -235,14 +234,26 @@ begin
   prints("   The uniselectors moved "); print(moves)
   prints(" times, then stood still.\n")
   show_setting()
+end
 
+proc part2()
+begin
+  var moves
+  part := 2
   prints("\n2. A DISTURBANCE: the experimenter pushes needle 1 aside.  The field\n")
   prints("   is stable, so the needles come back without any switch moving.\n\n")
   x[0] := S * 9 / 10
   chart_head()
   moves := run(2, 6, true)
   prints("   The uniselectors moved "); print(moves); prints(" times.\n")
+end
 
+global reversed_i := -1, reversed_j := -1
+
+proc part3()
+begin
+  var moves, ri, rj, found
+  part := 3
   prints("\n3. A CHANGE IN THE ENVIRONMENT: the experimenter reverses a\n")
   prints("   connection with a hand switch, as Ashby did, choosing one that\n")
   prints("   makes the present field unstable.\n")
@@ -257,6 +268,7 @@ begin
       end
   if not found then prints("   (no single reversal upsets this field)\n")
   else begin
+    reversed_i := ri; reversed_j := rj
     prints("   Reversed: the connection from unit "); print(rj + 1)
     prints(" into unit "); print(ri + 1); prints(".\n")
     show_setting()
@@ -269,7 +281,12 @@ begin
     prints(" times, and found a new way to keep\n   every needle in bounds.\n")
     show_setting()
   end
+end
 
+proc part4()
+begin
+  var n, total, nst, nrest := 0
+  part := 4
   prints("\n4. HOW OFTEN IS A FIELD STABLE, AND HOW LONG DOES THE HUNT TAKE?\n")
   n := 0
   for k := 1 to 729 do begin
@@ -281,7 +298,6 @@ begin
   prints("   Of 729 random settings, "); print(n)
   prints(" are stable: about 1 in "); printfix(7290 / n, 1); prints(".\n")
   total := 0; nst := 0
-  var nrest := 0
   for k := 1 to 20 do begin
     for i := 0 to 3 do begin
       pos[i] := random(27); x[i] := random(S) - S / 2; dwell[i] := 0
@@ -303,5 +319,16 @@ begin
   prints("\n   ")
   prints("Only the units whose needles go out of bounds move\n")
   prints("   their switches, so the hunt keeps whatever is already working.\n")
+end
+
+proc main()
+begin
+  prints("ASHBY'S HOMEOSTAT, ON THE DUWAMISH\n")
+  prints("four units; * is a needle, : its bounds, < a uniselector moving\n\n")
+  build()
+  part1()
+  part2()
+  part3()
+  part4()
   return 0
 end

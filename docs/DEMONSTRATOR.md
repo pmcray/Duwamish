@@ -635,6 +635,11 @@ chart of the four needles, time running down the page:
    bounds. The homeostat can find out only through its needles. The
    program says so.
 
+Section 17 of the notebook animates parts 1 to 3 (`duwamish/homeoview.py`):
+- four meters with their bounds;
+- each unit's relay trit and its uniselector's three trit lamps;
+- a strip chart of the needles, with a tick at every move.
+
 ### 21. Conway's Life in Kleene's logic — `programs/knuth/life.sal`
 
 Let a live cell be +1 and a dead one −1. Then the tritwise instructions
@@ -669,6 +674,11 @@ could stand for.
 3. **The world beyond the edge unknown.** Ignorance comes in from every
    side at one cell a generation, Conway's "speed of light", until the
    whole world is fog at generation 14.
+
+Section 16 of the notebook animates both scenes, generation by
+generation, from the machine's core (`duwamish/lifeview.py`). Kleene's
+fog is on the left and the truth on the right. A cell where Kleene
+contradicted the truth would show red, and none ever does.
 
 ### 22. Sorting when a comparison has three outcomes — `programs/knuth/sorting.sal`
 

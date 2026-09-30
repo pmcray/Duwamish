@@ -681,27 +681,71 @@ panel.show_bars("200 new patterns: right, wrong, don't know", rows,
 """)
 
 md(r"""
-## 16. Kleene's logic in Life, and ELIZA
+## 16. Kleene's logic in Life, animated
 
-Conway's Life, 27 cells to a word (`programs/knuth/life.sal`): a live
+Conway's Life, 27 cells to a word (`programs/knuth/life.sal`). A live
 cell is +1 and a dead one −1, so the tritwise AND, OR, EQV and negation
-are a Boolean algebra, and a trit of 0 is a cell nobody has seen. Kleene's
-logic is sound: the program checks every world the four `?` cells could
-stand for. It is also incomplete, and the program shows how much. On
-the left is what Kleene's logic can say at generation 8; on the right is
-the truth, found by running all 16 worlds.
+form a Boolean algebra, and a trit of 0 is a cell nobody has seen. The
+recorder (`duwamish/lifeview.py`) runs the program's own procedures and
+reads the world out of core after every generation. The lamps are those
+of the front panel: amber +1, blue −1, dark 0.
+
+Four cells begin unknown. On the left is what Kleene's logic can say. On
+the right is the truth: the machine runs all 16 worlds the unknown cells
+could stand for, and a cell is known if it comes out the same in every
+one. The left never contradicts the right; Kleene's logic is sound. But
+its fog grows far faster than the facts require. The recording takes
+about half a minute.
 """)
 
 code(r"""
-sat = satellite.Satellite([("//JOB L\n//SALISH FROM=programs/knuth/life.sal OPT\n//EXEC\n",
-                            "nb.job")], model=90, out=lambda s: None)
-sat.run()
-out = sat.jobs[0].steps[0].output
-print(out[out.index("2. A WORLD"):out.index("3. THE WORLD")])
+from duwamish import lifeview
+life = lifeview.record_life()
+lifeview.animate(life, scene=1)
 """)
 
 md(r"""
-And the most famous program of 1966: Weizenbaum's ELIZA with the DOCTOR
+And with everything beyond the edge of the world unknown, ignorance
+comes in from every side at one cell a generation, the "speed of light"
+as Conway called it.
+""")
+
+code(r"""
+lifeview.animate(life, scene=2)
+""")
+
+md(r"""
+## 17. Ashby's homeostat, animated
+
+The homeostat (`programs/ashby/homeostat.sal`) has four units. Each unit
+has:
+- a **needle**, an essential variable that must stay within its bounds;
+- a **relay** that reads a trit: +1 above the bound, −1 below, 0 within;
+- a **uniselector** of 27 positions, one for each 3-trit wiring of its inputs.
+
+The machine never knows which wirings are stable. It only knows when a
+needle is out of bounds, and then it steps that unit's switch. The
+recorder (`duwamish/homeoview.py`) runs the program's first three parts
+and reads the machine after every step of its integration:
+1. switched on in an unstable field, it hunts;
+2. a needle is pushed aside, and it recovers without moving a switch;
+3. the experimenter reverses a connection, and it hunts again to a new
+   stable field.
+
+The stability shown is the observer's verdict, from the Routh–Hurwitz
+test.
+""")
+
+code(r"""
+from duwamish import homeoview
+homeostat = homeoview.record_homeostat()
+homeoview.animate(homeostat)
+""")
+
+md(r"""
+## 18. ELIZA
+
+The most famous program of 1966: Weizenbaum's ELIZA with the DOCTOR
 script, running in TRILISP (`programs/ai/eliza.lsp`). It reproduces the
 conversation printed in his paper, word for word.
 """)
@@ -716,7 +760,7 @@ print(out[out.index("MEN ARE"):out.index("END OF CARDS")].rstrip())
 """)
 
 md(r"""
-## 17. Load your own program
+## 19. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long
