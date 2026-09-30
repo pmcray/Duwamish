@@ -76,6 +76,31 @@ class TestRecorder(unittest.TestCase):
         self.assertTrue(any("SUPERVISOR CALL" in e for f, e in r.rec.events))
 
 
+class TestHeapView(unittest.TestCase):
+    def test_heap_recording(self):
+        """The recorded heap agrees with what TRILISP itself reports, and
+        the sweep leaves no marks behind."""
+        from duwamish import heapview
+        lisp = ("(DEFINE BUILD (LAMBDA (N) (COND ((EQ N 0) NIL) "
+                "(T (CONS N (BUILD (- N 1)))))))\n" + "(BUILD 300)\n" * 12)
+        r = heapview.record_heap(lisp, heap=729)
+        gcs = r.stats[-1][3]
+        self.assertGreater(gcs, 0)
+        self.assertIn(f"{gcs} GARBAGE COLLECTIONS", r.output)
+        self.assertTrue(any(s[2] > 0 for s in r.stats))        # marks seen
+        self.assertEqual(r.stats[-1][2], 0)                     # none left
+        # replaying the deltas from any keyframe reproduces the next one
+        keys = sorted(r.keyframes)
+        state = [int(c) for c in r.keyframes[keys[0]]]
+        for f in range(keys[0] + 1, keys[1] + 1):
+            d = r.frames[f][1]
+            for k in range(0, len(d), 2):
+                state[d[k]] = d[k + 1]
+        self.assertEqual("".join(map(str, state)), r.keyframes[keys[1]])
+        page = heapview.page_html(r)
+        self.assertNotIn("http", page.split("<script>")[1])
+
+
 class TestNotebook(unittest.TestCase):
     def test_notebook_is_valid(self):
         path = os.path.join(ROOT, "notebooks", "duwamish.ipynb")

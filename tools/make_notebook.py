@@ -494,7 +494,41 @@ panel.show_bars("Livermore kernels, hardware float, SALISH/O (MFLOPS)",
 """)
 
 md(r"""
-## 13. Load your own program
+## 13. TRILISP's memory: allocation and garbage collection
+
+TRILISP keeps its list cells in three vectors in core: `car_`, `cdr_` and
+`mark_`. The free cells are chained through `cdr_`. When the chain runs
+out, `cons` calls the collector, which works in two phases.
+
+* **Mark.** It marks every cell reachable from the symbols, and from any
+  word on the machine stack that looks like a pointer. This is a
+  *conservative* collector.
+* **Sweep.** It sweeps the heap from the top down, clearing the marks
+  and chaining every unmarked cell back onto the free list.
+
+Here TRILISP runs with a heap of 3⁷ = 2,187 cells, so that collections
+come often, on a program that builds lists and throws most of them away.
+It keeps a few in `KEPT`, which survive every collection. The recorder
+reads the heap straight out of core every few hundred instructions:
+* cells light **amber** as `cons` hands them out;
+* they turn **green** as the collector marks the live ones;
+* the sweep reclaims the rest, and they go dark.
+
+The lower plot is the number of cells in use, against instructions
+executed. It is a sawtooth: each drop is one collection. The recording
+takes a few seconds.
+""")
+
+code(r"""
+from duwamish import heapview
+print(heapview.WORKLOAD)
+heap = heapview.record_heap()
+print(heap.output.strip().splitlines()[-1])
+heapview.animate(heap)
+""")
+
+md(r"""
+## 14. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long

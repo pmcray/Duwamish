@@ -46,9 +46,15 @@ its value.
 
 30,000 cons cells, with mark-and-sweep collection. The marker uses an
 explicit stack. The roots are the symbol values and **every word of the
-machine stack that looks like a cons pointer**: SALISH keeps all its
-temporaries in memory, so a conservative scan of the stack finds every
-live object.
+machine stack that looks like a cons pointer**. Plain SALISH keeps all
+its temporaries in memory. Under SALISH/O some live in registers, and
+`stackptr()` stores the registers on the stack before the collector
+scans it. Either way, a conservative scan of the stack finds every live
+object.
+
+Section 13 of the notebook (`duwamish/heapview.py`) runs TRILISP with a
+small heap and replays its memory cell by cell: allocation, the mark
+phase and the sweep.
 
 Errors print `*** ERROR:` and return to the top level through
 `catchpoint`/`throw`.
