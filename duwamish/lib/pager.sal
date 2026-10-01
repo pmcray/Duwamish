@@ -1,0 +1,95 @@
+-- =====================================================================
+--  THE PAGER: the one-level store's supervisor routine
+--
+--  Compiled as a library and loaded with the Executive in protected core
+--  (duwamish/satellite.py).  On a page fault the paging unit sets out its
+--  table at TABLE (see duwamish/atlas.py) and the Executive calls
+--  pagefault(p).  If the store is full, the pager chooses a page to send
+--  back to the drum and returns it; otherwise it returns -1.  The
+--  Executive does the drum transfers.
+--
+--  The satellite sets `policy' and `frames' for each step, and `reset'.
+--
+--    0 ATLAS   Kilburn's learning program (1962).  For each page in core
+--              it knows t, how long the page has now been idle, and T,
+--              how long it lay idle the last time.  A page idle for
+--              longer than its last idle period (t > T, give or take the
+--              1024-instruction sampling interval) has likely finished
+--              its work: of these, the one most overdue goes.  If there
+--              is none, every page is expected back after T - t more, and
+--              the one expected back last goes.
+--    1 FIFO    the page that came in first
+--    2 LRU     the page least recently used
+--    3 RANDOM  any page
+--
+--  Runs in supervisor mode: it must not print, or make supervisor calls.
+-- =====================================================================
+
+const TABLE = -20000
+const NP = 243
+const SAMPLE = 1024
+
+global policy := 0, frames := 20, reset := 1
+global nres, stamp, loaded[NP], seed
+
+proc entry(p, k) = peek(TABLE + 4 + 4 * p + k)
+proc incore(p) = entry(p, 0) > 0
+proc idle_now(p) = entry(p, 1)
+proc idle_last(p) = entry(p, 2)
+
+proc rnd(n)
+begin
+  seed := 16807 * (seed mod 127773) - 2836 * (seed / 127773)
+  if seed <= 0 then seed := seed + 2147483647
+  return seed mod n
+end
+
+proc choose()
+begin
+  var best := -1, bv, v, k, n
+  if policy = 3 then begin
+    n := 0
+    for p := 0 to NP - 1 do if incore(p) then n := n + 1
+    k := rnd(n)
+    for p := 0 to NP - 1 do
+      if incore(p) then begin
+        if k = 0 then return p
+        k := k - 1
+      end
+  end
+  if policy = 0 then begin
+    -- pages overdue: idle longer than last time
+    for p := 0 to NP - 1 do
+      if incore(p) and idle_now(p) > idle_last(p) + SAMPLE then begin
+        v := idle_now(p) - idle_last(p)
+        if best < 0 or v > bv then begin best := p; bv := v end
+      end
+    if best >= 0 then return best
+    -- otherwise the page expected back last
+    for p := 0 to NP - 1 do
+      if incore(p) then begin
+        v := idle_last(p) - idle_now(p)
+        if best < 0 or v > bv then begin best := p; bv := v end
+      end
+    return best
+  end
+  for p := 0 to NP - 1 do
+    if incore(p) then begin
+      v := policy = 1 -> -loaded[p], idle_now(p)
+      if best < 0 or v > bv then begin best := p; bv := v end
+    end
+  return best
+end
+
+proc pagefault(p)
+begin
+  var victim := -1
+  if reset then begin
+    nres := 0; stamp := 0; seed := 1962; reset := 0
+  end
+  if nres >= frames then victim := choose()
+  else nres := nres + 1
+  stamp := stamp + 1
+  loaded[p] := stamp
+  return victim
+end

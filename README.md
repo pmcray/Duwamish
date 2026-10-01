@@ -19,6 +19,7 @@ This repository contains the whole machine, and software that runs on it:
 | **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing; a balanced-ternary **floating-point unit** as standard (a feature on the Model 30); an optional **look-ahead unit** with a 32-word instruction stack |
 | **Executive** | a resident monitor in protected core: traps, supervisor calls, time limits, accounting |
 | **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//TRITRAN`, `//WHALE`, `//EXEC`, `//DATA`), and a card punch whose decks later steps can assemble (`//TRIAD PUNCHED`) |
+| **One-level store** | Atlas's paging (Kilburn, 1962) on the Model 90: 243 pages of 729 words on the drum, a few in core, page faults serviced by a pager written in SALISH that runs in protected core, with Atlas's learning policy, FIFO, LRU or random (`//STORE`) |
 | **Backing store** | a data channel to nine-track tape units (one trit to a track, read forward or backward, with write rings), a fixed-head drum of 3¹¹ words, and disc packs of 3¹³ words, timed as the IBM 729, 2401 and 2311 were; reels and packs kept in files between runs (`//TAPE`, `//DRUM`, `//DISC`) |
 | **TRIAD** | the symbolic assembler |
 | **SALISH** | a BCPL-like language with three-valued logic, three-way `sign … of`, and **BlooP certification** of termination |
@@ -53,6 +54,7 @@ python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat: ultr
 python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, a teaching machine that adapts (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sorting, ternary trees, radix 3
 python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
+python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -256,6 +258,14 @@ shows, and what it does not.
   needs 1.35 times radix 2's multiplications for the same work, but
   0.86 times the cycles, because it makes fewer passes over the data.
 
+**Systems of the period**
+* `atlas/workload.sal`: the one-level store. One program runs in 16 page
+  frames, with the rest on the drum, under each of the pager's policies.
+  Atlas's learning program, which predicts when each page will next be
+  wanted from how long it lay idle before, takes 295 faults. Least
+  recently used takes 362, first-in first-out 398 and random 349.
+  Belady's optimum, computed afterwards, is 214.
+
 **The AI of the period, in TRILISP** (`programs/ai/`)
 * `eliza.lsp`: ELIZA and the DOCTOR script. It reproduces the
   conversation in Weizenbaum's 1966 paper word for word.
@@ -317,6 +327,7 @@ comparison.
 duwamish/            the machine: ternary.py isa.py microasm.py machine.py
                      triad.py salish.py optimise.py tritran.py whale.py
                      satellite.py fpu.py devices.py (tape, drum, disc)
+                     atlas.py (the one-level store)
                      executive.tri profile.py
                      panel.py (the recorder and animated front panel),
                      heapview.py, lifeview.py, homeoview.py, sakiview.py,
@@ -327,11 +338,12 @@ duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
                      tritran.sal (TRI-TRAN's FORMAT and mathematical library),
                      whale.sal (WHALE's associative store), devices.sal
-                     (tape, drum and disc for SALISH)
+                     (tape, drum and disc for SALISH), pager.sal (the
+                     one-level store's supervisor routine)
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH, TRILISP, TRI-TRAN (.ftn) and WHALE (.whl)
                      programs (good/, hofstadter/, ashby/, pask/, knuth/,
-                     ai/, whale/, trilisp/,
+                     atlas/, ai/, whale/, trilisp/,
                      selfhost/: the compiler in SALISH)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing

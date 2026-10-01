@@ -36,6 +36,11 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
                                     the reel, a record to a card
     //DISC unit [FILE=path] [PROTECT]
                                     mount a disc pack (units 1-4)
+    //STORE FRAMES=n POLICY=p       run the steps that follow in the
+                                    one-level store (duwamish/atlas.py):
+                                    n page frames of core, the rest on the
+                                    drum; p ATLAS, FIFO, LRU or RANDOM.
+                                    FRAMES=0 turns it off.  Model 90 only.
     //DRUM FILE=path                load the drum from a file, and save it
                                     there when the job ends (otherwise the
                                     drum keeps what earlier jobs left)
@@ -49,6 +54,7 @@ import re
 import shlex
 import time
 
+from . import atlas
 from . import devices
 from . import isa
 from . import machine as mach
@@ -76,9 +82,31 @@ def _n(k, noun):
     return f"{k:,} {noun}{'' if k == 1 else 's'}"
 
 
+PAGER_SRC = os.path.join(HERE, "lib", "pager.sal")
+PAGER_ORIGIN = -40000
+_pager = []
+
+
+def assemble_pager():
+    """The one-level store's supervisor routine: SALISH, in protected
+    core.  Compiled once."""
+    if not _pager:
+        with open(PAGER_SRC) as f:
+            asm, comp = salish.compile_source(f.read(), PAGER_SRC,
+                                              optimise=True, library=True)
+        _pager.append(triad.assemble(asm, origin=PAGER_ORIGIN))
+    return _pager[0]
+
+
 def assemble_executive():
+    """The Executive, with the pager loaded beside it."""
+    pager = assemble_pager()
     with open(EXECUTIVE_SRC) as f:
-        return triad.assemble(f.read())
+        ex = triad.assemble(f.read(),
+                            predefined={"PAGER": pager.symbols["P_pagefault"]})
+    ex.words.update(pager.words)
+    ex.pager = pager
+    return ex
 
 
 def translate_tritran(text, fname):
@@ -135,6 +163,8 @@ class Step:
         self.out_start = 0
         self.messages = []
         self.punched = ""
+        self.store = None           # (frames, policy): the one-level store
+        self.paging = None          # what it did
 
 
 class Job:
@@ -146,6 +176,7 @@ class Job:
         self.log = []
         self.failed = False
         self.volumes = []          # (kind, unit, path, writable, records)
+        self.store = None          # (frames, policy) for the next steps
         self.after = []            # what the satellite says after the steps
 
 
@@ -288,6 +319,7 @@ class Satellite:
                     del t0
                 elif verb == "EXEC":
                     step = Step(job, "EXEC", args[0] if args else "GO")
+                    step.store = job.store
                     step.obj = (catalogued(args[0], self.optimise) if args
                                 else pending_obj)
                     if step.obj is None:
@@ -305,6 +337,18 @@ class Satellite:
                         data.extend(ord(c) for c in line)
                         data.append(10)
                     job.steps[-1].data.extend(data)
+                elif verb == "STORE":
+                    frames = int(opts.get("FRAMES", "0"))
+                    policy = opts.get("POLICY", "ATLAS").upper()
+                    if policy not in atlas.POLICIES:
+                        raise JobError(f"no replacement policy {policy}")
+                    if frames and self.model != 90:
+                        raise JobError("the one-level store is a Model 90 "
+                                       "feature")
+                    if frames and frames < 4:
+                        raise JobError("the one-level store needs at least 4 "
+                                       "page frames")
+                    job.store = (frames, policy) if frames else None
                 elif verb in ("TAPE", "DISC", "DRUM"):
                     self.volume_card(job, verb, args, opts, body, deck_dir)
                 elif verb == "END":
@@ -455,7 +499,31 @@ class Satellite:
         step.t0 = time.time()
         step.io0 = m.io_cycles
         entry = step.obj.entry if step.obj.entry is not None else USER_ORIGIN
-        self.responses = [entry, USER_STACK, job.time_limit]
+        stack = USER_STACK
+        m.paging = None
+        if step.store:
+            try:
+                stack = self.start_paging(m, step)
+            except JobError as e:
+                step.messages.append(f"*** {e}: run without it")
+                step.store = None
+        self.responses = [entry, stack, job.time_limit]
+
+    def start_paging(self, m, step):
+        frames, policy = step.store
+        image = step.obj.image()
+        if any(a >= atlas.SPACE for a, w in image):
+            raise JobError("the program is bigger than the one-level store")
+        pager = self.executive.pager.symbols
+        m.poke(pager["G_policy"], atlas.POLICIES[policy])
+        m.poke(pager["G_frames"], frames)
+        m.poke(pager["G_reset"], 1)
+        # the program goes to the drum; every page starts there
+        drum = self.channel.drum
+        drum.words = {a: w for a, w in image if a >= 0}
+        step.drum0 = drum.stats.cycles
+        m.paging = atlas.PagingUnit(frames)
+        return atlas.SPACE
 
     def end_step(self, m, how, value, where, cycles):
         job, step = self.cur
@@ -465,6 +533,19 @@ class Satellite:
         step.punched = m.text(m.punch[step.punch_start:])
         step.stack = (m.stack_hits - step.s0[0], m.stack_fetches - step.s0[1])
         step.io = m.io_cycles - step.io0
+        if m.paging is not None:
+            pu = m.paging
+            frames, policy = step.store
+            step.paging = {
+                "frames": frames, "policy": policy, "faults": pu.ins,
+                "writebacks": pu.writebacks,
+                "drum": self.channel.drum.stats.cycles - step.drum0,
+                "refs": len(pu.refs),
+                "pages": len(set(pu.refs)),
+                "min": atlas.min_faults(pu.refs, frames),
+            }
+            step.refs = pu.refs
+            m.paging = None
         self.cur = None
 
     def assemble_punched(self, job, step):
@@ -555,7 +636,16 @@ class Satellite:
                 w(f"END OF STEP: {status}.  {instrs:,} instructions, "
                   f"{cycles:,} cycles = {us / 1000:,.3f} ms of Duwamish "
                   f"time ({secs:.1f} s simulated)\n")
-                if getattr(step, "io", 0):
+                pg = step.paging
+                if pg:
+                    w(f"  ONE-LEVEL STORE: {pg['frames']} page frames, "
+                      f"{pg['policy']} replacement: {pg['faults']:,} page "
+                      f"faults, {pg['writebacks']:,} pages written back;\n"
+                      f"  {pg['drum'] / 5e6:,.1f} s at the drum.  "
+                      f"{pg['refs']:,} page references to {pg['pages']} "
+                      f"pages; Belady's\n  optimum for them, computed "
+                      f"afterwards: {pg['min']:,} faults\n")
+                elif getattr(step, "io", 0):
                     w(f"  of which {step.io * CYCLE_NS / 1e9:,.1f} s waiting "
                       "for tape, drum and disc\n")
                 if step.punched:
@@ -565,6 +655,9 @@ class Satellite:
                     w(f"  instruction stack: {hits:,} of {fetches:,} "
                       f"instructions ({100 * hits / fetches:.0f}%) came from "
                       f"the stack, not from core\n")
+            paged = [st for st in job.steps if st.paging]
+            if len(paged) > 1:
+                self.store_summary(job, paged, w)
             if job.after:
                 w(f"{'-' * 72}\n")
                 for msg in job.after:
@@ -573,6 +666,28 @@ class Satellite:
         if reason != "halt":
             w(f"MACHINE STOPPED: {reason} "
               f"{getattr(m, 'check_message', '')}\n")
+
+
+    @staticmethod
+    def store_summary(job, paged, w):
+        w(f"{'-' * 72}\nTHE ONE-LEVEL STORE, STEP BY STEP\n\n")
+        w("  step  frames  policy    page faults  written back   at the drum"
+          "   in all\n")
+        for st in job.steps:
+            k = job.steps.index(st) + 1
+            secs = st.result[3] * CYCLE_NS / 1e9 if st.result else 0
+            pg = st.paging
+            if pg:
+                w(f"  {k:4}  {pg['frames']:6}  {pg['policy']:8}"
+                  f"{pg['faults']:12,}{pg['writebacks']:14,}"
+                  f"{pg['drum'] / 5e6:12.1f} s{secs:8.1f} s\n")
+            elif st.result:
+                w(f"  {k:4}  all in core{' ' * 47}{secs:6.1f} s\n")
+        mins = {(pg['frames'], pg['refs'], pg['min'])
+                for pg in (st.paging for st in paged)}
+        for frames, refs, best in sorted(mins):
+            w(f"\n  Belady's optimum with {frames} frames, for the same "
+              f"{refs:,} page references: {best:,} faults\n")
 
 
 def run_decks(paths, **kw):

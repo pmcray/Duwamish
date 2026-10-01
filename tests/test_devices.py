@@ -257,5 +257,71 @@ class TestColossus(unittest.TestCase):
         self.assertGreater(float(m.group(1)), 55)
 
 
+RECURSE = """
+global big[4000]
+proc depth(n) = n = 0 -> 0, 1 + depth(n - 1)
+proc main()
+begin
+  var s := 0
+  for i := 0 to 3999 do big[i] := i
+  for r := 1 to 3 do for i := 0 to 3999 by 7 do s := s + big[i]
+  print(depth(1500)); spaces(1); print(s); newline()
+  return 0
+end
+"""
+
+
+class TestOneLevelStore(unittest.TestCase):
+    def test_policies_offline(self):
+        from duwamish import atlas
+        classic = [1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5]
+        # Belady's anomaly: more frames, more faults, for FIFO
+        self.assertEqual(atlas.fifo_faults(classic, 3), 9)
+        self.assertEqual(atlas.fifo_faults(classic, 4), 10)
+        self.assertEqual(atlas.lru_faults(classic, 3), 10)
+        self.assertEqual(atlas.min_faults(classic, 3), 7)
+        self.assertEqual(atlas.min_faults(classic, 4), 6)
+
+    def test_programs_run_unchanged(self):
+        """Deep recursion (PUSH and CALL faulting across stack pages) and
+        data pages, in four frames, under every policy."""
+        deck = "//JOB R\n//SALISH OPT\n" + RECURSE
+        for policy in ("ATLAS", "FIFO", "LRU", "RANDOM"):
+            deck += f"//STORE FRAMES=4 POLICY={policy}\n//EXEC\n"
+        deck += "//STORE FRAMES=0\n//EXEC\n"
+        sat = run_job(deck)
+        job = sat.jobs[0]
+        self.assertFalse(job.failed, "\n".join(job.log))
+        outs = {st.output for st in job.steps}
+        self.assertEqual(outs, {"1500 3429426\n"})
+        for st in job.steps[:4]:
+            self.assertGreater(st.paging["faults"], 10)
+            self.assertGreaterEqual(st.paging["faults"], st.paging["min"])
+            # the stack crossed pages
+            self.assertGreater(st.paging["pages"], 6)
+
+    def test_atlas_job(self):
+        from duwamish import atlas
+        with open(os.path.join(ROOT, "jobs", "atlas.job")) as f:
+            deck = f.read().replace("../", ROOT + "/")
+        sat = run_job(deck)
+        job = sat.jobs[0]
+        self.assertFalse(job.failed, "\n".join(job.log))
+        outs = {st.output for st in job.steps}
+        self.assertEqual(len(outs), 1)
+        self.assertIn("in order, none lost", outs.pop())
+        pg = {st.paging["policy"]: st for st in job.steps if st.paging}
+        faults = {k: st.paging["faults"] for k, st in pg.items()}
+        best = pg["ATLAS"].paging["min"]
+        # the learning program does best of the four, the optimum better
+        self.assertEqual(min(faults, key=faults.get), "ATLAS")
+        self.assertLess(best, faults["ATLAS"])
+        # FIFO and LRU on the Duwamish agree with a replay of the same
+        # page references
+        refs = pg["FIFO"].refs
+        self.assertEqual(faults["FIFO"], atlas.fifo_faults(refs, 16))
+        self.assertEqual(faults["LRU"], atlas.lru_faults(refs, 16))
+
+
 if __name__ == "__main__":
     unittest.main()

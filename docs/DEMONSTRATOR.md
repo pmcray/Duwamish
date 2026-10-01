@@ -27,6 +27,7 @@ python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat (ten 
 python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, the teaching machine (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, ternary trees, radix 3 (half a minute)
 python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
+python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi (twenty seconds)
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -1032,6 +1033,56 @@ fixed schedule, side by side. Each key's light fades as SAKI holds it
 back, and SAKI's model of the trainee is drawn beside the trainee's hidden
 memory. Under the schedule the trainee's memory still grows, but attention
 collapses.
+
+---
+
+## The machine that learns its program's habits
+
+### 31. The one-level store — `programs/atlas/workload.sal` (the `atlas` job)
+
+Atlas (Kilburn, Edwards, Lanigan and Sumner, 1962) gave its programs one
+store, much larger than its core, and moved pages between core and drum
+behind their backs. Choosing which page to send back was the job of a
+**learning program**. It watched how long each page lay idle, and
+predicted from that page's own past when it would next be wanted. This is
+the machine studying its own running in order to run better, which is
+Good's starting point, in miniature and in 1962.
+
+The Duwamish's version (ARCHITECTURE.md §6) runs one ordinary program,
+which knows nothing of pages, with 16 frames of core and its other pages
+on the drum. Each run uses one of the pager's four policies. The program
+has three phases:
+
+* sweeps over 30 pages, more than core holds;
+* a working set that moves;
+* a quicksort of 22 pages.
+
+It prints the same results every time. The satellite prints:
+
+| policy | page faults | written back | at the drum | in all |
+|---|---|---|---|---|
+| Atlas's learning program | 295 | 103 | 19.5 s | 27.3 s |
+| least recently used | 362 | 112 | 24.8 s | 31.8 s |
+| first in, first out | 398 | 125 | 28.0 s | 35.2 s |
+| random | 349 | 119 | 24.5 s | 31.6 s |
+| all in core | | | | 4.1 s |
+
+Belady's optimum for the same 2.7 million page references is 214 faults.
+It needs to know the future, so it can only be computed afterwards. "Least
+recently used" does worst where Atlas's rule does best: in a loop over
+more pages than core, the page used longest ago is exactly the one wanted
+next. Atlas's rule learns each page's period and sends back the page not
+due again for longest. The pager runs on the Duwamish in supervisor mode,
+and its FIFO and LRU fault counts agree exactly with a replay of the
+recorded references.
+
+**What it does not show:** Belady's anomaly, where giving FIFO more frames
+brings more faults. It never happens in this program's references, from 4
+frames to 40. It needs a contrived string such as 1 2 3 4 1 2 5 1 2 3 4 5,
+with 9 faults in three frames and 10 in four (tested in
+`tests/test_devices.py`). Nor does it show Atlas's real sizes: 512-word
+pages, 32 of them in core, and a drum several times faster than this
+one.
 
 ---
 

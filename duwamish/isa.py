@@ -111,6 +111,7 @@ TRAP_SVC = 6
 TRAP_WCS = 8
 TRAP_TIME = 10
 TRAP_FPU = 11
+TRAP_PAGE = 12     # the one-level store: the page is on the drum
 TRAP_NAMES = {
     TRAP_ILLEGAL: "ILLEGAL INSTRUCTION",
     TRAP_PROTECT: "PROTECTION VIOLATION",
@@ -121,6 +122,7 @@ TRAP_NAMES = {
     TRAP_WCS: "CONTROL STORE LOCKED",
     TRAP_TIME: "TIME LIMIT EXCEEDED",
     TRAP_FPU: "FLOATING-POINT FEATURE NOT INSTALLED",
+    TRAP_PAGE: "PAGE NOT IN CORE",
 }
 
 # Fixed low-core locations (negative, hence protected) used by the trap logic.
@@ -141,6 +143,7 @@ DEV_SATELLITE = 5 # channel to the satellite job-control computer (in)
 DEV_CONFIG = 6    # configuration switches (in): +1 if the FPU is fitted
 DEV_PUNCH = 7     # card punch (out): characters, 10 ends a card
 DEV_CHANNEL = 8   # data channel to tape, drum and disc: OUT six words, IN status
+DEV_PAGE = 9      # the one-level store's paging unit (duwamish/atlas.py)
 FP_OPS = range(47, 54)
 
 

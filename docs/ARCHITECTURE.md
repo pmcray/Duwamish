@@ -159,7 +159,8 @@ argument and faulting address at fixed protected locations −1…−7. It then
 enters supervisor mode at the address held in −5. Codes: 1 illegal
 instruction, 2 protection, 3 divide by zero, 4 address out of core,
 5 privileged instruction, 6 supervisor call, 8 control store locked, 10 time
-limit, 11 floating-point feature not installed. A trap *in supervisor mode* is a machine check and halts the machine.
+limit, 11 floating-point feature not installed, 12 page not in core (the
+one-level store). A trap *in supervisor mode* is a machine check and halts the machine.
 
 The **Executive** (`duwamish/executive.tri`, about 300 words of TRIAD) lives
 at −60000. It:
@@ -193,6 +194,7 @@ Executive (`duwamish/satellite.py`):
 //TAPE   unit [FILE=f] [RING] [CARDS]  mount a reel for the job
 //DISC   unit [FILE=f] [PROTECT]       mount a disc pack
 //DRUM   FILE=f                  load the drum from a file (saved at the end)
+//STORE  FRAMES=n POLICY=p       the following steps in the one-level store
 //END
 ```
 
@@ -242,6 +244,43 @@ are the procedures of `get "devices"` (`duwamish/lib/devices.sal`).
 TRI-TRAN has unformatted `READ (u)` and `WRITE (u)`, `REWIND`,
 `BACKSPACE` and `ENDFILE` ([TRITRAN.md](TRITRAN.md)). The devices are
 modelled in `duwamish/devices.py`.
+
+### The one-level store
+
+After Kilburn's Atlas (1962), a Model 90 can run a program in a store
+larger than its core: the **one-level store**, chosen for each step by
+`//STORE FRAMES=n POLICY=p`. The program's address space is 243 pages of
+729 words, which is exactly what the drum holds, one page to a track. Only
+*n* pages are in core at once.
+
+* **The paging unit** checks every fetch, load and store the program
+  makes. For each page it keeps Atlas's "use" information: whether the
+  page is in core, whether it has been altered, when it was last used,
+  and how long it lay idle the last time. A reference to a page on the
+  drum is trap 12. The unit then sets out its table in protected core for
+  the supervisor, and the faulting instruction is restartable: `PUSH` and
+  `CALL` store before they move the stack pointer.
+* **The pager** (`duwamish/lib/pager.sal`) is the supervisor's routine
+  that chooses which page to send back. It is written in SALISH, compiled
+  as a library and loaded with the Executive at −40000. Its policies:
+  * `ATLAS`, Kilburn's learning program. A page idle for longer than it
+    was idle last time has probably finished its work, so the most overdue
+    such page goes. If no page is overdue, each is expected back after
+    *T* − *t* more instructions (*t* how long it has been idle, *T* its
+    last idle period), and the page expected back last goes.
+  * `FIFO`, `LRU` and `RANDOM`, for comparison.
+* **The Executive** writes the chosen page back to the drum if it was
+  altered, reads the wanted page in, and restarts the instruction.
+
+The drum's timing applies to every transfer. A program on the one-level
+store cannot use the drum, or the channel, for itself. The simulator keeps
+each page at its own address in core rather than moving it into one of
+*n* frames. Because the pager keeps no more than *n* pages in core, the
+store behaves, and is timed, as one with *n* frames. The satellite records
+every step's page references and reports, beside the policy's faults, the
+faults of Belady's optimum (1966) for the same references. That optimum
+needs to know the future, so it can only be computed afterwards
+(`duwamish/atlas.py`).
 
 ## 7. Microprogramming: two models, one architecture
 
@@ -400,6 +439,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | TRIAD | symbolic assembler, literal pools, listings | `duwamish/triad.py` |
 | Executive | resident monitor | `duwamish/executive.tri` |
 | devices | the data channel; tape, drum and disc | `duwamish/devices.py`, `duwamish/lib/devices.sal` |
+| one-level store | the paging unit; the pager, in SALISH, in protected core | `duwamish/atlas.py`, `duwamish/lib/pager.sal` |
 | SALISH | BCPL-like systems language, three-valued logic, BlooP certification | [SALISH.md](SALISH.md) |
 | SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
 | SALISH/S | the SALISH compiler written in SALISH, with the optimiser; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compilers, with or without OPT | `programs/selfhost/salish.sal` |

@@ -148,6 +148,7 @@ class Machine:
         self.reader = []
         self.reader_pos = 0
         self.channel = None            # the data channel (devices.Channel)
+        self.paging = None             # the one-level store (atlas.PagingUnit)
         self.io_cycles = 0             # time spent waiting for it
         self.satellite = satellite
         self.trace = None
@@ -160,6 +161,8 @@ class Machine:
     def load(self, a):
         if a < 0 and self.mode < 0:
             raise Trap(isa.TRAP_PROTECT, a)
+        if self.paging and self.mode < 0:
+            self.paging.touch(self, a, False)
         i = a + MEM_OFF
         if not 0 <= i < MEM_SIZE:
             raise Trap(isa.TRAP_ADDRESS, a)
@@ -168,6 +171,8 @@ class Machine:
     def store(self, a, v):
         if a < 0 and self.mode < 0:
             raise Trap(isa.TRAP_PROTECT, a)
+        if self.paging and self.mode < 0:
+            self.paging.touch(self, a, True)
         i = a + MEM_OFF
         if not 0 <= i < MEM_SIZE:
             raise Trap(isa.TRAP_ADDRESS, a)
@@ -218,6 +223,8 @@ class Machine:
             if self.channel is None:
                 return -5
             return self.channel.execute(self, MEM_OFF, MEM_MAX)
+        if dev == isa.DEV_PAGE:
+            return 1 if self.paging else -1
         return -1
 
     def io_out(self, dev, v):
@@ -233,6 +240,8 @@ class Machine:
             self.satellite.channel_out(self, v)
         elif dev == isa.DEV_CHANNEL and self.channel is not None:
             self.channel.out(v)
+        elif dev == isa.DEV_PAGE and self.paging is not None:
+            self.paging.out(self, v)
 
     @staticmethod
     def text(codes):
@@ -249,6 +258,8 @@ class Machine:
                 f"machine check: trap {code} ({isa.TRAP_NAMES.get(code, '?')})"
                 f" in supervisor mode at {self.ipc}, arg {arg}")
         prev_mode = self.mode
+        if code == isa.TRAP_PAGE and self.paging is not None:
+            self.paging.publish(self)
         self.mode = SUPERVISOR
         self.store(isa.LOC_TRAP_PC, self.ur[PC])
         self.store(isa.LOC_TRAP_CODE, code)
@@ -562,11 +573,18 @@ class Machine:
         needs_val = _NEEDS_VAL
         off = MEM_OFF
         size = MEM_SIZE
+        # with the one-level store, every data reference goes by load and
+        # store, which consult the paging unit
+        paging = self.paging
+        dsize = 0 if paging else size
         dcache = isa._decode_cache
         lookahead = self.lookahead
         n = 0
         while n < max_instr and not self.halted:
             n += 1
+            if self.paging is not paging:     # a step began or ended
+                paging = self.paging
+                dsize = 0 if paging else size
             pc = ur[PC]
             try:
                 self.ipc = pc
@@ -583,6 +601,8 @@ class Machine:
                     raise Trap(isa.TRAP_PROTECT, pc)
                 if not 0 <= i < size:
                     raise Trap(isa.TRAP_ADDRESS, pc)
+                if paging and self.mode < 0:
+                    paging.touch(self, self.ipc, False)
                 w = mem[i]
                 pc = ur[PC]
                 f = dcache.get(w)
@@ -608,7 +628,7 @@ class Machine:
                     if m == 0:
                         if needs_val[op]:
                             j = ea + off
-                            if ea >= 0 and j < size:
+                            if ea >= 0 and j < dsize:
                                 v = mem[j]
                             else:
                                 v = load(ea)
@@ -629,7 +649,7 @@ class Machine:
                     self.c = (v > 0) - (v < 0)
                 elif op == 2:                                 # ST
                     j = ea + off
-                    if ea >= 0 and j < size:
+                    if ea >= 0 and j < dsize:
                         mem[j] = rf[r]
                     else:
                         store(ea, rf[r])
@@ -657,17 +677,18 @@ class Machine:
                         ur[PC] = _wrap(ea + c)
                 elif op == 30:                                # PUSH
                     sp = rf[8] - 1
-                    rf[8] = sp
                     j = sp + off
-                    if sp >= 0 and j < size:
+                    if sp >= 0 and j < dsize:
+                        rf[8] = sp
                         mem[j] = rf[r]
                     else:
-                        rf[8] = sp = _wrap(sp)
-                        store(sp, rf[r])
+                        sp = _wrap(sp)
+                        store(sp, rf[r])        # before SP moves: restartable
+                        rf[8] = sp
                 elif op == 31:                                # POP
                     sp = rf[8]
                     j = sp + off
-                    v = mem[j] if sp >= 0 and j < size else load(sp)
+                    v = mem[j] if sp >= 0 and j < dsize else load(sp)
                     rf[8] = _wrap(sp + 1)
                     if r:
                         rf[r] = v
@@ -684,8 +705,8 @@ class Machine:
                         rf[r] = ea
                 elif op == 28:                                # CALL
                     sp = _wrap(rf[8] - 1)
-                    rf[8] = sp
                     store(sp, pc)
+                    rf[8] = sp
                     ur[PC] = ea
                 elif op == 29:                                # RET
                     v = load(rf[8])

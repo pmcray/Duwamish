@@ -20,6 +20,13 @@
 ;                          operation, core address, count, position;
 ;                          R1 <- the status (see duwamish/devices.py)
 ;
+;   Trap 12, page fault (the one-level store, duwamish/atlas.py): the
+;   pager (duwamish/lib/pager.sal, loaded with the Executive at PAGER)
+;   chooses a page to send back to the drum; the Executive writes it
+;   back if it was altered, reads the wanted page in, and has the program
+;   do the instruction again.  A page is 729 words, kept on the drum at
+;   its own address.
+;
 ;   Channel protocol with the satellite (device 5):
 ;       OUT 1            request the next job step; then
 ;       IN  -> entry     (-1: no more work), IN -> stack top,
@@ -43,6 +50,9 @@ TIMER    = 4
 CONFIG   = 6
 PUNCH    = 7
 CHANNEL  = 8
+PAGEU    = 9                     ; the paging unit
+TABLE    = -20000                ; where it sets out its table
+PAGEW    = 729
 
          ORG  -60000
          ENTRY BOOT
@@ -104,6 +114,8 @@ TRAP:    ST   R1, SAVE1
          ST   SP, SAVE8
          LD   SP, #-100
          LD   R1, TRAPCODE
+         CMP  R1, #12
+         JZ   PGFLT
          CMP  R1, #6
          JNZ  FAULT
          LD   R2, TRAPARG        ; the SVC number
@@ -137,7 +149,12 @@ SVPNCH:  LD   R1, SAVE1
 
 ; the control block must lie in the program's half of core; the channel
 ; itself checks the core address it is given
-SVIO:    LD   R2, SAVE1
+SVIO:    IN   R3, #PAGEU          ; the drum belongs to the one-level store
+         JNP  SVIO1
+         LD   R1, #-5
+         ST   R1, SAVE1
+         JMP  RESUME
+SVIO1:   LD   R2, SAVE1
          TST  #0(R2)
          JN   FAULT
          LD   R3, 0(R2)
@@ -172,6 +189,53 @@ RESUME:  LD   R1, SAVE1
          LD   R7, SAVE7
          LD   SP, SAVE8
          RTI
+
+; ---------------------------------------------------------------------
+; Page fault: the page wanted is in TRAPARG
+; ---------------------------------------------------------------------
+PGFLT:   LD   R1, TRAPARG
+         PUSH R1
+         CALL PAGER              ; R1 <- the page to send back, or -1
+         TST  #0(R1)
+         JN   PGIN
+         ST   R1, VICTIM
+         LD   R2, #0(R1)
+         MUL  R2, #4
+         LD   R3, TABLE+7(R2)    ; altered since it came in?
+         TST  #0(R3)
+         JNP  PGDROP
+         LD   R4, #0(R1)
+         MUL  R4, #PAGEW
+         LD   R5, #2             ; write it back
+         JSR  R6, DRUMIO
+PGDROP:  LD   R1, VICTIM
+         ADD  R1, #1
+         NEG  R1, #0(R1)
+         OUT  R1, #PAGEU         ; out of core
+PGIN:    LD   R4, TRAPARG
+         MUL  R4, #PAGEW
+         LD   R5, #1             ; read the page wanted
+         JSR  R6, DRUMIO
+         LD   R1, TRAPARG
+         ADD  R1, #1
+         OUT  R1, #PAGEU         ; in core
+         LD   R1, TRAPIPC        ; and do the instruction again
+         ST   R1, TRAPPC
+         JMP  RESUME
+
+; DRUMIO: one page between core and drum; R5 = 1 read, 2 write;
+; R4 = its address, in core and on the drum alike
+DRUMIO:  LD   R1, #2
+         OUT  R1, #CHANNEL
+         LD   R1, #1
+         OUT  R1, #CHANNEL
+         OUT  R5, #CHANNEL
+         OUT  R4, #CHANNEL
+         LD   R1, #PAGEW
+         OUT  R1, #CHANNEL
+         OUT  R4, #CHANNEL
+         IN   R1, #CHANNEL
+         JMP  0(R6)
 
 ; ---------------------------------------------------------------------
 ; End of a job step
@@ -257,6 +321,7 @@ PRN2:    POP  R2
 
 ; ---------------------------------------------------------------------
 USTACK:  DATA 0
+VICTIM:  DATA 0
 TSTART:  DATA 0
 SAVE1:   DATA 0
 SAVE2:   DATA 0
