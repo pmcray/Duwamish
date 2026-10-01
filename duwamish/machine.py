@@ -681,10 +681,13 @@ class Machine:
                     if sp >= 0 and j < dsize:
                         rf[8] = sp
                         mem[j] = rf[r]
-                    else:
+                    elif paging:
                         sp = _wrap(sp)
                         store(sp, rf[r])        # before SP moves: restartable
                         rf[8] = sp
+                    else:                       # as the Model 30 does it
+                        rf[8] = sp = _wrap(sp)
+                        store(sp, rf[r])
                 elif op == 31:                                # POP
                     sp = rf[8]
                     j = sp + off
@@ -705,8 +708,12 @@ class Machine:
                         rf[r] = ea
                 elif op == 28:                                # CALL
                     sp = _wrap(rf[8] - 1)
-                    store(sp, pc)
-                    rf[8] = sp
+                    if paging:                  # restartable after a fault
+                        store(sp, pc)
+                        rf[8] = sp
+                    else:                       # as the Model 30 does it
+                        rf[8] = sp
+                        store(sp, pc)
                     ur[PC] = ea
                 elif op == 29:                                # RET
                     v = load(rf[8])

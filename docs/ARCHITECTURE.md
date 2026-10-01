@@ -258,8 +258,10 @@ larger than its core: the **one-level store**, chosen for each step by
   page is in core, whether it has been altered, when it was last used,
   and how long it lay idle the last time. A reference to a page on the
   drum is trap 12. The unit then sets out its table in protected core for
-  the supervisor, and the faulting instruction is restartable: `PUSH` and
-  `CALL` store before they move the stack pointer.
+  the supervisor, and the faulting instruction is restartable: in the
+  one-level store, `PUSH` and `CALL` store before they move the stack
+  pointer (otherwise both models move it first, as the Model 30's
+  microcode does).
 * **The pager** (`duwamish/lib/pager.sal`) is the supervisor's routine
   that chooses which page to send back. It is written in SALISH, compiled
   as a library and loaded with the Executive at −40000. Its policies:
