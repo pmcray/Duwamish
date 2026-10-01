@@ -147,6 +147,8 @@ class Machine:
         self.punch = []
         self.reader = []
         self.reader_pos = 0
+        self.channel = None            # the data channel (devices.Channel)
+        self.io_cycles = 0             # time spent waiting for it
         self.satellite = satellite
         self.trace = None
         self._native = [False] * 243
@@ -212,6 +214,10 @@ class Machine:
             return self.satellite.channel_in(self)
         if dev == isa.DEV_CONFIG:
             return 1 if self.fpu else -1
+        if dev == isa.DEV_CHANNEL:
+            if self.channel is None:
+                return -5
+            return self.channel.execute(self, MEM_OFF, MEM_MAX)
         return -1
 
     def io_out(self, dev, v):
@@ -225,6 +231,8 @@ class Machine:
             self.timer = v
         elif dev == isa.DEV_SATELLITE and self.satellite:
             self.satellite.channel_out(self, v)
+        elif dev == isa.DEV_CHANNEL and self.channel is not None:
+            self.channel.out(v)
 
     @staticmethod
     def text(codes):

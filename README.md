@@ -19,6 +19,7 @@ This repository contains the whole machine, and software that runs on it:
 | **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing; a balanced-ternary **floating-point unit** as standard (a feature on the Model 30); an optional **look-ahead unit** with a 32-word instruction stack |
 | **Executive** | a resident monitor in protected core: traps, supervisor calls, time limits, accounting |
 | **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//TRITRAN`, `//WHALE`, `//EXEC`, `//DATA`), and a card punch whose decks later steps can assemble (`//TRIAD PUNCHED`) |
+| **Backing store** | a data channel to nine-track tape units (one trit to a track, read forward or backward, with write rings), a fixed-head drum of 3¹¹ words, and disc packs of 3¹³ words, timed as the IBM 729, 2401 and 2311 were; reels and packs kept in files between runs (`//TAPE`, `//DRUM`, `//DISC`) |
 | **TRIAD** | the symbolic assembler |
 | **SALISH** | a BCPL-like language with three-valued logic, three-way `sign … of`, and **BlooP certification** of termination |
 | **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
@@ -50,6 +51,7 @@ python -m duwamish run jobs/whale.job --model 90       # WHALE: weighed facts; a
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat: ultrastability (ten seconds)
 python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, a teaching machine that adapts (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sorting, ternary trees, radix 3
+python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -234,6 +236,14 @@ shows, and what it does not.
   the fewest moves.
 * `knuth/tst.sal`: a ternary search tree of the words of Genesis 1, one
   J3 per node, with prefix and pattern search.
+* `knuth/polyphase.sal`: sorting on tape. Twenty thousand keys are sorted
+  three ways on four work tapes, from the same replacement-selection runs
+  (1.90 times the keys in core, where the "snowplow" predicts 2).
+  Balanced two-way merging passes over the data 5 times. Polyphase
+  merging (Knuth's Algorithm D, with dummy runs) passes 3.1 times and
+  moves the tapes for 12.6 seconds rather than 16.7. Reading the tapes
+  backward does away with 8 of the balanced merge's 11 seconds of
+  rewinding.
 * `knuth/fft23.ftn`: is radix 3 the right FFT for a ternary machine? It
   needs 1.35 times radix 2's multiplications for the same work, but
   0.86 times the cycles, because it makes fewer passes over the data.
@@ -298,7 +308,7 @@ comparison.
 ```
 duwamish/            the machine: ternary.py isa.py microasm.py machine.py
                      triad.py salish.py optimise.py tritran.py whale.py
-                     satellite.py fpu.py
+                     satellite.py fpu.py devices.py (tape, drum, disc)
                      executive.tri profile.py
                      panel.py (the recorder and animated front panel),
                      heapview.py, lifeview.py, homeoview.py, sakiview.py,
@@ -308,7 +318,8 @@ notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
                      tritran.sal (TRI-TRAN's FORMAT and mathematical library),
-                     whale.sal (WHALE's associative store)
+                     whale.sal (WHALE's associative store), devices.sal
+                     (tape, drum and disc for SALISH)
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH, TRILISP, TRI-TRAN (.ftn) and WHALE (.whl)
                      programs (good/, hofstadter/, ashby/, pask/, knuth/,

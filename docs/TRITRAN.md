@@ -152,7 +152,8 @@ Executable statements: assignment; `GO TO n`; computed `GO TO (n1, n2,
 ...), I`; arithmetic and logical `IF`; `DO n I = e1, e2 [, e3]`;
 `CONTINUE`; `CALL`; `RETURN`; `STOP [n]` (the number is typed on the
 operator's console, and becomes the step's completion code); `PAUSE [n]`
-(typed, and the operator presses START); `READ`, `WRITE`, `PRINT`, `PUNCH`.
+(typed, and the operator presses START); `READ`, `WRITE`, `PRINT`, `PUNCH`;
+`REWIND`, `BACKSPACE`, `ENDFILE`.
 
 Input and output:
 
@@ -164,6 +165,24 @@ Input and output:
 ```
 
 A list may contain whole arrays and implied DO loops: `(A(I), I = 1, N)`.
+
+Tapes (units 1–4 and 8, mounted with `//TAPE` cards) take unformatted
+records, as FORTRAN's binary tape statements did:
+
+```
+      WRITE (2) K, A             one record: K, then the whole array A
+      READ (2) K, A              one record, taken word by word
+      READ (2, END=99) K, A      ... going to 99 at a tape mark
+      ENDFILE 2                  write a tape mark
+      REWIND 2
+      BACKSPACE 2                back over one record
+```
+
+The unit may be an INTEGER variable. A record holds up to 6,561 words,
+one to each item of every type. Reading more items than the record holds
+is a run-time error, and so are writing without a write ring and reading
+past a tape mark without `END=`. Formatted input and output are for the
+card reader, printer and punch only.
 
 FORMAT fields: `Iw`, `Fw.d`, `Ew.d`, `Lw`, `Bw`, `nX`, `nH...`, `'...'`,
 `/`, repeat counts (`3F10.4`), and groups (`2(I3, F8.2)`) nested to two
@@ -182,8 +201,8 @@ The compiler sees every unit of the deck at once. So it can report what a
 wrong number of arguments, and an INTEGER FUNCTION used as REAL where the
 caller forgot to declare it.
 
-Not included: EQUIVALENCE, BLOCK DATA, ASSIGN, DOUBLE PRECISION, COMPLEX,
-ENTRY, and the tape statements.
+Not included: EQUIVALENCE, BLOCK DATA, ASSIGN, DOUBLE PRECISION, COMPLEX
+and ENTRY.
 
 ## The library
 

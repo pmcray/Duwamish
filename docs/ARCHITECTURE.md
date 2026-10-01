@@ -161,7 +161,7 @@ instruction, 2 protection, 3 divide by zero, 4 address out of core,
 5 privileged instruction, 6 supervisor call, 8 control store locked, 10 time
 limit, 11 floating-point feature not installed. A trap *in supervisor mode* is a machine check and halts the machine.
 
-The **Executive** (`duwamish/executive.tri`, about 150 words of TRIAD) lives
+The **Executive** (`duwamish/executive.tri`, about 300 words of TRIAD) lives
 at −60000. It:
 
 1. asks the satellite for the next job step over channel 5;
@@ -170,7 +170,8 @@ at −60000. It:
 3. services supervisor calls (0 exit, 1 print a character, 2 read a
    character from the card reader, 3 console typewriter, 4 configuration:
    +1 if the floating-point unit is fitted, −1 if not, 5 punch a character
-   on the card punch);
+   on the card punch, 6 an operation on tape, drum or disc: see "Backing
+   store" below);
 4. on EXIT or on a program check, prints a diagnostic, reports the outcome
    and the cycles used to the satellite, and loops.
 
@@ -189,6 +190,9 @@ Executive (`duwamish/satellite.py`):
 //TRIAD  PUNCHED [LIST]          assemble the cards the last step punched
 //EXEC   [TRILISP]               run what was just translated, or a catalogued program
 //DATA   [FROM=file]             cards for the program's card reader
+//TAPE   unit [FILE=f] [RING] [CARDS]  mount a reel for the job
+//DISC   unit [FILE=f] [PROTECT]       mount a disc pack
+//DRUM   FILE=f                  load the drum from a file (saved at the end)
 //END
 ```
 
@@ -204,6 +208,40 @@ from a compiler's punch to the reader. The satellite reports when a
 punched deck is identical to an earlier one, or to its own compilation of
 a program. `jobs/bootstrap.job` uses this to have the SALISH compiler,
 written in SALISH, compile itself (see [DEMONSTRATOR.md](DEMONSTRATOR.md)).
+
+### Backing store: tape, drum and disc
+
+Tape units, a drum and disc drives hang on a **data channel**, device 8.
+A program gives the Executive a six-word control block (`SVC 6`, R1 its
+address): device (1 tape, 2 drum, 3 disc), unit, operation, core address,
+count and position. The Executive checks that the block lies in the
+program's half of core and passes it to the channel. The channel checks
+the core address, moves the words between core and the device by itself,
+and returns a status in R1. The program waits while the device works, and
+the device's time (start and stop, seek, rotational delay, transfer,
+rewind) is added to the clock. It therefore counts in the step's running
+time and against its time limit. The job log reports it separately: "of
+which 12.6 s waiting for tape, drum and disc".
+
+| device | | timing |
+|---|---|---|
+| **tape**, units 1–8 | nine tracks, one **trit** to a track: + flux, − flux, or none for 0. A frame is a tryte of nine trits, and a word is three frames. Records are separated by 0.6-inch gaps, and a tape mark ends a file. Operations: read, write, write mark, rewind, backspace, skip, and **read backward** (the record before, landing in core in its written order). Writing loses whatever followed on the reel. A reel without its **write ring** cannot be written. | 800 frames an inch at 112.5 inches a second: 30,000 words a second. 5 ms to cross a gap from a standing start. Rewinding goes at reading speed for the last 450 feet and at 500 inches a second beyond. |
+| **drum**, 3¹¹ words | 243 tracks of 729 words under fixed heads, addressed by word | 1800 rpm: 33.3 ms a turn, 21,870 words a second. A transfer waits for its first word to come round. |
+| **disc pack**, units 1–4, 3¹³ words | 243 cylinders, 9 surfaces, 9 sectors of 81 words to a track, addressed by sector | 2400 rpm: 25 ms a turn. The arm moves in 25 ms plus 0.45 ms a cylinder (25–134 ms). |
+
+The tape unit runs at the speed of the IBM 729 and 2401, and the disc arm
+moves like the IBM 2311's. The trit recording is the Section's own.
+
+Volumes belong to jobs. The satellite mounts a job's reels and packs when
+its first step starts, dismounts them when the job ends, and writes back
+to its file every reel that came with `FILE=` and a ring and was written.
+A reel without `FILE=` is a scratch reel. `//TAPE n CARDS` writes the
+cards that follow on a scratch reel, one record to a card, as a
+card-to-tape run on the satellite would have. In SALISH the operations
+are the procedures of `get "devices"` (`duwamish/lib/devices.sal`).
+TRI-TRAN has unformatted `READ (u)` and `WRITE (u)`, `REWIND`,
+`BACKSPACE` and `ENDFILE` ([TRITRAN.md](TRITRAN.md)). The devices are
+modelled in `duwamish/devices.py`.
 
 ## 7. Microprogramming: two models, one architecture
 
@@ -361,6 +399,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | microcode | the Model 30 microprogram | `duwamish/microcode/model30.dmc` |
 | TRIAD | symbolic assembler, literal pools, listings | `duwamish/triad.py` |
 | Executive | resident monitor | `duwamish/executive.tri` |
+| devices | the data channel; tape, drum and disc | `duwamish/devices.py`, `duwamish/lib/devices.sal` |
 | SALISH | BCPL-like systems language, three-valued logic, BlooP certification | [SALISH.md](SALISH.md) |
 | SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
 | SALISH/S | the SALISH compiler written in SALISH, with the optimiser; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compilers, with or without OPT | `programs/selfhost/salish.sal` |

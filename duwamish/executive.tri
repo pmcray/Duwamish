@@ -15,6 +15,10 @@
 ;       SVC 4   CONFIG     R1 <- +1 if the floating-point unit is fitted,
 ;                          -1 if not
 ;       SVC 5   PUNCH      R1 = character, to the card punch (10 ends a card)
+;       SVC 6   IO         R1 = address of a six-word control block:
+;                          device (1 tape, 2 drum, 3 disc), unit,
+;                          operation, core address, count, position;
+;                          R1 <- the status (see duwamish/devices.py)
 ;
 ;   Channel protocol with the satellite (device 5):
 ;       OUT 1            request the next job step; then
@@ -38,6 +42,7 @@ READER   = 2
 TIMER    = 4
 CONFIG   = 6
 PUNCH    = 7
+CHANNEL  = 8
 
          ORG  -60000
          ENTRY BOOT
@@ -114,6 +119,8 @@ TRAP:    ST   R1, SAVE1
          JZ   SVCONF
          CMP  R2, #5
          JZ   SVPNCH
+         CMP  R2, #6
+         JZ   SVIO
          JMP  FAULT              ; unknown service: a program check
 
 SVPUTC:  LD   R1, SAVE1
@@ -126,6 +133,27 @@ SVTTY:   LD   R1, SAVE1
 
 SVPNCH:  LD   R1, SAVE1
          OUT  R1, #PUNCH
+         JMP  RESUME
+
+; the control block must lie in the program's half of core; the channel
+; itself checks the core address it is given
+SVIO:    LD   R2, SAVE1
+         TST  #0(R2)
+         JN   FAULT
+         LD   R3, 0(R2)
+         OUT  R3, #CHANNEL
+         LD   R3, 1(R2)
+         OUT  R3, #CHANNEL
+         LD   R3, 2(R2)
+         OUT  R3, #CHANNEL
+         LD   R3, 3(R2)
+         OUT  R3, #CHANNEL
+         LD   R3, 4(R2)
+         OUT  R3, #CHANNEL
+         LD   R3, 5(R2)
+         OUT  R3, #CHANNEL
+         IN   R1, #CHANNEL
+         ST   R1, SAVE1
          JMP  RESUME
 
 SVCONF:  IN   R1, #CONFIG

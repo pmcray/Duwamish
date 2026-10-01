@@ -124,7 +124,13 @@ Other libraries: `tfloat` (ternary floating point in software, in the
 unit's format: a 5-trit exponent and 22-trit mantissa in one word, with
 `tf_add`, `tf_sub`, `tf_mul`, `tf_norm`, `tf_from_int`, `tf_from_ratio`,
 `tf_to_fixed`; each rounds once and agrees with the unit to the trit),
-`disasm` (read and disassemble machine code), `isakit`
+`devices` (tape, drum and disc through the data channel: `tread(u, buf,
+max)`, `twrite(u, buf, n)`, `tmark(u)`, `rewind(u)`, `backspace(u)`,
+`treadback(u, buf, max)`, `tskip(u)`, `tpos(u)`, `drumread(addr, buf, n)`,
+`drumwrite(addr, buf, n)`, `discread(u, sector, buf, n)`,
+`discwrite(u, sector, buf, n)`, each returning a word count or an `IO_`
+status; see ARCHITECTURE.md §6), `disasm` (read and disassemble machine
+code), `isakit`
 (the instruction set as constants and tables) and `microkit` (the
 microword format). The last two are generated from the assembler's own
 tables at compile time.

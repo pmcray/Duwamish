@@ -19,6 +19,8 @@
 --  multiplies it by ln 3, and SQRT starts from 3^(e/2).
 -- =====================================================================
 
+get "devices"                         -- for the tape statements
+
 -- floating-point constants, as words (see duwamish/fpu.py)
 const ONE = 10460353203, TWO = 38354628411, HALF = 5230176602
 const LN3 = 11491872573, LN3HI = 11491880184, LN3LO = -420088765744
@@ -558,6 +560,76 @@ begin
   end
 end
 
+-- ---------------- unformatted records, on tape ----------------
+--  WRITE (u) list gathers the list into one record and writes it at the
+--  end of the statement; READ (u) list reads one record and takes the
+--  list from it, a word to an item.  Units 1-4 and 8 are the tapes.
+const TU_MAX = 6561
+global tu_buf[TU_MAX], tu_n, tu_len, tu_unit, tu_on := false
+
+proc tu_fail(s, u)
+begin
+  prints("\n *** TRI-TRAN RUN-TIME ERROR ON TAPE UNIT "); print(u)
+  prints(": "); prints(s); newline()
+  exit(9)
+end
+
+proc tu_put(v)
+begin
+  if tu_n >= TU_MAX then tu_fail("RECORD TOO LONG", tu_unit)
+  tu_buf[tu_n] := v
+  tu_n := tu_n + 1
+end
+
+proc tu_get()
+begin
+  if tu_n >= tu_len then tu_fail("THE LIST IS LONGER THAN THE RECORD", tu_unit)
+  tu_n := tu_n + 1
+  return tu_buf[tu_n - 1]
+end
+
+proc tu_check(status, u)
+begin
+  if status = IO_NOTREADY then tu_fail("NO REEL IS MOUNTED", u)
+  if status = IO_PROTECT then tu_fail("THE REEL HAS NO WRITE RING", u)
+  if status = IO_BADADDR then tu_fail("BAD UNIT OR ADDRESS", u)
+end
+
+proc tt_uwbeg(u)
+begin
+  tu_unit := u; tu_n := 0; tu_on := true
+end
+
+proc tt_uwend()
+begin
+  var s := twrite(tu_unit, tu_buf, tu_n)
+  tu_on := false
+  tu_check(s, tu_unit)
+  if s = IO_END then tu_fail("END OF REEL", tu_unit)
+end
+
+-- +1, or -1 at a tape mark or the end of the data when the READ has END=
+proc tt_urbeg(u, hasend)
+begin
+  var s := tread(u, tu_buf, TU_MAX)
+  tu_check(s, u)
+  if s < 0 then begin
+    if hasend > 0 then return -1
+    tu_fail("END OF FILE", u)
+  end
+  tu_unit := u; tu_len := s; tu_n := 0; tu_on := true
+  return 1
+end
+
+proc tt_urend()
+begin
+  tu_on := false
+end
+
+proc tt_rewind(u) = tu_check(rewind(u), u)
+proc tt_backspace(u) = tu_check(backspace(u), u)
+proc tt_endfile(u) = tu_check(tmark(u), u)
+
 proc ff_mismatch(what)
 begin
   prints("\n *** TRI-TRAN RUN-TIME ERROR: FORMAT MISMATCH: ")
@@ -575,7 +647,9 @@ end
 
 proc tt_wi(v)
 begin
-  var p := ff_next(), c := ff[p]
+  var p, c
+  if tu_on then begin tu_put(v); return end
+  p := ff_next(); c := ff[p]
   if c = F_I then ff_put_int(v, ff[p + 1])
   else if c = F_B then ff_put_tern(v, ff[p + 1])
   else ff_mismatch("AN INTEGER NEEDS AN I OR B FIELD")
@@ -583,7 +657,9 @@ end
 
 proc tt_wr(x)
 begin
-  var p := ff_next(), c := ff[p]
+  var p, c
+  if tu_on then begin tu_put(x); return end
+  p := ff_next(); c := ff[p]
   if c = F_F then ff_put_f(x, ff[p + 1], ff[p + 2])
   else if c = F_E then ff_put_e(x, ff[p + 1], ff[p + 2])
   else ff_mismatch("A REAL NEEDS AN F OR E FIELD")
@@ -591,7 +667,9 @@ end
 
 proc tt_wl(v)
 begin
-  var p := ff_next(), c := ff[p]
+  var p, c
+  if tu_on then begin tu_put(v); return end
+  p := ff_next(); c := ff[p]
   if c = F_L then ff_put_log(v, ff[p + 1])
   else ff_mismatch("A LOGICAL NEEDS AN L FIELD")
 end
@@ -714,7 +792,9 @@ end
 
 proc tt_ri()
 begin
-  var p := ff_next(), c := ff[p]
+  var p, c
+  if tu_on then return tu_get()
+  p := ff_next(); c := ff[p]
   if c = F_I then return ff_read_int(ff[p + 1])
   if c = F_B then return ff_read_tern(ff[p + 1])
   ff_mismatch("AN INTEGER NEEDS AN I OR B FIELD")
@@ -722,14 +802,18 @@ end
 
 proc tt_rr()
 begin
-  var p := ff_next(), c := ff[p]
+  var p, c
+  if tu_on then return tu_get()
+  p := ff_next(); c := ff[p]
   if c = F_F or c = F_E then return ff_read_real(ff[p + 1], ff[p + 2])
   ff_mismatch("A REAL NEEDS AN F OR E FIELD")
 end
 
 proc tt_rl()
 begin
-  var p := ff_next(), c := ff[p]
+  var p, c
+  if tu_on then return tu_get()
+  p := ff_next(); c := ff[p]
   if c = F_L then return ff_read_log(ff[p + 1])
   ff_mismatch("A LOGICAL NEEDS AN L FIELD")
 end

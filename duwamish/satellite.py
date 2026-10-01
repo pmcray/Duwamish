@@ -27,6 +27,18 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
                                     catalogued program (e.g. TRILISP)
     //DATA [FROM=path]              the cards that follow (or a file) are
                                     read by the program through SVC 2
+    //TAPE unit [FILE=path] [RING] [CARDS]
+                                    mount a reel on a tape unit (1-8) for
+                                    the job: a scratch reel, or the reel
+                                    kept in a file.  RING fits the write
+                                    ring (a scratch reel always has one);
+                                    CARDS writes the cards that follow on
+                                    the reel, a record to a card
+    //DISC unit [FILE=path] [PROTECT]
+                                    mount a disc pack (units 1-4)
+    //DRUM FILE=path                load the drum from a file, and save it
+                                    there when the job ends (otherwise the
+                                    drum keeps what earlier jobs left)
     //END                           end of job (optional)
 
 Anything after `--` on a control card is a comment.
@@ -37,6 +49,7 @@ import re
 import shlex
 import time
 
+from . import devices
 from . import isa
 from . import machine as mach
 from . import salish
@@ -57,6 +70,10 @@ CATALOGUE = {
 
 class JobError(Exception):
     pass
+
+
+def _n(k, noun):
+    return f"{k:,} {noun}{'' if k == 1 else 's'}"
 
 
 def assemble_executive():
@@ -128,6 +145,8 @@ class Job:
         self.translations = []     # (source name, TRIAD text) from //SALISH
         self.log = []
         self.failed = False
+        self.volumes = []          # (kind, unit, path, writable, records)
+        self.after = []            # what the satellite says after the steps
 
 
 def parse_control(card):
@@ -164,6 +183,8 @@ class Satellite:
         self.responses = []
         self.cmd = []
         self.trace = trace
+        self.channel = devices.Channel()
+        self.mounted = None        # the job whose volumes are mounted
         for text, fname in decks:
             self.read_deck(text, fname)
 
@@ -284,6 +305,8 @@ class Satellite:
                         data.extend(ord(c) for c in line)
                         data.append(10)
                     job.steps[-1].data.extend(data)
+                elif verb in ("TAPE", "DISC", "DRUM"):
+                    self.volume_card(job, verb, args, opts, body, deck_dir)
                 elif verb == "END":
                     job = None
                 else:
@@ -293,6 +316,100 @@ class Satellite:
                 job.log.append(f"*** {verb} FAILED: {e}")
                 job.failed = True
                 self.queue = [(j, s) for j, s in self.queue if j is not job]
+
+    # ------------------------------------------------------------------
+    # tapes, drum and discs
+    # ------------------------------------------------------------------
+    def volume_card(self, job, verb, args, opts, body, deck_dir):
+        if verb == "DRUM":
+            if "FILE" not in opts:
+                raise JobError("//DRUM needs FILE=")
+            unit = 1
+        else:
+            if not args or not args[0].isdigit():
+                raise JobError(f"//{verb} needs a unit number")
+            unit = int(args[0])
+            top = 8 if verb == "TAPE" else 4
+            if not 1 <= unit <= top:
+                raise JobError(f"there is no {verb.lower()} unit {unit}")
+        path = opts.get("FILE")
+        if path:
+            path = os.path.join(deck_dir, path)
+        flags = {a.upper() for a in args[1:]}
+        if verb == "TAPE":
+            writable = "RING" in flags or not path
+        else:
+            writable = "PROTECT" not in flags
+        records = None
+        if "CARDS" in flags:
+            if verb != "TAPE":
+                raise JobError("only a tape can be written from cards")
+            records = [[ord(c) for c in line] for line in body]
+        for v in job.volumes:
+            if v[0] == verb and v[1] == unit:
+                raise JobError(f"{verb} {unit} is mounted twice")
+        job.volumes.append((verb, unit, path, writable, records))
+
+    def mount(self, job):
+        ch = self.channel
+        for verb, unit, path, writable, records in job.volumes:
+            name = f"{verb} {unit}" if verb != "DRUM" else "DRUM"
+            where = f"the reel in {os.path.basename(path)}" if path else ""
+            if verb == "TAPE":
+                reel = devices.Reel(path, writable)
+                if records is not None:
+                    reel.records = records + [devices.TM]
+                    reel.cum = [0.0]
+                    for r in reel.records:
+                        reel.cum.append(reel.cum[-1] + reel.length(r))
+                    reel.dirty = True
+                ch.tapes[unit] = reel
+                n = sum(1 for r in reel.records if r is not devices.TM)
+                if records is not None:
+                    desc = (f"{where or 'a scratch reel'}, written from "
+                            f"{_n(len(records), 'card')}")
+                elif path and os.path.exists(path):
+                    desc = f"{where}, {_n(n, 'record')}"
+                elif path:
+                    desc = f"a new reel, to be kept in {os.path.basename(path)}"
+                else:
+                    desc = "a scratch reel"
+                ring = "with" if writable else "without"
+                job.log.append(f"{name}: mounted {desc}, {ring} the write "
+                               "ring")
+            elif verb == "DISC":
+                pack = devices.Pack(path, writable)
+                ch.packs[unit] = pack
+                job.log.append(f"{name}: mounted "
+                               f"{'the pack in ' + os.path.basename(path) if path else 'a scratch pack'}"
+                               f"{', write-protected' if not writable else ''}")
+            else:
+                ch.drum = devices.Drum(path)
+                job.log.append(f"DRUM: loaded from {os.path.basename(path)}")
+        self.mounted = job
+
+    def dismount(self):
+        job = self.mounted
+        if job is None:
+            return
+        ch = self.channel
+        for verb, unit, path, writable, records in job.volumes:
+            vol = (ch.tapes.pop(unit, None) if verb == "TAPE" else
+                   ch.packs.pop(unit, None) if verb == "DISC" else ch.drum)
+            if vol is None:
+                continue
+            st = vol.stats
+            name = f"{verb} {unit}" if verb != "DRUM" else "DRUM"
+            msg = (f"{name}: {_n(st.ops, 'operation')}, "
+                   f"{_n(st.words, 'word')}, "
+                   f"{st.cycles / devices.CYCLES_PER_SECOND:,.1f} s")
+            if verb == "TAPE":
+                n = sum(1 for r in vol.records if r is not devices.TM)
+                msg += f"; {_n(n, 'record')} on the reel"
+            if vol.save():
+                msg += f"; saved in {os.path.basename(path)}"
+            job.after.append(msg)
+        self.mounted = None
 
     # ------------------------------------------------------------------
     # the channel to the Executive
@@ -320,6 +437,9 @@ class Satellite:
         if isinstance(step.obj, PunchedDeck) and not self.assemble_punched(
                 job, step):
             return self.start_next(m)
+        if self.mounted is not job:
+            self.dismount()
+            self.mount(job)
         self.cur = (job, step)
         mem = m.mem
         for i in range(mach.MEM_OFF, mach.MEM_SIZE):
@@ -333,6 +453,7 @@ class Satellite:
         step.i0 = m.icount
         step.s0 = (m.stack_hits, m.stack_fetches)
         step.t0 = time.time()
+        step.io0 = m.io_cycles
         entry = step.obj.entry if step.obj.entry is not None else USER_ORIGIN
         self.responses = [entry, USER_STACK, job.time_limit]
 
@@ -343,6 +464,7 @@ class Satellite:
         step.output = m.text(m.printer[step.out_start:])
         step.punched = m.text(m.punch[step.punch_start:])
         step.stack = (m.stack_hits - step.s0[0], m.stack_fetches - step.s0[1])
+        step.io = m.io_cycles - step.io0
         self.cur = None
 
     def assemble_punched(self, job, step):
@@ -386,12 +508,14 @@ class Satellite:
         m = mach.Machine(model=self.model, wcs_enabled=self.wcs,
                          satellite=self, fpu=self.fpu,
                          lookahead=self.lookahead)
+        m.channel = self.channel
         self.machine = m
         ex = assemble_executive()
         self.executive = ex
         m.load_image(ex.image())
         m.pc = ex.entry
         reason = m.run()
+        self.dismount()
         self.report(m, reason)
         return m
 
@@ -431,6 +555,9 @@ class Satellite:
                 w(f"END OF STEP: {status}.  {instrs:,} instructions, "
                   f"{cycles:,} cycles = {us / 1000:,.3f} ms of Duwamish "
                   f"time ({secs:.1f} s simulated)\n")
+                if getattr(step, "io", 0):
+                    w(f"  of which {step.io * CYCLE_NS / 1e9:,.1f} s waiting "
+                      "for tape, drum and disc\n")
                 if step.punched:
                     w(f"  punched {step.punched.count(chr(10)):,} cards\n")
                 hits, fetches = getattr(step, "stack", (0, 0))
@@ -438,6 +565,10 @@ class Satellite:
                     w(f"  instruction stack: {hits:,} of {fetches:,} "
                       f"instructions ({100 * hits / fetches:.0f}%) came from "
                       f"the stack, not from core\n")
+            if job.after:
+                w(f"{'-' * 72}\n")
+                for msg in job.after:
+                    w(f"  {msg}\n")
         w(f"{line}\n")
         if reason != "halt":
             w(f"MACHINE STOPPED: {reason} "

@@ -893,6 +893,20 @@ class Compiler:
             return m.group(1), (unit_no, int(m.group(3)),
                                 int(m.group(4)) if m.group(4) else None,
                                 self.iolist(m.group(5)))
+        # unformatted, on tape: READ (u) list, READ (u, END=n) list,
+        # WRITE (u) list; the unit a constant or an INTEGER variable
+        m = re.fullmatch(r"(READ|WRITE)\(([A-Z][A-Z0-9]*|\d+)"
+                         r"(?:,END=(\d+))?\)(.*)", s)
+        if m:
+            unit = self.tape_unit(m.group(2))
+            if m.group(3) and m.group(1) == "WRITE":
+                self.err("END= belongs on a READ")
+            return "U" + m.group(1), (unit, None,
+                                      int(m.group(3)) if m.group(3) else None,
+                                      self.iolist(m.group(4)))
+        m = re.fullmatch(r"(REWIND|BACKSPACE|ENDFILE)([A-Z][A-Z0-9]*|\d+)", s)
+        if m:
+            return m.group(1), self.tape_unit(m.group(2))
         m = re.fullmatch(r"(READ|PRINT|PUNCH)(\d+)(?:,(.*))?", s)
         if m:
             kind = "READ" if m.group(1) == "READ" else "WRITE"
@@ -918,11 +932,23 @@ class Compiler:
             self.data_stmt(s[4:])
             return "DATA", None
         for word in ("EQUIVALENCE", "BLOCKDATA", "ASSIGN", "DOUBLEPRECISION",
-                     "COMPLEX", "ENTRY", "IMPLICIT", "BACKSPACE", "REWIND",
-                     "ENDFILE"):
+                     "COMPLEX", "ENTRY", "IMPLICIT"):
             if s.startswith(word):
                 self.err(f"TRI-TRAN has no {word} statement")
         self.err(f"cannot understand this statement")
+
+    def tape_unit(self, text):
+        """A tape's unit: a constant 1-4 or 8, or an INTEGER variable."""
+        if text.isdigit():
+            n = int(text)
+            if n in (5, 6, 7):
+                self.err(f"unit {n} is not a tape: unformatted input and "
+                         "output, REWIND, BACKSPACE and ENDFILE are for "
+                         "tapes")
+            if not (1 <= n <= 4 or n == 8):
+                self.err(f"there is no tape unit {n}")
+            return ("const", n)
+        return ("name", text)
 
     @staticmethod
     def top_equals(s):
@@ -1189,7 +1215,7 @@ class Compiler:
             fake = Statement(None, "", "", st.line)
             fake.kind, fake.args = a[1]
             return Compiler.targets(fake)
-        if k == "READ" and a[2]:
+        if k in ("READ", "UREAD") and a[2]:
             return [a[2]]
         if k == "DO":
             return [a[0]]
@@ -1509,7 +1535,7 @@ class Compiler:
             return {a[0][1]} if a[0][0] == "name" else set()
         if k == "DO":
             return {a[1]}
-        if k == "READ":
+        if k in ("READ", "UREAD"):
             out = set()
 
             def walk(items):
@@ -1521,7 +1547,7 @@ class Compiler:
                         out.add(it[1])
             walk(a[3])
             return out
-        if k == "WRITE":
+        if k in ("WRITE", "UWRITE"):
             out = set()
 
             def walk2(items):
@@ -1868,6 +1894,51 @@ class Compiler:
             self.emit("TST  #0(R1)")
             self.jump(end, "JN")
         self.io_list(items, out=False)
+
+    # ---------------- tapes ----------------
+    def tape_unit_r1(self, u):
+        if u[0] == "const":
+            self.emit(f"LD   R1, #{u[1]}")
+        else:
+            e = self.resolve(u)
+            if e[1] != "I":
+                self.err("a tape unit must be an INTEGER")
+            self.gen(e)
+
+    def s_uwrite(self, a, st):
+        unit, _, _, items = a
+        self.tape_unit_r1(unit)
+        self.emit("PUSH R1")
+        self.emit("CALL P_tt_uwbeg")
+        self.io_list(items, out=True)
+        self.emit("CALL P_tt_uwend")
+
+    def s_uread(self, a, st):
+        unit, _, end, items = a
+        self.tape_unit_r1(unit)
+        self.emit("PUSH R1")
+        self.emit(f"LD   R1, #{1 if end else -1}")
+        self.emit("PUSH R1")
+        self.emit("CALL P_tt_urbeg")
+        if end:
+            self.emit("TST  #0(R1)")
+            self.jump(end, "JN")
+        self.io_list(items, out=False)
+        self.emit("CALL P_tt_urend")
+
+    def tape_op(self, unit, name):
+        self.tape_unit_r1(unit)
+        self.emit("PUSH R1")
+        self.emit(f"CALL P_tt_{name}")
+
+    def s_rewind(self, a, st):
+        self.tape_op(a, "rewind")
+
+    def s_backspace(self, a, st):
+        self.tape_op(a, "backspace")
+
+    def s_endfile(self, a, st):
+        self.tape_op(a, "endfile")
 
     def io_list(self, items, out):
         for it in items:

@@ -25,6 +25,7 @@ python -m duwamish run jobs/whale.job --model 90       # WHALE: the tour, and a 
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat (ten seconds)
 python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, the teaching machine (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, ternary trees, radix 3 (half a minute)
+python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi (twenty seconds)
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -729,6 +730,49 @@ log₂ N. So the advice is right for the wrong reason.
 
 ---
 
+### 23a. Sorting on tape — `programs/knuth/polyphase.sal`
+
+Before discs, a file too big for core was sorted on magnetic tape, and
+most of the time went into moving the tape, not into comparing keys.
+Knuth gave the subject a third of *Sorting and Searching*. With tape units
+on the Duwamish (ARCHITECTURE.md §6), the program sorts 20,000 keys three
+ways. Each method has the same 500 keys of core, the same initial runs
+and four work tapes:
+
+* **Replacement selection** (Knuth's "snowplow", in a ternary heap) makes
+  the initial runs: 21 runs of 952 keys, 1.90 times the keys in core,
+  where theory predicts 2.
+* **Balanced two-way merging** spreads the runs over two tapes, merges
+  them pass after pass onto the other two, and rewinds every tape after
+  every pass.
+* **Reading backward** does the same, but each pass reads the tapes the
+  last pass wrote backward, from where it left them. No tape is rewound
+  between passes. A run written ascending comes back descending, so the
+  passes alternate between merging by the smaller key and by the larger.
+* **Polyphase merging** (Gilstad, 1960; Knuth's Algorithm D) spreads the
+  runs unevenly, 13, 11 and 7, a perfect distribution of "generalized
+  Fibonacci" numbers made up with dummy runs. Each phase merges three
+  tapes onto the fourth until one is empty. The program prints the runs
+  on each tape, phase by phase.
+
+| | merge passes over the data | tape motion | rewinding | computing | total |
+|---|---|---|---|---|---|
+| balanced | 5.0 | 16.7 s | 11.2 s | 14.9 s | 42.9 s |
+| read backward | 5.0 | 16.8 s | 3.3 s | 14.8 s | 35.0 s |
+| polyphase | 3.1 | 12.6 s | 8.0 s | 11.9 s | 32.6 s |
+
+Every result is read back from its tape and checked: in order, with the
+same number of keys and the same sum. Reading backward's 3.3 seconds of
+rewinding are spent setting the tapes up before the sort begins.
+
+**What it shows:** why the tape-sorting algorithms of the 1960s look as
+they do. Polyphase saves passes, and reading backward saves rewinds.
+**What it does not show:** the overlap a real installation arranged. The
+Duwamish's channel makes the program wait while the tape moves, so the
+computing (about a third of the time here) is added to the tape time
+instead of hidden under it. The file is also far smaller than the reels
+of the period, so rewinds are short.
+
 ## The AI of the period, in TRILISP
 
 The committee met in 1967. These are the programs the field was writing
@@ -939,7 +983,7 @@ collapses.
 
 * **Rosenblatt**: the perceptron, in ternary, against Good's weight of
   evidence, and up against Minsky and Papert's limit (§10).
-* **Ashby** (§20), **Knuth** (§21–23) and **Pask** (§30) are above.
+* **Ashby** (§20), **Knuth** (§21–23a) and **Pask** (§30) are above.
 * **Kleene and McCarthy logic** (`programs/kleene.sal`): three-valued
   truth tables, each connective a single ternary instruction.
 * **Beer**: every run can be profiled from the tallies
