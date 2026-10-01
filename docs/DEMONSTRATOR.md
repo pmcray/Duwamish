@@ -21,6 +21,7 @@ python -m duwamish run jobs/improve.job --model 90   # ... and makes a faster co
 python -m duwamish run jobs/tour.job           # the machine and its languages
 python -m duwamish run jobs/tritran.job --model 90   # FORTRAN, and Good's prime-factor FFT (about half a minute)
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
+python -m duwamish run jobs/colossus.job --model 90    # Tunny enciphers, Colossus sets the wheels (half a minute)
 python -m duwamish run jobs/whale.job --model 90       # WHALE: the tour, and a clinic that weighs evidence (40 seconds)
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat (ten seconds)
 python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, the teaching machine (ten seconds)
@@ -285,6 +286,61 @@ weights itself from English letter frequencies, computing its own
 logarithms by repeated squaring. It plots the evidence letter by letter and
 reports its verdicts. A pair that fails to reach the threshold is reported
 as undecided, not guessed.
+
+### 7a. Colossus — `programs/good/tunny.sal`, `programs/good/colossus.sal` (the `colossus` job)
+
+Good moved in 1943 from Hut 8 to Max Newman's section, where he and
+Donald Michie ran the Colossi against Tunny, the Lorenz SZ42 teleprinter
+cipher. The job has two steps that share two reels of tape.
+
+* **The German side** (`tunny.sal`) writes Genesis 1 in teleprinter code
+  and enciphers 4,000 characters on a simulated SZ42A. The machine has
+  five chi wheels that step every character, five psi wheels that step
+  only when the motor wheels allow, and two motor wheels. The step writes
+  the intercept on tape 1 and the chi wheel patterns on tape 2: by 1944
+  the patterns were broken by hand, and Colossus's work was to find each
+  message's settings. It prints the true settings for checking.
+* **The Newmanry** (`colossus.sal`) runs Tutte's "1+2 break-in". Here Δ is
+  the exclusive or of each character with the next, Z the cipher text,
+  P the plain text, and χ and ψ′ the two wheel streams:
+  ΔZ₁ + ΔZ₂ + Δχ₁ + Δχ₂ = ΔP₁ + ΔP₂ + Δψ′₁ + Δψ′₂. The psi wheels
+  often stand still, and consecutive plain-text characters often agree,
+  so the right setting of chi 1 and chi 2 shows more dots than chance.
+  The program counts dots for all 1,271 settings, as Colossus did by
+  reading its tape loop once for each one. On the Duwamish a dot is +1
+  and a cross −1, so exclusive or is multiplication. One `EQV`
+  instruction combines 27 places of tape, and a table counts the dots
+  nine trits at a time.
+
+Each count is weighed in Good's units: decibans of evidence that its
+setting gives 55% dots rather than 50%. The prior odds on any one setting
+are −31.0 db. The program bounds the odds on the best setting against all
+1,270 rivals by its lead over the runner-up, less the logarithm of the
+number of rivals. It then sets chi 3, 4 and 5 one at a time, each against
+both wheels already set, adding the two weights of evidence. The output
+shows:
+
+* the counts above Colossus's "set total", with their excess, sigma and
+  weight;
+* the right setting, 36/22, at +120 db, ahead of the runner-up by 115 db;
+* the evidence growing along the tape: undecided at 2,000 characters,
+  decisive at 3,000;
+* all five chi settings found, checked against the first step's;
+* the "de-chi", the cipher text with the chi stream taken off, which the
+  Testery worked on by hand: consecutive characters agree at 14% of
+  places against 3.1% for random text, because the psi wheels stood
+  still;
+* the 1+2 run's 8.9 seconds on the Duwamish, against about 16 minutes of
+  tape on a Colossus Mark 1 and 3 on a Mark 2.
+
+**What it shows:** the statistical method of the Newmanry, in Good's
+weights of evidence, run to a decision with the same care as
+Banburismus (§7). **What it does not show:** the real SZ42's
+"limitations", which made the motor depend on earlier characters, or
+German plain text. The simulated operators double their spaces and
+shift characters, which gives the plain text a dot rate of 60%, about
+what real traffic showed. English without that habit gives 52%, too
+little for 4,000 characters.
 
 ### 8. The probability of the unseen — `programs/good/goodturing.sal`
 

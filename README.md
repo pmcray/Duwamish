@@ -47,6 +47,7 @@ python -m duwamish run jobs/copycat.job --model 90     # Copycat's analogies (ha
 python -m duwamish run jobs/fiveyear.job --model 90    # Good's five-year plan v. Shannon (six minutes)
 python -m duwamish run jobs/tritran.job --model 90     # FORTRAN: a tour, Livermore, Good's FFT (half a minute)
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
+python -m duwamish run jobs/colossus.job --model 90    # Tunny enciphers, Colossus sets the chi wheels (half a minute)
 python -m duwamish run jobs/whale.job --model 90       # WHALE: weighed facts; a clinic that learns (40 seconds)
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat: ultrastability (ten seconds)
 python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, a teaching machine that adapts (ten seconds)
@@ -176,6 +177,13 @@ shows, and what it does not.
 * `banburismus.sal`: Turing and Good's weight of evidence in decibans, in a
   sequential test for messages "in depth"; the machine computes its own
   logarithms.
+* `tunny.sal` and `colossus.sal`: the Newmanry, where Good and Michie ran
+  the Colossi. A simulated Lorenz SZ42 enciphers Genesis onto tape, and
+  Colossus finds the chi settings by Tutte's 1+2 method. Exclusive or is
+  the Duwamish's `EQV`, 27 places of tape at a time. Every count is
+  weighed in decibans against the prior odds of 1 to 1,270. The right
+  setting stands 115 db clear, decisive after about 3,000 characters,
+  and all five wheels are set as the operators set them.
 * `goodturing.sal`: estimating the probability of the unseen, checked
   against a known population (0.2280 estimated, 0.2292 true), and an
   honest failure on a text that violates the assumptions.

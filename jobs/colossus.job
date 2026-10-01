@@ -1,0 +1,9 @@
+//JOB COLOSSUS                   -- Tunny enciphers a message; Colossus sets the chi wheels
+//TAPE 1                         -- the intercept
+//TAPE 2                         -- the chi wheel patterns
+//SALISH FROM=../programs/good/tunny.sal OPT
+//EXEC
+//DATA FROM=../data/genesis.txt
+//SALISH FROM=../programs/good/colossus.sal OPT
+//EXEC
+//END

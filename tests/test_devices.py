@@ -231,5 +231,31 @@ class TestTapeSorts(unittest.TestCase):
         self.assertRegex(out, r"start\s+13 \(\d+\)\s+11 \(\d+\)\s+7 \(\d+\)")
 
 
+class TestColossus(unittest.TestCase):
+    def test_sets_the_chi_wheels(self):
+        with open(os.path.join(ROOT, "jobs", "colossus.job")) as f:
+            deck = f.read().replace("../", ROOT + "/")
+        sat = run_job(deck)
+        job = sat.jobs[0]
+        self.assertFalse(job.failed, "\n".join(job.log))
+        tunny, colossus = (st.output for st in job.steps)
+        truth = re.search(r"chi ((?:\d+ ){5})", tunny).group(1).split()
+        found = re.search(r"The chi settings: ((?:\d+ ){5})",
+                          colossus).group(1).split()
+        self.assertEqual(found, truth)
+        self.assertIn("-- set.", colossus)
+        self.assertEqual(colossus.count("   set\n"), 3)
+        # the right setting stands far out of the 1,271
+        m = re.search(r"Odds on it against all 1,270 rivals: at least "
+                      r"\+([\d.]+) db", colossus)
+        self.assertGreater(float(m.group(1)), 20)
+        # and the de-chi repeats itself far more than random text
+        m = re.search(r"same at ([\d.]+)%", colossus)
+        self.assertGreater(float(m.group(1)), 3.1 * 2)
+        # the plain text's bias, which the method feeds on
+        m = re.search(r"equals delta-impulse 2 at ([\d.]+)%", tunny)
+        self.assertGreater(float(m.group(1)), 55)
+
+
 if __name__ == "__main__":
     unittest.main()
