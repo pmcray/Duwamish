@@ -81,7 +81,7 @@ class Tok:
         return f"{self.kind}:{self.val!r}@{self.line}"
 
 
-def tokenize(text, fname):
+def tokenize(text, fname, keywords=KEYWORDS):
     toks = []
     pos, line, nl = 0, 1, True
     while pos < len(text):
@@ -98,7 +98,7 @@ def tokenize(text, fname):
             continue
         if kind in ("ws", "comment"):
             continue
-        if kind == "name" and val in KEYWORDS:
+        if kind == "name" and val in keywords:
             kind = "kw"
         elif kind == "num":
             val = int(val)
@@ -625,8 +625,17 @@ class Compiler:
                         return f.read(), p
         raise CompileError(f"cannot find module {name!r}")
 
+    # a dialect (WHALE) parses the main file with its own parser
+    main_parser = None
+    main_file = None
+
+    def parse_module(self, text, fname):
+        if self.main_parser and fname == self.main_file:
+            return self.main_parser(text, fname)
+        return Parser(tokenize(text, fname)).module()
+
     def collect(self, text, fname, into):
-        decls, bloop = Parser(tokenize(text, fname)).module()
+        decls, bloop = self.parse_module(text, fname)
         if bloop:
             self.bloop_modules.add(fname)
         base = os.path.dirname(fname) if os.path.sep in fname else None

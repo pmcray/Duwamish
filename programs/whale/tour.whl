@@ -1,0 +1,236 @@
+-- =====================================================================
+--  A TOUR OF WHALE
+--
+--  WHALE is SALISH with an associative store, as SAIL was ALGOL with
+--  LEAP.  A fact is a triple of items -- attribute of object is value --
+--  and it carries a weight of evidence, so that it is true, false, or
+--  not yet known.  The tour is a small world of blocks on a table, seen
+--  partly and in poor light:
+--
+--  1. facts, and the three truth values: what is not known is not false
+--  2. questions in every direction, as LEAP answered them
+--  3. rules run to a fixed point, and a conclusion that must wait for
+--     a fact nobody has yet seen
+--  4. evidence that adds up, glimpse by glimpse, to a verdict
+-- =====================================================================
+
+item isa, block, colour, red, green, blue
+item shape, cube, pyramid, box
+item on, floor, above, clear, top_seen, yes
+item b1, b2, b3, b4, b5
+
+global blocks := table(b1, b2, b3, b4, b5)
+global colours := table(red, green, blue)
+global shapes := table(cube, pyramid, box)
+
+proc printfact(a, o, v)
+begin
+  spaces(5); printitem(a); prints(" of "); printitem(o); prints(" is ")
+  printitem(v); prints(": ")
+  printtruth(fact a of o is v)
+  newline()
+end
+
+-- a thing has one colour, and one shape: deny the others
+proc one_of(a, vals)
+begin
+  foreach x, c such that a of x is c do
+    for i := 0 to 2 do
+      if vals[i] <> c then deny a of x is vals[i]
+end
+
+proc the_world()
+begin
+  for i := 0 to 4 do make isa of blocks[i] is block
+  for i := 0 to 2 do make isa of colours[i] is colour
+  make colour of b1 is red;   make shape of b1 is cube;    make on of b1 is b2
+  make colour of b2 is green; make shape of b2 is cube;    make on of b2 is b4
+  make colour of b3 is blue;  make shape of b3 is pyramid; make on of b3 is floor
+  make colour of b4 is red;   make shape of b4 is box;     make on of b4 is floor
+  -- b5 stands on the floor at the back, in shadow: neither its colour nor
+  -- its top has been seen
+  make shape of b5 is cube;   make on of b5 is floor
+  for i := 0 to 3 do make top_seen of blocks[i] is yes
+  one_of(shape, shapes)
+end
+
+proc part1()
+begin
+  prints("1. FACTS, AND THE THREE TRUTH VALUES\n\n")
+  prints("   As stated:\n")
+  printfact(colour, b1, red)
+  printfact(colour, b1, green)
+  printfact(colour, b5, red)
+  prints("\n   Nothing has said b1 is not green: in an open world, what is not\n")
+  prints("   stated is unknown, not false.  The rule that a thing has one colour\n")
+  prints("   denies the others:\n\n")
+  one_of(colour, colours)
+  printfact(colour, b1, red)
+  printfact(colour, b1, green)
+  printfact(colour, b5, red)
+  prints("\n   -- but of b5's colour the rule can say nothing, since nothing is\n")
+  prints("   known of it.  The truth values combine as Kleene's: \"b1 is red and\n")
+  prints("   b5 is red\" is ")
+  printtruth(fact colour of b1 is red & fact colour of b5 is red)
+  prints(", \"b1 is green and b5 is red\" is ")
+  printtruth(fact colour of b1 is green & fact colour of b5 is red)
+  prints(",\n   \"b1 is red or b5 is red\" is ")
+  printtruth(fact colour of b1 is red | fact colour of b5 is red)
+  prints(".\n\n")
+end
+
+proc part2()
+begin
+  var n
+  prints("2. QUESTIONS IN EVERY DIRECTION\n\n")
+  prints("   the colour of b1?                       ")
+  printitem(the colour of b1); newline()
+  prints("   what is red?                            ")
+  foreach x such that colour of x is red do begin printitem(x); spaces(1) end
+  newline()
+  prints("   what is known of b3?                    ")
+  foreach a, v such that a of b3 is v do begin
+    printitem(a); prints(" "); printitem(v); prints("; ")
+  end
+  newline()
+  prints("   how is b1 related to b2?                ")
+  foreach a such that a of b1 is b2 do printitem(a)
+  newline()
+  prints("   what stands on what?                    ")
+  foreach x, y such that on of x is y and y <> floor do begin
+    printitem(x); prints(" on "); printitem(y); prints("; ")
+  end
+  newline()
+  prints("   what stands on something red?           ")
+  foreach x, y such that on of x is y and colour of y is red do begin
+    printitem(x); prints(" (on "); printitem(y); prints(") ")
+  end
+  newline()
+  prints("   which cubes are known not to be green?  ")
+  foreach x such that shape of x is cube and not fact colour of x is green do begin
+    printitem(x); spaces(1)
+  end
+  newline()
+  prints("   which cubes might be green?             ")
+  foreach x such that shape of x is cube and fact colour of x is green >= 0 do begin
+    printitem(x); spaces(1)
+  end
+  newline()
+  n := 0
+  foreach a, o, v such that a of o is v do n := n + 1
+  prints("\n   The store holds "); print(n)
+  prints(" true triples.  Each question is a walk down the\n")
+  prints("   triples of one attribute, or of all of them when the attribute is\n")
+  prints("   asked for; a question of several triples joins them, binding as it\n")
+  prints("   goes.  `not' of unknown is unknown, so b5 is not among the cubes\n")
+  prints("   known not to be green, and is among those that might be.\n\n")
+end
+
+proc part3()
+begin
+  var rounds := 0, before, covered
+  prints("3. RULES RUN TO A FIXED POINT\n\n")
+  -- above: what is on, and what is above what that is on
+  repeat
+    before := wh_live
+    rounds := rounds + 1
+    foreach x, y such that on of x is y and y <> floor do make above of x is y
+    foreach x, y, z such that above of x is y and on of y is z and z <> floor do
+      make above of x is z
+  until wh_live = before
+  prints("   above, as the closure of on, after "); print(rounds)
+  prints(" rounds of the rules (the last\n   finding nothing new): ")
+  foreach x, y such that above of x is y do begin
+    printitem(x); prints(" above "); printitem(y); prints("; ")
+  end
+  newline()
+  -- clear: false if something is on it; true if its top has been seen
+  -- bare; otherwise unknown
+  foreach x such that isa of x is block do begin
+    covered := false
+    foreach y such that on of y is x do covered := true
+    if covered then deny clear of x is yes
+    else if fact top_seen of x is yes then make clear of x is yes
+  end
+  prints("\n   clear?   ")
+  for i := 0 to 4 do begin
+    printitem(blocks[i]); prints(": "); printtruth(fact clear of blocks[i] is yes)
+    if i < 4 then prints(",  ")
+  end
+  prints("\n\n   May x be put on y?  Both must be clear, and y not a pyramid\n")
+  prints("   (Kleene's and):\n\n")
+  prints("           ")
+  for j := 0 to 4 do begin printitem(blocks[j]); spaces(6) end
+  newline()
+  for i := 0 to 4 do begin
+    spaces(6); printitem(blocks[i]); spaces(3)
+    for j := 0 to 4 do
+      if i = j then prints("  -     ")
+      else begin
+        var ok := fact clear of blocks[i] is yes & fact clear of blocks[j] is yes &
+                  -fact shape of blocks[j] is pyramid
+        printsw(ok > 0 -> "yes", ok < 0 -> "no", "?", 8)
+      end
+    newline()
+  end
+  prints("\n   A planner that took the unknown for false would never use b5; one\n")
+  prints("   that took it for true might bury something on it.  WHALE knows to\n")
+  prints("   go and look.  Now someone looks at the top of b5:\n\n")
+  make top_seen of b5 is yes
+  make clear of b5 is yes
+  prints("   b5 clear: "); printtruth(fact clear of b5 is yes)
+  prints(", and b1 may be put on b5: ")
+  printtruth(fact clear of b1 is yes & fact clear of b5 is yes)
+  prints(".\n\n")
+end
+
+proc show_b5(what)
+begin
+  prints("   "); printsw(what, 39)
+  for i := 0 to 2 do begin
+    printdbw(weight colour of b5 is colours[i], 9)
+    printsw(fact colour of b5 is colours[i] > 0 -> "true",
+            fact colour of b5 is colours[i] < 0 -> "false", "?", 7)
+  end
+  newline()
+end
+
+proc part4()
+begin
+  prints("4. EVIDENCE THAT ADDS UP\n\n")
+  prints("   b5 is glimpsed several times in poor light.  Each glimpse is weighed\n")
+  prints("   in decibans, as Turing and Good weighed the evidence of each message,\n")
+  prints("   and the weights add.  20 db -- odds of 100 to 1 -- makes a verdict.\n\n")
+  spaces(42); prints("red"); spaces(13); prints("green"); spaces(11)
+  prints("blue\n")
+  confirm colour of b5 is red by 800
+  show_b5("reddish:   red +8")
+  confirm colour of b5 is red by 700
+  confirm colour of b5 is green by -500
+  show_b5("again:     red +7, green -5")
+  confirm colour of b5 is red by -300
+  confirm colour of b5 is blue by 400
+  show_b5("lamplight: red -3, blue +4")
+  confirm colour of b5 is red by 900
+  confirm colour of b5 is blue by -900
+  confirm colour of b5 is green by -1600
+  show_b5("daylight:  red +9, blue -9, green -16")
+  prints("\n   b5's possible colours, the best supported first: ")
+  foreach ranked c such that possibly colour of b5 is c do begin
+    printitem(c); prints(" ("); printdb(weight colour of b5 is c); prints(") ")
+  end
+  prints("\n   the colour of b5 is now ")
+  printitem(the colour of b5)
+  prints(", and green is ruled out; blue is still open.\n")
+end
+
+proc main()
+begin
+  prints("A TOUR OF WHALE, THE WOODWORTH HEURISTIC ASSOCIATIVE LEARNING EVALUATOR\n\n")
+  the_world()
+  part1()
+  part2()
+  part3()
+  part4()
+  return 0
+end

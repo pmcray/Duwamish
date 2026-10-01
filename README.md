@@ -18,13 +18,14 @@ This repository contains the whole machine, and software that runs on it:
 | **Model 30** | microprogrammed: a 156-word horizontal microprogram in a *writable* control store, with ternary micro-branching, cycle-exact timing |
 | **Model 90** | hardwired, fast, and checked equivalent to the Model 30 by randomized testing; a balanced-ternary **floating-point unit** as standard (a feature on the Model 30); an optional **look-ahead unit** with a 32-word instruction stack |
 | **Executive** | a resident monitor in protected core: traps, supervisor calls, time limits, accounting |
-| **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//TRITRAN`, `//EXEC`, `//DATA`), and a card punch whose decks later steps can assemble (`//TRIAD PUNCHED`) |
+| **Satellite** | job control from card decks (`//JOB`, `//SALISH`, `//TRITRAN`, `//WHALE`, `//EXEC`, `//DATA`), and a card punch whose decks later steps can assemble (`//TRIAD PUNCHED`) |
 | **TRIAD** | the symbolic assembler |
 | **SALISH** | a BCPL-like language with three-valued logic, three-way `sign … of`, and **BlooP certification** of termination |
 | **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
 | **SALISH/S** | the SALISH compiler written in SALISH, optimiser included: it compiles itself on the Duwamish, card for card identical to the satellite's compilers, and builds a faster copy of itself |
 | **TRILISP** | a LISP 1.5-style interpreter written in SALISH, with one-trit type tags, tail calls and garbage collection |
 | **TRI-TRAN** | the Duwamish FORTRAN (1966): fixed-form cards, FORMAT, COMMON; three-valued LOGICAL; the arithmetic IF as one three-way jump; DO indices in index registers, as in FORTRAN I |
+| **WHALE** | the Woodworth Heuristic Associative Learning Evaluator: SALISH with an associative store, as SAIL was ALGOL with LEAP. Facts are triples with weights of evidence in decibans, true, false or unknown by Wald's test |
 
 ## Quick start
 
@@ -45,6 +46,7 @@ python -m duwamish run jobs/copycat.job --model 90     # Copycat's analogies (ha
 python -m duwamish run jobs/fiveyear.job --model 90    # Good's five-year plan v. Shannon (six minutes)
 python -m duwamish run jobs/tritran.job --model 90     # FORTRAN: a tour, Livermore, Good's FFT (half a minute)
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
+python -m duwamish run jobs/whale.job --model 90       # WHALE: weighed facts; a clinic that learns (40 seconds)
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat: ultrastability (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sorting, ternary trees, radix 3
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
@@ -168,6 +170,15 @@ shows, and what it does not.
 * `goodturing.sal`: estimating the probability of the unseen, checked
   against a known population (0.2280 estimated, 0.2292 true), and an
   honest failure on a text that violates the assumptions.
+* `whale/diagnosis.whl`: a clinic in WHALE. It learns the weight of
+  evidence of each finding from hospital records (flattened, as Good
+  taught), diagnoses one question at a time until a diagnosis reaches
+  20 db (Wald), and refers the patient when none does. Asking the
+  question with the greatest expected weight of evidence (Good's
+  "quasi-utility") takes 7.4 questions where a fixed order takes 10.3.
+  Adding fixed weights instead of conditional ones costs wrong diagnoses.
+  (`whale/tour.whl` shows the language: an open world of blocks, rules
+  run to a fixed point, and glimpses that add up to a verdict.)
 
 **Hofstadter**
 * `selfref.sal`: Gödel's diagonal lemma, *executed*. A program solves for,
@@ -260,8 +271,9 @@ comparison.
 
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): principles of operation, as
   the committee's report
-* [docs/SALISH.md](docs/SALISH.md), [docs/TRILISP.md](docs/TRILISP.md) and
-  [docs/TRITRAN.md](docs/TRITRAN.md): the language manuals
+* [docs/SALISH.md](docs/SALISH.md), [docs/TRILISP.md](docs/TRILISP.md),
+  [docs/TRITRAN.md](docs/TRITRAN.md) and [docs/WHALE.md](docs/WHALE.md):
+  the language manuals
 * [docs/DEMONSTRATOR.md](docs/DEMONSTRATOR.md): the principles and their
   demonstrations
 * [docs/IDENTITY.md](docs/IDENTITY.md): the house style of the Special
@@ -271,7 +283,7 @@ comparison.
 
 ```
 duwamish/            the machine: ternary.py isa.py microasm.py machine.py
-                     triad.py salish.py optimise.py tritran.py
+                     triad.py salish.py optimise.py tritran.py whale.py
                      satellite.py fpu.py
                      executive.tri profile.py
                      panel.py (the recorder and animated front panel),
@@ -280,10 +292,12 @@ duwamish/            the machine: ternary.py isa.py microasm.py machine.py
 notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
-                     tritran.sal (TRI-TRAN's FORMAT and mathematical library)
+                     tritran.sal (TRI-TRAN's FORMAT and mathematical library),
+                     whale.sal (WHALE's associative store)
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
-programs/            SALISH, TRILISP and TRI-TRAN (.ftn) programs (good/,
-                     hofstadter/, ashby/, knuth/, ai/, trilisp/,
+programs/            SALISH, TRILISP, TRI-TRAN (.ftn) and WHALE (.whl)
+                     programs (good/, hofstadter/, ashby/, knuth/, ai/,
+                     whale/, trilisp/,
                      selfhost/: the compiler in SALISH)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing

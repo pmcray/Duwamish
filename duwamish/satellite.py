@@ -16,6 +16,9 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
     //TRITRAN [FROM=path] [LIST]    compile TRI-TRAN, the Duwamish FORTRAN;
                                     LIST prints the TRIAD code of the
                                     program (without its library)
+    //WHALE [FROM=path] [LIST] [OPT]
+                                    compile WHALE, SALISH with an
+                                    associative store of weighed facts
     //TRIAD [FROM=path] [LIST]      assemble TRIAD source
     //TRIAD PUNCHED [LIST]          assemble the cards punched by the job's
                                     last step (SVC 5), when this step runs:
@@ -39,6 +42,7 @@ from . import machine as mach
 from . import salish
 from . import triad
 from . import tritran
+from . import whale
 
 HERE = os.path.dirname(__file__)
 EXECUTIVE_SRC = os.path.join(HERE, "executive.tri")
@@ -62,6 +66,12 @@ def assemble_executive():
 
 def translate_tritran(text, fname):
     asm, comp = tritran.compile_source(text, fname)
+    obj = triad.assemble(asm, origin=USER_ORIGIN)
+    return obj, asm, comp
+
+
+def translate_whale(text, fname, optimise=False):
+    asm, comp = whale.compile_source(text, fname, optimise=optimise)
     obj = triad.assemble(asm, origin=USER_ORIGIN)
     return obj, asm, comp
 
@@ -200,7 +210,7 @@ class Satellite:
             if job.failed:
                 continue
             try:
-                if verb in ("SALISH", "TRIAD", "TRITRAN"):
+                if verb in ("SALISH", "TRIAD", "TRITRAN", "WHALE"):
                     if verb == "TRIAD" and "PUNCHED" in args:
                         if not job.steps:
                             raise JobError("//TRIAD PUNCHED before any //EXEC")
@@ -217,13 +227,14 @@ class Satellite:
                         path = os.path.join(deck_dir, f"{job.name}.inline")
                         sname = f"{job.name} (inline)"
                     t0 = time.time()
-                    if verb == "SALISH":
+                    if verb in ("SALISH", "WHALE"):
                         o = "OPT" in args or self.optimise
-                        pending_obj, asm, comp = translate_salish(
-                            src, path, optimise=o)
+                        tr = (translate_salish if verb == "SALISH"
+                              else translate_whale)
+                        pending_obj, asm, comp = tr(src, path, optimise=o)
                         job.translations.append(
                             (sname + (" with OPT" if o else ""), asm))
-                        msg = (f"SALISH{'/O' if o else ''}: {sname}: "
+                        msg = (f"{verb}{'/O' if o else ''}: {sname}: "
                                f"{len(pending_obj.words)}"
                                f" words, {len(comp.procs)} procedures")
                         job.log.append(msg)
@@ -448,7 +459,8 @@ def run_program(path, data=None, model=30, wcs=False, listing=False,
                 lookahead=False):
     """Convenience: wrap one SALISH/TRIAD source file into a job."""
     kind = ("TRIAD" if path.endswith(".tri") else
-            "TRITRAN" if path.endswith((".ftn", ".f")) else "SALISH")
+            "TRITRAN" if path.endswith((".ftn", ".f")) else
+            "WHALE" if path.endswith(".whl") else "SALISH")
     name = re.sub(r"\W", "", os.path.splitext(os.path.basename(path))[0])
     deck = [f"//JOB {name.upper()} TIME={time_limit}",
             f"//{kind} FROM={os.path.abspath(path)}"

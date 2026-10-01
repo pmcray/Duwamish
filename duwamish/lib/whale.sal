@@ -1,0 +1,327 @@
+-- =====================================================================
+--  The WHALE run-time library: the associative store
+--
+--  WHALE (Woodworth Heuristic Associative Learning Evaluator) is SALISH
+--  with an associative store, as SAIL was ALGOL with Feldman and
+--  Rovner's LEAP.  Every fact is a triple
+--
+--      attribute of object is value            (SAIL: A (x) O = V)
+--
+--  of items.  Each triple carries a weight of evidence, in hundredths of
+--  a deciban, and its truth is Wald's three-way verdict on that weight:
+--
+--      +1  true      the evidence for it is at least 20 db (odds 100:1)
+--       0  unknown   the evidence is less than 20 db either way
+--      -1  false     the evidence against it is at least 20 db
+--
+--  (20 db is Wald's threshold here; a program may set wh_thresh.)
+--
+--  `make' and `deny' set the weight to certainty, either way; `erase'
+--  forgets the triple; `confirm ... by w' adds w to its weight, as
+--  Turing and Good added the evidence of each new observation.  A
+--  triple never stored is unknown, which is not the same as false.
+--
+--  The compiler (duwamish/whale.py) turns WHALE's statements and
+--  expressions into calls on these procedures, and supplies wh_names and
+--  wh_nitems, the declared items.
+-- =====================================================================
+
+const WH_MAXT = 3000                  -- triples
+const WH_MAXI = 1000                  -- items
+const WH_HASH = 1009                  -- chains for finding a triple
+const WH_CERTAIN = 1000000            -- the weight of `make' and `deny'
+
+-- the threshold of the verdict: 20 db unless the program sets another
+global wh_thresh := 2000
+
+global wh_ta[WH_MAXT], wh_to[WH_MAXT], wh_tv[WH_MAXT], wh_tw[WH_MAXT]
+global wh_tnext[WH_MAXT]              -- the next triple with this attribute
+global wh_hnext[WH_MAXT]              -- the next triple with this hash
+global wh_bucket[WH_MAXI]             -- the first triple of each attribute
+global wh_hash[WH_HASH]               -- the first triple of each hash
+global wh_ntriples := 0, wh_items := 0
+global wh_live := 0                   -- triples not erased
+global wh_free := 0                   -- erased triples, for use again
+
+proc wh_check_item(x)
+begin
+  if x < 1 or x >= WH_MAXI then begin
+    prints("\n*** WHALE: NOT AN ITEM: "); print(x); newline()
+    exit(8)
+  end
+end
+
+-- a new item, made while the program runs (SAIL's NEW)
+proc wh_new()
+begin
+  if wh_items < wh_nitems then wh_items := wh_nitems
+  wh_items := wh_items + 1
+  if wh_items >= WH_MAXI then begin prints("\n*** WHALE: TOO MANY ITEMS\n"); exit(8) end
+  return wh_items
+end
+
+inline proc wh_h(a, o, v) = (a * 7919 + o * 31 + v) mod WH_HASH
+
+-- the triple a of o is v, or 0
+proc wh_find(a, o, v)
+begin
+  var t := wh_hash[wh_h(a, o, v)]
+  while t <> 0 do begin
+    if wh_ta[t] = a and wh_to[t] = o and wh_tv[t] = v then return t
+    t := wh_hnext[t]
+  end
+  return 0
+end
+
+proc wh_add(a, o, v)
+begin
+  var t, h
+  wh_check_item(a); wh_check_item(o); wh_check_item(v)
+  if wh_free <> 0 then begin
+    t := wh_free
+    wh_free := wh_tnext[t]
+  end else begin
+    wh_ntriples := wh_ntriples + 1
+    if wh_ntriples >= WH_MAXT then begin prints("\n*** WHALE: STORE FULL\n"); exit(8) end
+    t := wh_ntriples
+  end
+  wh_ta[t] := a
+  wh_to[t] := o
+  wh_tv[t] := v
+  wh_tw[t] := 0
+  wh_tnext[t] := wh_bucket[a]
+  wh_bucket[a] := t
+  h := wh_h(a, o, v)
+  wh_hnext[t] := wh_hash[h]
+  wh_hash[h] := t
+  wh_live := wh_live + 1
+  return t
+end
+
+-- take triple t out of both its chains, and keep it for use again
+proc wh_remove(t)
+begin
+  var a := wh_ta[t], h := wh_h(wh_ta[t], wh_to[t], wh_tv[t]), u
+  if wh_bucket[a] = t then wh_bucket[a] := wh_tnext[t]
+  else begin
+    u := wh_bucket[a]
+    while wh_tnext[u] <> t do u := wh_tnext[u]
+    wh_tnext[u] := wh_tnext[t]
+  end
+  if wh_hash[h] = t then wh_hash[h] := wh_hnext[t]
+  else begin
+    u := wh_hash[h]
+    while wh_hnext[u] <> t do u := wh_hnext[u]
+    wh_hnext[u] := wh_hnext[t]
+  end
+  wh_ta[t] := 0
+  wh_tnext[t] := wh_free
+  wh_free := t
+  wh_live := wh_live - 1
+end
+
+-- make (code +1), deny (-1) or erase (0)
+proc wh_set(a, o, v, code)
+begin
+  var t := wh_find(a, o, v)
+  if code = 0 then begin
+    if t <> 0 then wh_remove(t)
+    return 0
+  end
+  if t = 0 then t := wh_add(a, o, v)
+  wh_tw[t] := code * WH_CERTAIN
+  return t
+end
+
+-- add the evidence w (centidecibans) for a of o is v; certainty stays
+proc wh_confirm(a, o, v, w)
+begin
+  var t := wh_find(a, o, v)
+  if t = 0 then t := wh_add(a, o, v)
+  if abs(wh_tw[t]) < WH_CERTAIN then begin
+    wh_tw[t] := wh_tw[t] + w
+    if wh_tw[t] >= WH_CERTAIN then wh_tw[t] := WH_CERTAIN - 1
+    if wh_tw[t] <= -WH_CERTAIN then wh_tw[t] := 1 - WH_CERTAIN
+  end
+  return t
+end
+
+inline proc wh_verdict(w) = w >= wh_thresh -> 1, w <= -wh_thresh -> -1, 0
+
+proc wh_truth(a, o, v)
+begin
+  var t := wh_find(a, o, v)
+  if t = 0 then return 0
+  return wh_verdict(wh_tw[t])
+end
+
+proc wh_weight(a, o, v)
+begin
+  var t := wh_find(a, o, v)
+  if t = 0 then return 0
+  return wh_tw[t]
+end
+
+-- the value v for which a of o is v is true, with the most evidence; or 0
+proc wh_the(a, o)
+begin
+  var t := wh_bucket[a], best := 0, bw := 0
+  while t <> 0 do begin
+    if wh_ta[t] <> 0 and wh_to[t] = o and wh_tw[t] >= wh_thresh and
+       wh_tw[t] > bw then begin
+      best := wh_tv[t]
+      bw := wh_tw[t]
+    end
+    t := wh_tnext[t]
+  end
+  return best
+end
+
+-- every triple fitting a of o is v, where 0 matches anything, into buf:
+-- with sure, the true ones; without, the possible ones (true or
+-- unknown: not false).  With ranked, the best supported first.  Returns
+-- how many.
+inline proc wh_fits(t, o, v, sure) =
+  wh_ta[t] <> 0 and (o = 0 or wh_to[t] = o) and (v = 0 or wh_tv[t] = v) and
+  wh_tw[t] >= (sure -> wh_thresh, 1 - wh_thresh)
+
+proc wh_match(a, o, v, buf, max, ranked, sure)
+begin
+  var n := 0, t, j, x
+  if a <> 0 then begin
+    t := wh_bucket[a]
+    while t <> 0 do begin
+      if wh_fits(t, o, v, sure) and n < max then begin buf[n] := t; n := n + 1 end
+      t := wh_tnext[t]
+    end
+  end else
+    for u := 1 to wh_ntriples do
+      if wh_fits(u, o, v, sure) and n < max then begin buf[n] := u; n := n + 1 end
+  if ranked then
+    -- a heuristic order: the best supported first (insertion sort)
+    for i := 1 to n - 1 do begin
+      x := buf[i]
+      j := i - 1
+      while j >= 0 and wh_tw[buf[j]] < wh_tw[x] do begin
+        buf[j + 1] := buf[j]
+        j := j - 1
+      end
+      buf[j + 1] := x
+    end
+  return n
+end
+
+-- forget everything known of x: every triple with x as its object
+proc forget(x)
+begin
+  for t := 1 to wh_ntriples do
+    if wh_ta[t] <> 0 and wh_to[t] = x then wh_remove(t)
+end
+
+inline proc wh_attr(t) = wh_ta[t]
+inline proc wh_obj(t) = wh_to[t]
+inline proc wh_val(t) = wh_tv[t]
+inline proc wh_tweight(t) = wh_tw[t]
+
+-- ---------------------------------------------------------------------
+--  weighing: the weight of evidence of the ratio p/q, in centidecibans
+--  (1000 log10 p/q), to the nearest centideciban or so -- from a table of
+--  the hundredth powers of ten, as Banburismus was worked from tables of
+--  decibans; and, the other way, the chance of a hypothesis from its
+--  weight.  p and q must be positive.
+-- ---------------------------------------------------------------------
+global wh_pw[101]
+
+-- wh_pw[k] is 10^(k/100), scaled by 10^5: made when first wanted
+proc wh_tables()
+begin
+  wh_pw[0] := 100000
+  for i := 1 to 100 do wh_pw[i] := (wh_pw[i - 1] * 1023293 + 500000) / 1000000
+end
+
+proc woe(p, q)
+begin
+  var w := 0, x, k, lo := 0, hi := 100
+  if p <= 0 or q <= 0 then begin
+    prints("\n*** WHALE: THE WEIGHT OF A RATIO NOT POSITIVE\n"); exit(8)
+  end
+  if wh_pw[0] = 0 then wh_tables()
+  -- bring p/q into [1, 10), counting the decades
+  while p >= 10 * q do begin q := q * 10; w := w + 1000 end
+  while p < q do begin p := p * 10; w := w - 1000 end
+  -- then keep six figures, so that p * 10^5 cannot overflow
+  while p > 1000000 do begin p := (p + 5) / 10; q := (q + 5) / 10 end
+  x := p * 100000 / q
+  while hi - lo > 1 do begin
+    k := (lo + hi) / 2
+    if wh_pw[k] <= x then lo := k else hi := k
+  end
+  return w + 10 * lo + 10 * (x - wh_pw[lo]) / (wh_pw[lo + 1] - wh_pw[lo])
+end
+
+-- 10^(-x/1000), scaled by 10^5, for x >= 0 (0 below 10^-5)
+proc wh_down(x)
+begin
+  var q := x / 1000, r := x mod 1000, k, v
+  if q > 5 then return 0
+  k := r / 10
+  v := wh_pw[k] + (wh_pw[k + 1] - wh_pw[k]) * (r mod 10) / 10
+  v := 10000000000 / v
+  for i := 1 to q do v := v / 10
+  return v
+end
+
+-- the chance, scaled by 10^5, of a hypothesis whose weight of evidence
+-- (its log-odds) is w: 1 / (1 + 10^(-w/1000))
+proc chance(w)
+begin
+  var a
+  if wh_pw[0] = 0 then wh_tables()
+  if w >= 0 then begin
+    a := wh_down(w)
+    return 10000000000 / (100000 + a)
+  end
+  a := wh_down(-w)
+  return a * 100000 / (100000 + a)
+end
+
+-- ---------------------------------------------------------------------
+--  printing items and evidence
+-- ---------------------------------------------------------------------
+proc printitem(x)
+begin
+  if x = 0 then putc('?')
+  else if x <= wh_nitems then prints(wh_names[x])
+  else begin putc('G'); print(x) end
+end
+
+proc printitemw(x, w)
+begin
+  var n := x = 0 -> 1, x <= wh_nitems -> wh_names[x][0], 1 + digits(x)
+  printitem(x)
+  spaces(w - n)
+end
+
+-- a weight of evidence in decibans, to one place
+proc printdb(w)
+begin
+  if w >= WH_CERTAIN then prints("certain")
+  else if w <= -WH_CERTAIN then prints("certainly not")
+  else begin
+    if w > 0 then putc('+')
+    if w < 0 and w > -10 then putc('-')
+    printfix(w / 10, 1)
+    prints(" db")
+  end
+end
+
+-- the same, left-justified in a field of n characters
+proc printdbw(w, n)
+begin
+  var k := w >= WH_CERTAIN -> 7, w <= -WH_CERTAIN -> 13,
+           (w <> 0 -> 1, 0) + digits(abs(w) / 100) + 5
+  printdb(w)
+  spaces(n - k)
+end
+
+proc printtruth(v) = prints(v > 0 -> "true", v < 0 -> "false", "unknown")

@@ -21,6 +21,7 @@ python -m duwamish run jobs/improve.job --model 90   # ... and makes a faster co
 python -m duwamish run jobs/tour.job           # the machine and its languages
 python -m duwamish run jobs/tritran.job --model 90   # FORTRAN, and Good's prime-factor FFT (about half a minute)
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
+python -m duwamish run jobs/whale.job --model 90       # WHALE: the tour, and a clinic that weighs evidence (40 seconds)
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, ternary trees, radix 3 (half a minute)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
@@ -817,6 +818,59 @@ Where Prolog says Tweety flies, it has assumed that what it cannot prove
 is false. Where the search goes round in circles, the bounded prover says
 UNKNOWN, because it cannot tell *not yet* from *never*. That is the lesson
 of FlooP (§15) in another form.
+
+---
+
+## Good's evidence as a language: WHALE
+
+### 29. A clinic that weighs its evidence — `programs/whale/diagnosis.whl`
+
+WHALE ([docs/WHALE.md](WHALE.md)) is SALISH with an associative store, as
+SAIL was ALGOL with LEAP. Its facts are triples, and each one carries a
+weight of evidence, so that it is true (at least +20 db), false (−20 db
+or below), or unknown. The tour (`programs/whale/tour.whl`) shows the
+language: an open world, where what has not been stated is unknown rather
+than false; questions in every direction; rules run to a fixed point; a
+move that is neither allowed nor forbidden until someone looks; and
+glimpses in poor light that add up to a verdict.
+
+The clinic puts three of Good's ideas to work together:
+
+* **Learning the weights.** From 400 records of a world it is never shown
+  (five diseases, twelve findings), the program counts and computes the
+  weight of evidence of each finding, present or absent, for each disease
+  against the field. Every count is flattened by a half, so a finding
+  never seen with a disease counts strongly against it but not infinitely.
+  Ten counts were 0, or every case. The learned weights come close to the
+  true ones (rash for measles: +12.8 db learned, +14.3 db true). The
+  store can answer "which findings settle measles by themselves?" with
+  the true triples: Koplik's spots.
+* **Weighing sequentially.** A patient is examined one question at a
+  time. Each answer's weight goes onto every diagnosis, and the
+  examination stops when one reaches 20 db (Wald). When the questions run
+  out first, the verdict is "unknown" and the patient is referred. The
+  weights are **conditional**, W(H : F | E), taken against the remaining
+  diagnoses as they stand after the earlier answers. This is the form in
+  which Good showed that weights add exactly. Adding fixed weights learned
+  against the whole field ("naive") gives 2 wrong diagnoses in 100, where
+  the conditional weights give none.
+* **Choosing the question.** Good's quasi-utility of an experiment is its
+  expected weight of evidence. Asking the question expected to tell most
+  about the leading diagnosis takes 7.4 questions on average against 10.3
+  in a fixed order, and diagnoses 73 patients rather than 62.
+
+Wald's trade-off is visible directly: at 10 db the clinic asks 3.1
+questions and makes 8 mistakes; at 30 db it asks 11.4 and refers 83
+patients. Learning from 25, 100, 400 and 1600 records diagnoses 57, 81,
+73 and 76 patients (77 with the true weights), with none wrong.
+
+**What it shows:** weights of evidence as the currency of a reasoning
+program. It learns them, adds them, decides on them, chooses its next
+question by their expected value, and does all of this in a store where
+"unknown" is a value of its own. **What it does not show:** medicine.
+The world is invented, and its findings are independent given the
+disease. That is exactly the assumption the weights need, so the clean
+result here is the best case.
 
 ---
 

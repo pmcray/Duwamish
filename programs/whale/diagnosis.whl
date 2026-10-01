@@ -1,0 +1,529 @@
+-- =====================================================================
+--  DIAGNOSIS BY WEIGHT OF EVIDENCE
+--
+--  I. J. Good, "Probability and the Weighing of Evidence" (1950): the
+--  weight of evidence that a finding E gives for a hypothesis H, against
+--  the field, is log P(E | H) / P(E | not H).  Weights add -- if the
+--  findings are independent, given H and given not H -- and the sum,
+--  with the initial log-odds, is the final log-odds.  Turing worked in
+--  bans and decibans; a deciban, Good said, is about the smallest change
+--  of belief a man can feel.
+--
+--  Here is a clinic of the period, in WHALE:
+--
+--  1. LEARNING.  The program reads a hospital's records -- cases drawn
+--     from a world whose numbers it is never shown -- and learns the
+--     weight of evidence of every finding, present or absent, for every
+--     disease.  Counts are flattened, as Good taught (add a half to every
+--     count: Jeffreys' rule), so that a finding never yet seen with a
+--     disease is strong evidence against it, but not infinitely strong.
+--     The weights go into the associative store as triples.
+--
+--  2. EVALUATION.  A patient is examined one question at a time.  Each
+--     answer adds its weights to every diagnosis; a diagnosis whose
+--     weight reaches 20 db -- odds of 100 to 1 -- is true, and the
+--     examination stops: Wald's sequential test.  One that falls to
+--     -20 db is ruled out.  If the questions run out first, the patient
+--     is referred: unknown is a verdict too.
+--
+--  3. HEURISTIC.  Which question next?  Good's answer: the one with the
+--     greatest *expected* weight of evidence about the leading diagnosis
+--     -- Good's "quasi-utility" of an experiment.  It is set against
+--     asking in a fixed order.
+--
+--  The world is hidden in tables the reasoning never reads; only
+--  sample(), which draws a case, does.
+-- =====================================================================
+
+item isa, disease, diagnosis, present, absent, if_present, if_absent
+item flu, cold, measles, pneumonia, allergy
+item fever, cough, rash, sneezing, aches, itchy_eyes, chills, sore_throat
+item koplik_spots, runny_nose, chest_pain, headache
+
+const ND = 5, NF = 12
+global dl := table(flu, cold, measles, pneumonia, allergy)
+global fl := table(fever, cough, rash, sneezing, aches, itchy_eyes, chills,
+                   sore_throat, koplik_spots, runny_nose, chest_pain, headache)
+
+-- ---------------------------------------------------------------------
+--  the world: how common each disease is (per thousand), and how often
+--  each finding comes with it (per cent)
+-- ---------------------------------------------------------------------
+global base := table(300, 350, 50, 100, 200)
+global truep := table(
+-- fev cough rash sneez aches itchy chill sore koplik runny chest head
+    96,  85,   3,  20,  95,   5,  85,  60,   1,   30,   5,  90,    -- flu
+     8,  50,   2,  90,  15,   5,   3,  85,   1,   95,   2,  25,    -- cold
+    95,  85,  98,  20,  40,  70,  30,  40,  90,   70,   5,  50,    -- measles
+    90,  98,   2,   5,  30,   3,  90,  15,   1,   15,  90,  30,    -- pneumonia
+     2,  15,   8,  95,   2,  95,   1,  10,   1,   90,   1,  15)    -- allergy
+
+global seed := 1950
+
+proc rnd(n)
+begin
+  seed := (seed * 7919 + 13) mod 1000003
+  return seed / 7 mod n
+end
+
+-- a case: its disease (an index) and its findings (+1 present, -1 absent)
+global case_d, case_f[NF]
+
+proc sample()
+begin
+  var r := rnd(1000), i := 0, acc := base[0]
+  while r >= acc do begin i := i + 1; acc := acc + base[i] end
+  case_d := i
+  for j := 0 to NF - 1 do case_f[j] := rnd(100) < truep[i * NF + j] -> 1, -1
+end
+
+-- ---------------------------------------------------------------------
+--  1. learning from the records
+-- ---------------------------------------------------------------------
+global nrec, n_d[ND], c_df[ND * NF], c_f[NF], zeros
+
+proc unlearn()
+begin
+  for i := 0 to ND - 1 do
+    for j := 0 to NF - 1 do begin
+      erase if_present of fl[j] is dl[i]
+      erase if_absent of fl[j] is dl[i]
+    end
+end
+
+proc learn(nrecords)
+begin
+  var n, m, c, cn
+  nrec := nrecords
+  for i := 0 to ND - 1 do n_d[i] := 0
+  for j := 0 to NF - 1 do c_f[j] := 0
+  for k := 0 to ND * NF - 1 do c_df[k] := 0
+  for k := 1 to nrec do begin
+    sample()
+    n_d[case_d] := n_d[case_d] + 1
+    for j := 0 to NF - 1 do
+      if case_f[j] > 0 then begin
+        c_df[case_d * NF + j] := c_df[case_d * NF + j] + 1
+        c_f[j] := c_f[j] + 1
+      end
+  end
+  unlearn()
+  zeros := 0
+  for i := 0 to ND - 1 do
+    for j := 0 to NF - 1 do begin
+      n := n_d[i]                         -- cases of the disease
+      m := nrec - n                       -- cases of the field
+      c := c_df[i * NF + j]               -- ... with the finding
+      cn := c_f[j] - c
+      if c = 0 or c = n then zeros := zeros + 1
+      -- P(E | H) / P(E | not H), every count flattened by a half
+      confirm if_present of fl[j] is dl[i] by
+        woe((2 * c + 1) * (2 * m + 2), (2 * cn + 1) * (2 * n + 2))
+      confirm if_absent of fl[j] is dl[i] by
+        woe((2 * (n - c) + 1) * (2 * m + 2), (2 * (m - cn) + 1) * (2 * n + 2))
+    end
+  tabulate()
+end
+
+-- the weights a perfect record would teach (for comparison only)
+proc true_woe(i, j, pres)
+begin
+  var p := truep[i * NF + j], num := 0, den := 0
+  for k := 0 to ND - 1 do
+    if k <> i then begin
+      num := num + base[k] * (pres -> truep[k * NF + j], 100 - truep[k * NF + j])
+      den := den + base[k]
+    end
+  return pres -> woe(p * den, num), woe((100 - p) * den, num)
+end
+
+proc learn_truth()
+begin
+  unlearn()
+  for i := 0 to ND - 1 do begin
+    n_d[i] := base[i]
+    for j := 0 to NF - 1 do begin
+      c_df[i * NF + j] := base[i] * truep[i * NF + j] / 100
+      confirm if_present of fl[j] is dl[i] by true_woe(i, j, true)
+      confirm if_absent of fl[j] is dl[i] by true_woe(i, j, false)
+    end
+  end
+  nrec := 1000
+  tabulate()
+end
+
+proc prior(i) = woe(2 * n_d[i] + 1, 2 * (nrec - n_d[i]) + 1)
+
+-- ---------------------------------------------------------------------
+--  2 and 3. examining a patient
+--
+--  A finding's weight against the field depends on what the field is.
+--  The weights learned above take the field as it is before anything is
+--  known of the patient: flu, cold, measles, pneumonia and allergy in
+--  their usual proportions.  Once fever is found, the field is mostly
+--  flu and pneumonia, and a cough, say, tells far less against them.
+--  Good's rule: weights of evidence add exactly when each is taken
+--  given what went before,
+--
+--      W(H : E and F) = W(H : E) + W(H : F | E),
+--
+--  so each answer's weight is worked out afresh against the field as it
+--  now stands.  Adding the fixed weights instead (`naive') is what many
+--  a diagnostic program did; section 3 shows what it costs.
+-- ---------------------------------------------------------------------
+global asked[NF], nasked, naive := false
+global pr[ND]                 -- each disease's chance now, per 100000
+
+-- P(E | H) per thousand, for disease i and finding j, present or absent,
+-- flattened as above: tabulated after learning
+global likp[ND * NF]
+
+proc tabulate()
+begin
+  for i := 0 to ND - 1 do
+    for j := 0 to NF - 1 do
+      likp[i * NF + j] := (2 * c_df[i * NF + j] + 1) * 1000 / (2 * n_d[i] + 2)
+end
+
+inline proc lik(i, j, pres) = pres -> likp[i * NF + j], 1000 - likp[i * NF + j]
+
+proc chances(p)
+begin
+  for k := 0 to ND - 1 do pr[k] := chance(weight diagnosis of p is dl[k])
+end
+
+-- the weight of evidence of finding j (present or absent) for disease i
+-- against the field as it now stands: W(H : E | what went before)
+proc cond_woe(i, j, pres)
+begin
+  var num := 0, den := 0
+  if naive then
+    return pres -> weight if_present of fl[j] is dl[i],
+                   weight if_absent of fl[j] is dl[i]
+  for k := 0 to ND - 1 do
+    if k <> i then begin
+      num := num + pr[k] / 10 * lik(k, j, pres)
+      den := den + pr[k] / 10
+    end
+  if num = 0 or den = 0 then return 0
+  return woe(lik(i, j, pres) * den, num)
+end
+
+-- the expected weight of evidence of finding j for disease i, if it has
+-- it: P(E | H) W(H : E) + P(not E | H) W(H : not E).  Good called this
+-- the quasi-utility of asking.
+proc expected(i, j)
+begin
+  var pp := lik(i, j, true)
+  return (pp * cond_woe(i, j, true) +
+          (1000 - pp) * cond_woe(i, j, false)) / 1000
+end
+
+proc leader(p)
+begin
+  var lead := 0, best
+  foreach ranked d such that possibly diagnosis of p is d do begin
+    lead := d
+    break
+  end
+  if lead = 0 then begin          -- all ruled out: the least unlikely
+    best := 0 - WH_CERTAIN
+    for i := 0 to ND - 1 do
+      if weight diagnosis of p is dl[i] > best then begin
+        best := weight diagnosis of p is dl[i]
+        lead := dl[i]
+      end
+  end
+  return lead
+end
+
+proc next_question(p, good)
+begin
+  var lead, best := 0 - WH_CERTAIN, bj := -1, e
+  if not good then begin
+    for j := 0 to NF - 1 do
+      if not asked[j] and bj < 0 then bj := j
+    return bj
+  end
+  lead := leader(p) - flu
+  for j := 0 to NF - 1 do
+    if not asked[j] then begin
+      e := expected(lead, j)
+      if e > best then begin best := e; bj := j end
+    end
+  return bj
+end
+
+-- a weight in decibans, to one place, right-justified in n characters
+proc num(w, n)
+begin
+  spaces(n - 3 - digits(abs(w) / 100))
+  putc(w >= 0 -> '+', '-')
+  printfix(abs(w) / 10, 1)
+end
+
+proc cell(p, d)
+begin
+  var w := weight diagnosis of p is d, f := fact diagnosis of p is d
+  num(w, 8)
+  putc(f > 0 -> '*', f < 0 -> 'x', ' ')
+  spaces(2)
+end
+
+proc row(p, what, ans)
+begin
+  prints("   "); printsw(what, 15); printsw(ans, 6)
+  for i := 0 to ND - 1 do cell(p, dl[i])
+  newline()
+end
+
+-- examine patient p, whose findings are case_f; returns the diagnosis,
+-- or 0 to refer
+proc examine(p, good, show)
+begin
+  var verdict, j, ans, dw[ND]
+  for k := 0 to NF - 1 do asked[k] := false
+  nasked := 0
+  for i := 0 to ND - 1 do begin
+    make isa of dl[i] is disease
+    confirm diagnosis of p is dl[i] by prior(i)
+  end
+  chances(p)
+  if show then begin
+    prints("   question       answer ")
+    for i := 0 to ND - 1 do begin
+      spaces(11 - wh_names[dl[i]][0]); printitem(dl[i])
+    end
+    newline()
+    row(p, "the odds before", "")
+  end
+  repeat
+    verdict := 0
+    foreach ranked d such that diagnosis of p is d do begin
+      verdict := d
+      break
+    end
+    if verdict <> 0 or nasked = NF then break
+    j := next_question(p, good)
+    asked[j] := true
+    nasked := nasked + 1
+    ans := case_f[j] > 0 -> present, absent
+    make fl[j] of p is ans
+    -- every weight first, against the field as it stood; then add them
+    for i := 0 to ND - 1 do dw[i] := cond_woe(i, j, ans = present)
+    for i := 0 to ND - 1 do confirm diagnosis of p is dl[i] by dw[i]
+    chances(p)
+    if show then begin
+      var q[20]
+      q[0] := wh_names[fl[j]][0] + 1
+      for k := 1 to q[0] - 1 do q[k] := wh_names[fl[j]][k]
+      q[q[0]] := '?'
+      row(p, q, ans = present -> "yes", "no")
+    end
+  until false
+  return verdict
+end
+
+-- ---------------------------------------------------------------------
+global patient
+
+proc show_case(k, good)
+begin
+  var v
+  sample()
+  prints("   Patient "); print(k); prints(":\n\n")
+  v := examine(patient, good, true)
+  prints("\n   ")
+  if v = 0 then prints("Undecided after every question: referred.")
+  else begin
+    prints("Diagnosis: "); printitem(v); prints(", at ")
+    printdb(weight diagnosis of patient is v)
+    prints(" after "); print(nasked); prints(" questions.")
+  end
+  prints("  In truth: "); printitem(dl[case_d])
+  prints(v = 0 -> ".", v = dl[case_d] -> ": right.", ": WRONG.")
+  prints("\n   The store now holds, of the patient --\n      present:   ")
+  foreach a such that a of patient is present do begin
+    printitem(a); spaces(1)
+  end
+  prints("\n      absent:    ")
+  foreach a such that a of patient is absent do begin
+    printitem(a); spaces(1)
+  end
+  prints("\n      ruled out: ")
+  foreach d such that isa of d is disease and fact diagnosis of patient is d < 0
+  do begin
+    printitem(d); spaces(1)
+  end
+  prints("\n\n")
+  forget(patient)
+end
+
+global decided, right, wrong, questions
+
+proc evaluate(npat, good, thresh)
+begin
+  var v
+  wh_thresh := thresh
+  seed := 271828                     -- the same patients every time
+  decided := 0; right := 0; wrong := 0; questions := 0
+  for k := 1 to npat do begin
+    sample()
+    v := examine(patient, good, false)
+    questions := questions + nasked
+    if v <> 0 then begin
+      decided := decided + 1
+      if v = dl[case_d] then right := right + 1 else wrong := wrong + 1
+    end
+    forget(patient)
+  end
+  wh_thresh := 2000
+end
+
+const NPAT = 100
+
+-- the results of each run: questions, right, wrong
+global res_q[12], res_r[12], res_w[12], nres := 0
+
+proc report(what)
+begin
+  res_q[nres] := questions; res_r[nres] := right; res_w[nres] := wrong
+  nres := nres + 1
+  prints("   "); printsw(what, 42)
+  spaces(3 - digits(questions / NPAT))
+  printfix(questions * 10 / NPAT, 1)
+  printw(right, 7); printw(wrong, 7); printw(NPAT - decided, 10)
+  newline()
+end
+
+proc header()
+begin
+  prints("                                         questions  right  wrong")
+  prints("  referred\n")
+end
+
+proc tenths(n)
+begin
+  printfix(n * 10 / NPAT, 1)
+end
+
+proc main()
+begin
+  var nlearn := table(25, 100, 400, 1600)
+  prints("DIAGNOSIS BY WEIGHT OF EVIDENCE, IN WHALE\n\n")
+  patient := new
+
+  prints("1. LEARNING FROM THE RECORDS\n\n")
+  seed := 1950
+  learn(400)
+  prints("   From "); print(nrec)
+  prints(" records, the weight of evidence (db) of each finding,\n")
+  prints("   present, for each disease against the field:\n\n")
+  spaces(17)
+  for i := 0 to ND - 1 do begin
+    spaces(11 - wh_names[dl[i]][0]); printitem(dl[i])
+  end
+  newline()
+  for j := 0 to NF - 1 do begin
+    spaces(3); printitemw(fl[j], 14)
+    for i := 0 to ND - 1 do num(weight if_present of fl[j] is dl[i], 11)
+    newline()
+  end
+  prints("\n   and absent (only the largest shown: |w| >= 5 db):\n\n")
+  for j := 0 to NF - 1 do begin
+    spaces(3); printitemw(fl[j], 14)
+    for i := 0 to ND - 1 do begin
+      var w := weight if_absent of fl[j] is dl[i]
+      if abs(w) >= 500 then num(w, 11) else spaces(11)
+    end
+    newline()
+  end
+  prints("\n   Beside the truth, which the program was never shown: rash for\n")
+  prints("   measles, learned "); printdb(weight if_present of rash is measles)
+  prints(", true "); printdb(true_woe(2, 2, true))
+  prints("; itchy eyes for allergy,\n   learned ")
+  printdb(weight if_present of itchy_eyes is allergy)
+  prints(", true "); printdb(true_woe(4, 5, true))
+  prints(".  ")
+  print(zeros)
+  prints(" of the counts were 0, or all the cases:\n   without")
+  prints(" Good's flattening, those weights would be infinite, and one\n")
+  prints("   answer would rule a disease in or out for ever.\n\n")
+  prints("   Which findings, by themselves, all but settle measles (20 db)?\n      ")
+  foreach f such that if_present of f is measles do printitem(f)
+  prints("\n   And the four that speak most for it?\n      ")
+  var shown := 0
+  foreach ranked f such that possibly if_present of f is measles do begin
+    printitem(f); prints(" ("); printdb(weight if_present of f is measles)
+    prints(") ")
+    shown := shown + 1
+    if shown = 4 then break
+  end
+  prints("\n\n")
+
+  prints("2. THREE PATIENTS, EXAMINED ONE QUESTION AT A TIME\n\n")
+  prints("   weights in db; * true (at least 20 db): the diagnosis;\n")
+  prints("   x ruled out (-20 db or less); the questions in Good's order\n\n")
+  seed := 4242
+  for k := 1 to 3 do show_case(k, true)
+
+  prints("3. ")
+  print(NPAT); prints(" PATIENTS, THE SAME FOR EVERY RUN\n\n")
+  header()
+  evaluate(NPAT, false, 2000)
+  report("in a fixed order, 20 db")             -- 0
+  evaluate(NPAT, true, 2000)
+  report("in Good's order, 20 db")              -- 1
+  var saved := table(0, 0, 0, 0)
+  saved[0] := questions; saved[1] := decided; saved[2] := right; saved[3] := wrong
+  evaluate(NPAT, true, 1000)
+  report("in Good's order, 10 db")              -- 2
+  evaluate(NPAT, true, 3000)
+  report("in Good's order, 30 db")              -- 3
+  naive := true
+  evaluate(NPAT, true, 2000)
+  report("adding fixed weights, 20 db")         -- 4
+  naive := false
+
+  prints("\n   Asked in Good's order -- the question expected to tell most about\n")
+  prints("   the leading diagnosis -- a patient needs ")
+  tenths(res_q[1]); prints(" questions on average,\n   not ")
+  tenths(res_q[0]); prints(", and ")
+  print(res_r[1] - res_r[0])
+  prints(" more are diagnosed.\n\n")
+  prints("   The threshold is Wald's bargain: at 10 db, ")
+  tenths(res_q[2]); prints(" questions and ")
+  print(res_w[2]); prints("\n   wrong; at 30 db, ")
+  tenths(res_q[3]); prints(" questions, and most patients referred.\n\n")
+  prints("   Adding the fixed weights, as if each finding's weight did not\n")
+  prints("   depend on what went before, gave ")
+  print(res_w[4]); prints(" wrong diagnoses where the\n")
+  prints("   conditional weights gave "); print(res_w[1]); prints(".\n")
+
+  prints("\n   Learning: in Good's order at 20 db, from more or fewer records:\n\n")
+  header()
+  for k := 0 to 3 do begin
+    if k = 2 then begin
+      questions := saved[0]; decided := saved[1]; right := saved[2]
+      wrong := saved[3]
+    end else begin
+      seed := 1950
+      learn(nlearn[k])
+      evaluate(NPAT, true, 2000)
+    end
+    report(k = 0 -> "from 25 records", k = 1 -> "from 100 records",
+           k = 2 -> "from 400 records (as above)", "from 1600 records")
+  end
+  learn_truth()
+  evaluate(NPAT, true, 2000)
+  report("from the true weights")
+  prints("\n   A hundred records or so teach nearly all that the true weights\n")
+  prints("   know.  Thanks to the flattening, even 25 records -- with one\n")
+  prints("   case of measles in them, or none -- never rule a disease out on\n")
+  prints("   one answer; from them the program asks more and decides less, ")
+  if res_w[5] = 0 then prints("but\n   makes no wrong diagnosis.\n")
+  else begin
+    prints("and\n   makes "); print(res_w[5]); prints(" wrong diagnoses.\n")
+  end
+  return 0
+end

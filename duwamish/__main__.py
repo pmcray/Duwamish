@@ -4,6 +4,7 @@
     python -m duwamish go FILE [--data F]    compile/assemble one program, run it
     python -m duwamish compile FILE.sal      show the TRIAD code SALISH produces
     python -m duwamish compile FILE.ftn      ... or TRI-TRAN (without its library)
+    python -m duwamish compile FILE.whl      ... or WHALE
     python -m duwamish asm FILE.tri          assemble and list
     python -m duwamish micro                 list the Model 30 microprogram
     python -m duwamish microkit              print the microkit include file
@@ -19,7 +20,7 @@ limit, go only)
 import argparse
 import sys
 
-from . import microasm, salish, satellite, triad, tritran
+from . import microasm, salish, satellite, triad, tritran, whale
 
 
 def main(argv=None):
@@ -64,9 +65,10 @@ def main(argv=None):
             asm, comp = tritran.compile_source(f.read(), args.file)
         sys.stdout.write(asm.split("; SALISH compiler output")[0])
     elif args.cmd == "compile":
+        lang = whale if args.file.endswith(".whl") else salish
         with open(args.file) as f:
-            asm, comp = salish.compile_source(f.read(), args.file,
-                                              optimise=args.opt)
+            asm, comp = lang.compile_source(f.read(), args.file,
+                                            optimise=args.opt)
         sys.stdout.write(asm)
         if comp.peephole_counts:
             print("; peephole: " + ", ".join(
