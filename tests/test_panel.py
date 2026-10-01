@@ -143,6 +143,58 @@ class TestHomeoView(unittest.TestCase):
         self.assertNotIn("http", page.split("<script>")[1])
 
 
+class TestSakiView(unittest.TestCase):
+    def test_recording(self):
+        from duwamish import sakiview
+        saki = sakiview.record_saki("SAKI", 700, 2001)
+        fixed = sakiview.record_saki("FIXED", 700, 2001)
+        for rec in (saki, fixed):
+            self.assertEqual([f[0] for f in rec.frames],
+                             list(range(1, len(rec.frames) + 1)))
+            for f in rec.frames:
+                self.assertIn(f[3], (-1, 0, 1))
+        self.assertEqual(len(fixed.frames), 800)
+        # SAKI ends the lesson when every key is mastered
+        self.assertEqual(saki.frames[-1][26:36], [1] * 10)
+        # the fixed schedule moves every light alike
+        self.assertEqual([f[2] for f in fixed.frames[:5]], [0, 3, 6, 9, 12])
+        # and outpaces this slow trainee, whom SAKI teaches
+        self.assertGreater(saki.tested[0], 85)
+        self.assertLess(fixed.tested[0], 60)
+        self.assertLess(fixed.frames[-1][5], saki.frames[-1][5])
+        page = sakiview.page_html(saki, fixed)
+        self.assertNotIn("http", page.split("<script>")[1])
+
+
+class TestClinicView(unittest.TestCase):
+    def test_recording(self):
+        from duwamish import clinicview
+        rec = clinicview.record_clinic(patients=3)
+        self.assertEqual(len(rec.exams), 6)
+        self.assertEqual(rec.diseases[2], "measles")
+        for e in rec.exams:
+            st = e["steps"]
+            self.assertEqual(st[0][0], -1)
+            asked = [s[0] for s in st[1:]]
+            self.assertEqual(len(asked), len(set(asked)))
+            top = max(st[-1][2:])
+            if e["verdict"] >= 0:
+                # stopped as soon as a diagnosis reached 20 db
+                self.assertGreaterEqual(top, 2000)
+                self.assertTrue(all(max(s[2:]) < 2000 for s in st[:-1]))
+                self.assertEqual(st[-1][2 + e["verdict"]], top)
+            else:
+                self.assertEqual(len(asked), 12)
+            if not e["good"]:
+                self.assertEqual(asked, list(range(len(asked))))
+        # the third patient, as the program prints it: measles, in 7
+        good3 = [e for e in rec.exams if e["patient"] == 3 and e["good"]][0]
+        self.assertEqual((good3["truth"], good3["verdict"]), (2, 2))
+        self.assertEqual(len(good3["steps"]) - 1, 7)
+        page = clinicview.page_html(rec)
+        self.assertNotIn("http", page.split("<script>")[1])
+
+
 class TestNotebook(unittest.TestCase):
     def test_notebook_is_valid(self):
         path = os.path.join(ROOT, "notebooks", "duwamish.ipynb")

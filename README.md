@@ -109,7 +109,13 @@ machine lit them. The notebook walks through:
 16. Kleene's logic in Conway's Life, animated: its fog beside the truth;
 17. Ashby's homeostat, animated: meters, relays, uniselectors and a strip chart;
 18. ELIZA;
-19. a cell to load and watch your own program.
+19. Pask's SAKI, animated: a slow trainee taught by SAKI and by a fixed
+    schedule, side by side, with the machine's model of the trainee beside
+    the trainee's hidden memory;
+20. the WHALE clinic, animated: each diagnosis's weight of evidence
+    between Wald's boundaries, question by question, in Good's order and
+    a fixed one;
+21. a cell to load and watch your own program.
 
 ```
 pip install notebook          # or jupyterlab; nothing else is needed
@@ -295,8 +301,9 @@ duwamish/            the machine: ternary.py isa.py microasm.py machine.py
                      satellite.py fpu.py
                      executive.tri profile.py
                      panel.py (the recorder and animated front panel),
-                     heapview.py, lifeview.py, homeoview.py (animations
-                     of TRILISP's heap, Kleene Life and the homeostat)
+                     heapview.py, lifeview.py, homeoview.py, sakiview.py,
+                     clinicview.py (animations of TRILISP's heap, Kleene
+                     Life, the homeostat, SAKI and the WHALE clinic)
 notebooks/           duwamish.ipynb, the machine made visible
 duwamish/microcode/  model30.dmc, the microprogram
 duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,

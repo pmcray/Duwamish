@@ -133,6 +133,9 @@ global dk[NK]                         -- SAKI's delay for each key
 global streak[NK]                     -- ... answers from memory at the most
 global mastered[NK]                   -- ... and whether it is mastered
 global outc[3], ntrials, attsum, show := false
+-- the last item, for an observer (duwamish/sakiview.py): its key, delay,
+-- answer and time, and a count of items that changes last
+global obs_k, obs_d, obs_o, obs_resp, obs_n := 0
 
 -- SAKI's rule: one three-way jump on the answer
 proc adapt(k, o, d)
@@ -206,6 +209,7 @@ begin
       d := machine = ALWAYS -> 0, min(2500, i * 3)
     end
     o := trial(k, d)
+    obs_k := k; obs_d := d; obs_o := o; obs_resp := resp
     outc[o + 1] := outc[o + 1] + 1
     ntrials := ntrials + 1
     attsum := attsum + att
@@ -213,6 +217,7 @@ begin
       adapt(k, o, d)
       if first_at[k] = 0 and dk[k] >= 1500 then first_at[k] := ntrials
     end
+    obs_n := obs_n + 1
     if show and ntrials mod 50 = 0 then chart_row(ntrials - 49)
   end
 end

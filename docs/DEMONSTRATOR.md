@@ -873,6 +873,10 @@ The world is invented, and its findings are independent given the
 disease. That is exactly the assumption the weights need, so the clean
 result here is the best case.
 
+The notebook (§20) animates the clinic. It shows each diagnosis's weight
+between Wald's boundaries, question by question, with Good's order beside
+a fixed one for the same patient.
+
 ## Pask's teaching machine
 
 ### 30. SAKI, the Self-Adaptive Keyboard Instructor — `programs/pask/saki.sal`
@@ -922,6 +926,12 @@ behind it. The teacher has to be able to vary as much as its pupils do.
 with Pask's claims built into it (memory learned through retrieval,
 boredom, distress). The program shows that a machine that adapts gets
 these effects under control, not that people work this way.
+
+The notebook (§19) animates one slow trainee taught by SAKI and by the
+fixed schedule, side by side. Each key's light fades as SAKI holds it
+back, and SAKI's model of the trainee is drawn beside the trainee's hidden
+memory. Under the schedule the trainee's memory still grows, but attention
+collapses.
 
 ---
 

@@ -760,7 +760,80 @@ print(out[out.index("MEN ARE"):out.index("END OF CARDS")].rstrip())
 """)
 
 md(r"""
-## 19. Load your own program
+## 19. Pask's SAKI, animated
+
+Gordon Pask's Self-Adaptive Keyboard Instructor (`programs/pask/saki.sal`)
+teaches a simulated trainee the ten numeric keys of a card punch. A light
+over each key can show the trainee where it is. SAKI holds a key's light
+back as the trainee learns it, and brings it back after a mistake. It
+gives more practice on the keys whose lights are still needed. Every
+answer is a trit:
+- **+1**: the key was found from memory, before the light;
+- **0**: it was found by following the light;
+- **−1**: the wrong key was pressed.
+
+SAKI's rule is a single three-way jump on that trit.
+
+The recorder (`duwamish/sakiview.py`) runs the program's own procedures and
+reads the machine after every item. It reads SAKI's delay for each key,
+which is SAKI's model of the trainee. It also reads, as an observer
+outside the lesson, the trainee's hidden memory and attention. Here the
+same slow trainee is taught twice. On the left SAKI teaches; on the right,
+a machine whose lights fade on a fixed schedule set for the average
+trainee. Under the schedule the trainee's memory grows, but the errors
+wear down attention, and performance falls with it: this is the breakdown
+Pask designed SAKI to avoid. SAKI's lesson is longer. It ends only when
+every key is mastered, and the trainee comes out of it able to find
+nearly every key with no lights at all.
+""")
+
+code(r"""
+from duwamish import sakiview
+slow_saki = sakiview.record_saki("SAKI", rate=700, seed=2001)
+slow_fixed = sakiview.record_saki("FIXED", rate=700, seed=2001)
+print("tested with no lights -- SAKI:", slow_saki.tested[0], "keys of 100;",
+      "fixed schedule:", slow_fixed.tested[0])
+sakiview.animate(slow_saki, slow_fixed, height=720)
+""")
+
+md(r"""
+`record_saki` takes `"SAKI"`, `"FIXED"` or `"ALWAYS"` (lights that come
+on at once), a learning rate (700 slow, 1000 average, 1500 fast) and a
+seed. Try a fast trainee under the fixed schedule, who sits through 800
+items, or any trainee under lights that are always on.
+""")
+
+md(r"""
+## 20. The WHALE clinic, animated
+
+`programs/whale/diagnosis.whl` is written in WHALE, SALISH with an
+associative store whose facts carry weights of evidence. It learns from
+400 records the weight of evidence each finding gives for each disease.
+Then it examines patients one question at a time and adds each answer's
+weight, worked out against the diagnoses as they then stand (Good's
+conditional weight). It stops when a diagnosis reaches +20 db, odds of 100
+to 1: Wald's sequential test. A diagnosis below −20 db is ruled out. If
+none reaches the top before the questions run out, the patient is
+referred.
+
+The recorder (`duwamish/clinicview.py`) examines six patients twice each.
+On the left, each question is the one with the greatest *expected* weight
+of evidence about the leading diagnosis, which is Good's
+"quasi-utility" of an experiment. On the right, the questions come in a
+fixed order. Step through a patient with ▶| or press *examine*. On
+average Good's order needs 7.4 questions to the fixed order's 10.3, but
+not on every patient: patient 1 is a case where the fixed order happens
+to do better.
+""")
+
+code(r"""
+from duwamish import clinicview
+clinic = clinicview.record_clinic(patients=6)
+clinicview.animate(clinic, height=700)
+""")
+
+md(r"""
+## 21. Load your own program
 
 Edit the SALISH source below and run the cell. `record_salish` also accepts
 a path, for example `"programs/hofstadter/selfref.sal"`, but long
@@ -789,7 +862,7 @@ panel.animate(mine, speed=80)
 md(r"""
 ---
 *See `docs/ARCHITECTURE.md` for the machine, `docs/SALISH.md`,
-`docs/TRILISP.md` and `docs/TRITRAN.md` for the languages, and `docs/DEMONSTRATOR.md` for the
+`docs/TRILISP.md`, `docs/TRITRAN.md` and `docs/WHALE.md` for the languages, and `docs/DEMONSTRATOR.md` for the
 demonstrations of Good's and Hofstadter's ideas.*
 """)
 

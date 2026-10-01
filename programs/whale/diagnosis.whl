@@ -172,6 +172,10 @@ proc prior(i) = woe(2 * n_d[i] + 1, 2 * (nrec - n_d[i]) + 1)
 --  a diagnostic program did; section 3 shows what it costs.
 -- ---------------------------------------------------------------------
 global asked[NF], nasked, naive := false
+-- each step of an examination, for an observer (duwamish/clinicview.py):
+-- the question (-1 before any), the answer, the weights after it, and a
+-- count of steps that changes last
+global obs_j, obs_ans, obs_w[ND], obs_n := 0
 global pr[ND]                 -- each disease's chance now, per 100000
 
 -- P(E | H) per thousand, for disease i and finding j, present or absent,
@@ -277,6 +281,14 @@ begin
   newline()
 end
 
+proc observe(p, j, ans)
+begin
+  for i := 0 to ND - 1 do obs_w[i] := weight diagnosis of p is dl[i]
+  obs_j := j
+  obs_ans := ans
+  obs_n := obs_n + 1
+end
+
 -- examine patient p, whose findings are case_f; returns the diagnosis,
 -- or 0 to refer
 proc examine(p, good, show)
@@ -289,6 +301,7 @@ begin
     confirm diagnosis of p is dl[i] by prior(i)
   end
   chances(p)
+  observe(p, -1, 0)
   if show then begin
     prints("   question       answer ")
     for i := 0 to ND - 1 do begin
@@ -313,6 +326,7 @@ begin
     for i := 0 to ND - 1 do dw[i] := cond_woe(i, j, ans = present)
     for i := 0 to ND - 1 do confirm diagnosis of p is dl[i] by dw[i]
     chances(p)
+    observe(p, j, ans)
     if show then begin
       var q[20]
       q[0] := wh_names[fl[j]][0] + 1
