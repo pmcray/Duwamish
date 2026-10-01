@@ -23,6 +23,7 @@ python -m duwamish run jobs/tritran.job --model 90   # FORTRAN, and Good's prime
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
 python -m duwamish run jobs/whale.job --model 90       # WHALE: the tour, and a clinic that weighs evidence (40 seconds)
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat (ten seconds)
+python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, the teaching machine (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, ternary trees, radix 3 (half a minute)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi (twenty seconds)
@@ -872,13 +873,63 @@ The world is invented, and its findings are independent given the
 disease. That is exactly the assumption the weights need, so the clean
 result here is the best case.
 
+## Pask's teaching machine
+
+### 30. SAKI, the Self-Adaptive Keyboard Instructor — `programs/pask/saki.sal`
+
+Gordon Pask and Robin McKinnon-Wood built SAKI in the 1950s to train
+card-punch operators. A light over the keyboard could show the trainee
+the right key. SAKI recorded how quickly and how accurately each item
+was answered, held the light back on items the trainee had learned, and
+gave more practice on the ones the trainee found hard. Pask's argument
+was cybernetic. The trainee and the machine are a coupled system, like
+two units of Ashby's homeostat. A task that is too easy loses the
+trainee's attention, and one that is too hard breaks the trainee down.
+A machine that cannot tell which is happening cannot teach everyone.
+
+On the Duwamish a simulated trainee learns the ten numeric keys. Its
+memory of each key, its attention and its learning rate are hidden from
+the machines. Each item's answer is a trit: **+1** the key was found from
+memory, before the light; **0** it was found by the light; **−1** the
+wrong key. SAKI's rule for adjusting a key's light is a single three-way
+jump on that trit: +1 holds the light back 0.2 s longer; 0 holds it back
+a little longer if the trainee answered quickly after it came on, or
+brings it a little sooner if the trainee needed it; −1 halves the delay.
+SAKI judges a key mastered when it has been found from memory three
+times running with the light held back as far as it goes. It ends the
+lesson when every key is mastered.
+
+Fifteen trainees (slow, average and fast) are taught by three machines
+and then tested with no lights:
+
+| machine | trainee | keys found | items in the lesson | errors | attention |
+|---|---|---|---|---|---|
+| always lit | slow / average / fast | 31% / 36% / 38% | 800 | 0 | 43% |
+| fixed fading, set for the average trainee | slow / average / fast | 55% / 96% / 97% | 800 | 133 / 20 / 7 | 65% / 80% / 82% |
+| SAKI | slow / average / fast | 94% / 96% / 96% | 1363 / 836 / 561 | 55 / 26 / 9 | 97% / 96% / 96% |
+
+A light that is always on teaches the trainee to follow lights, not the
+keyboard, and the trainee gets bored. A fixed schedule suits the trainee
+it was set for. It outpaces the slow ones, who make errors, lose their
+attention and do not recover, and it keeps the fast ones at work long
+after they have learned. SAKI gives each trainee the lesson that trainee
+needs. In part 1 its delays, which are its model of the trainee, are
+printed beside the trainee's hidden memory.
+
+**What it shows:** Pask's adaptive teaching, and the requisite variety
+behind it. The teacher has to be able to vary as much as its pupils do.
+**What it does not show:** a real trainee. The learner is a simple model
+with Pask's claims built into it (memory learned through retrieval,
+boredom, distress). The program shows that a machine that adapts gets
+these effects under control, not that people work this way.
+
 ---
 
 ## Also from the committee
 
 * **Rosenblatt**: the perceptron, in ternary, against Good's weight of
   evidence, and up against Minsky and Papert's limit (§10).
-* **Ashby** (§20) and **Knuth** (§21–23) are above.
+* **Ashby** (§20), **Knuth** (§21–23) and **Pask** (§30) are above.
 * **Kleene and McCarthy logic** (`programs/kleene.sal`): three-valued
   truth tables, each connective a single ternary instruction.
 * **Beer**: every run can be profiled from the tallies

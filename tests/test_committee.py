@@ -1,5 +1,5 @@
-"""The rest of the committee's programs: Ashby's homeostat, Knuth's
-algorithms (Kleene Life, three-way sorting, ternary search trees, radix-3
+"""The rest of the committee's programs: Ashby's homeostat, Pask's SAKI,
+Knuth's algorithms (Kleene Life, three-way sorting, ternary search trees, radix-3
 FFT), and the AI programs of the period in TRILISP."""
 
 import os
@@ -120,6 +120,37 @@ class TestHomeostat(unittest.TestCase):
         self.assertIn("moved 0 times", disturbed)
         self.assertIn("the field is unstable", reversed_)
         self.assertTrue(reversed_.rstrip().endswith("the field is stable"))
+
+
+class TestSAKI(unittest.TestCase):
+    def test_adaptive_teaching(self):
+        out = run_deck("saki.job").jobs[0].steps[0].output
+        self.assertRegex(out, r"judged the trainee ready after \d+ items")
+        rows = {}
+        machine = None
+        for line in out.split("\n2. ")[1].split("\n3. ")[0].splitlines():
+            m = re.match(r"   (ALWAYS LIT|FIXED|SAKI)?\s*(slow|average|fast)"
+                         r"\s+(\d+)%\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)%", line)
+            if m:
+                machine = m.group(1) or machine
+                rows[machine, m.group(2)] = [int(m.group(i))
+                                             for i in range(3, 8)]
+        self.assertEqual(len(rows), 9)
+        kinds = ("slow", "average", "fast")
+        # found, time, items, errors, attention
+        for k in kinds:
+            # lights always on teach the lights
+            self.assertLess(rows["ALWAYS LIT", k][0], 50)
+            self.assertEqual(rows["ALWAYS LIT", k][3], 0)
+            # SAKI teaches every kind of trainee
+            self.assertGreaterEqual(rows["SAKI", k][0], 90)
+            self.assertGreater(rows["SAKI", k][4], rows["ALWAYS LIT", k][4])
+        # the fixed schedule outpaces the slow trainees
+        self.assertLess(rows["FIXED", "slow"][0], 70)
+        self.assertGreater(rows["FIXED", "slow"][3], rows["SAKI", "slow"][3])
+        # and SAKI's lessons are as long as each trainee needs
+        items = [rows["SAKI", k][2] for k in kinds]
+        self.assertEqual(items, sorted(items, reverse=True))
 
 
 class TestAI(unittest.TestCase):

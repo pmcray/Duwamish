@@ -48,6 +48,7 @@ python -m duwamish run jobs/tritran.job --model 90     # FORTRAN: a tour, Liverm
 python -m duwamish run jobs/perceptron.job --model 90  # Rosenblatt's perceptron v. Good's evidence (half a minute)
 python -m duwamish run jobs/whale.job --model 90       # WHALE: weighed facts; a clinic that learns (40 seconds)
 python -m duwamish run jobs/homeostat.job --model 90   # Ashby's homeostat: ultrastability (ten seconds)
+python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, a teaching machine that adapts (ten seconds)
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sorting, ternary trees, radix 3
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
@@ -207,6 +208,13 @@ shows, and what it does not.
   trit. It hunts through random wirings until every needle stays in
   bounds. It rides out disturbances, and re-adapts when the experimenter
   reverses a connection.
+* `pask/saki.sal`: Pask's Self-Adaptive Keyboard Instructor. Each answer
+  is a trit (from memory, by the light, wrong), and one three-way jump
+  per answer decides how long to hold back that key's light. Trainees who
+  always see the light learn the lights (31–38% of keys found without
+  them). A fixed schedule suits only the trainees it was set for (slow
+  ones: 55%). SAKI gives each trainee a lesson of the length that
+  trainee needs, and all of them reach 94–96%.
 * `knuth/life.sal`: Conway's Life, 27 cells to a word. Live is +1 and
   dead −1, so AND, OR, EQV and negation are a Boolean algebra, and 0 is
   an *unknown* cell. Kleene's logic is sound: checked against every world
@@ -296,8 +304,8 @@ duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
                      whale.sal (WHALE's associative store)
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH, TRILISP, TRI-TRAN (.ftn) and WHALE (.whl)
-                     programs (good/, hofstadter/, ashby/, knuth/, ai/,
-                     whale/, trilisp/,
+                     programs (good/, hofstadter/, ashby/, pask/, knuth/,
+                     ai/, whale/, trilisp/,
                      selfhost/: the compiler in SALISH)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing

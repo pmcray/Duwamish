@@ -1,0 +1,369 @@
+-- =====================================================================
+--  PASK'S SAKI: A TEACHING MACHINE THAT ADAPTS TO ITS PUPIL
+--
+--  Gordon Pask and Robin McKinnon-Wood built SAKI, the Self-Adaptive
+--  Keyboard Instructor, in the 1950s to train the operators of card-punch
+--  keyboards.  The trainee was shown the characters to be punched, and a
+--  light over the right key could show where it was.  SAKI measured how
+--  quickly and how accurately the trainee answered each item, and used
+--  the record two ways.  It held back the light on items the trainee had
+--  learned, so that they had to be answered from memory.  And it gave
+--  more practice on items the trainee found hard.  Pask's argument was
+--  cybernetic.  The trainee and the machine are coupled, as two units of
+--  Ashby's homeostat are.  If the task is too easy the trainee loses
+--  interest, and if it is too hard the trainee breaks down.  A machine
+--  that cannot see which is happening cannot teach everyone.
+--
+--  On the Duwamish, a simulated trainee learns the ten numeric keys:
+--
+--    the trainee   for each key, how well its place is remembered (per
+--                  thousand), hidden from every machine.  A key found
+--                  from memory, before the light, is learned much better
+--                  than a key found by following the light.  Memory
+--                  fades without practice.  Attention falls with
+--                  boredom (lights that come at once, every time) and
+--                  with distress (errors).  Trainees differ in how fast
+--                  they learn.
+--    an item       a key, and a delay before its light comes on.  The
+--                  answer is a trit: +1 the key was found before the
+--                  light, 0 it was found by the light, -1 the wrong key.
+--
+--  Three machines teach the same trainees:
+--
+--    ALWAYS LIT    the light comes on at once: a machine that only
+--                  prompts
+--    FIXED         the light is held back more and more as the lesson
+--                  goes on, on a schedule set for the average trainee
+--    SAKI          a delay for each key, which the trainee's own answers
+--                  move (a single three-way J3 on the answer, in adapt()),
+--                  and practice weighted toward the keys whose lights are
+--                  still needed.  SAKI decides for itself when the
+--                  trainee is ready.
+--
+--  Then every trainee is tested with no lights at all.
+-- =====================================================================
+
+const NK = 10                         -- the keys 0 to 9
+const PATIENCE = 1500                 -- ms a trainee will wait for a light
+const CAP = 3000                      -- SAKI's longest delay
+const NEVER = 1000000                 -- no light at all: the test
+const LESSON = 800                    -- the fixed machines' lesson
+const SAKI_MAX = 3000                 -- SAKI's limit, if never ready
+const ALWAYS = 0, FIXED = 1, SAKI = 2
+
+global seed := 1956
+
+-- Lehmer's multiplicative generator, x := 16807 x mod (2^31 - 1), worked
+-- without overflow by Schrage's decomposition
+proc rnd(n)
+begin
+  seed := 16807 * (seed mod 127773) - 2836 * (seed / 127773)
+  if seed <= 0 then seed := seed + 2147483647
+  return seed mod n
+end
+
+-- ---------------------------------------------------------------------
+--  the trainee (no machine reads these)
+-- ---------------------------------------------------------------------
+global s[NK]                          -- each key's place, remembered
+global att, rate, ntr                 -- attention, learning rate, items
+global resp                           -- the time of the last answer, ms
+
+proc new_trainee(r)
+begin
+  rate := r
+  att := 900
+  ntr := 0
+  -- 4, 5 and 6, under the fingers, are a little familiar already
+  for k := 0 to NK - 1 do s[k] := 50 + rnd(100) + (k >= 4 and k <= 6 -> 150, 0)
+end
+
+proc learn(k, a)
+begin
+  s[k] := s[k] + rate * a * (1000 - s[k]) / 1000000
+end
+
+proc bored(d)
+begin
+  if d < 300 then att := max(400, att - 4)
+end
+
+-- key k is shown, its light coming on after d ms: the answer
+proc trial(k, d)
+begin
+  var t, w
+  ntr := ntr + 1
+  if ntr mod 10 = 0 then
+    for j := 0 to NK - 1 do s[j] := s[j] - s[j] / 200
+  if rnd(1000) < s[k] * att / 1000 then begin
+    -- remembers where the key is: how quickly?
+    t := 300 + (1000 - s[k]) / 2 + rnd(300)
+    if t < d then begin
+      learn(k, 120)
+      att := min(1000, att + 10)
+      resp := t
+      return 1
+    end
+    -- the light came first; it is followed, or the memory answers anyway
+    bored(d)
+    w := d + 600 + rnd(300)
+    if t < w then begin learn(k, 40); resp := t end
+    else begin learn(k, 10); resp := w end
+    return 0
+  end
+  if d <= PATIENCE then begin
+    -- does not remember: waits for the light, then finds the key
+    learn(k, 10)
+    bored(d)
+    resp := d + 600 + rnd(300)
+    return 0
+  end
+  -- will not wait so long: guesses
+  if rnd(NK) = 0 then begin learn(k, 20); resp := PATIENCE; return 1 end
+  learn(k, 60)                        -- shown the right key, after
+  att := max(400, att - 30)
+  resp := PATIENCE + 300
+  return -1
+end
+
+-- ---------------------------------------------------------------------
+--  the machines
+-- ---------------------------------------------------------------------
+global dk[NK]                         -- SAKI's delay for each key
+global streak[NK]                     -- ... answers from memory at the most
+global mastered[NK]                   -- ... and whether it is mastered
+global outc[3], ntrials, attsum, show := false
+
+-- SAKI's rule: one three-way jump on the answer
+proc adapt(k, o, d)
+begin
+  sign o of
+    + : dk[k] := dk[k] + 200          -- from memory: hold the light back
+    0 : if resp - d < 600 then dk[k] := dk[k] + 100   -- nearly had it
+        else dk[k] := dk[k] - 50                      -- needed the light
+    - : dk[k] := dk[k] / 2            -- wrong: bring the light back
+  end
+  dk[k] := max(300, min(CAP, dk[k]))
+  -- found from memory with the light held back as far as it goes, three
+  -- times running: mastered, until the trainee next gets it wrong
+  if o > 0 and d = CAP then streak[k] := streak[k] + 1 else streak[k] := 0
+  if streak[k] >= 3 then mastered[k] := true
+  if o < 0 then mastered[k] := false
+end
+
+-- more practice where the light is still needed
+proc choose()
+begin
+  var tot := 0, x, k := 0
+  for j := 0 to NK - 1 do tot := tot + 200 + CAP - dk[j]
+  x := rnd(tot)
+  while x >= 200 + CAP - dk[k] do begin
+    x := x - (200 + CAP - dk[k])
+    k := k + 1
+  end
+  return k
+end
+
+-- ready: every key mastered
+proc ready()
+begin
+  for j := 0 to NK - 1 do
+    if not mastered[j] then return false
+  return true
+end
+
+global first_at[NK]                   -- when each light first passed 1.5 s
+
+proc chart_row(from)
+begin
+  printw(from, 8); prints("-"); spaces(4 - digits(ntrials))
+  print(ntrials); spaces(2)
+  for j := 0 to NK - 1 do begin
+    spaces(2 - digits(dk[j] / 100)); print(dk[j] / 100); spaces(1)
+  end
+  printw(outc[2], 5); printw(outc[1], 4); printw(outc[0], 4)
+  printw(att / 10, 6); prints("%")
+  newline()
+  outc[0] := 0; outc[1] := 0; outc[2] := 0
+end
+
+proc teach(machine)
+begin
+  var k, d, o, n
+  for j := 0 to NK - 1 do begin
+    dk[j] := 300; streak[j] := 0; mastered[j] := false; first_at[j] := 0
+  end
+  outc[0] := 0; outc[1] := 0; outc[2] := 0
+  ntrials := 0; attsum := 0
+  n := machine = SAKI -> SAKI_MAX, LESSON
+  for i := 0 to n - 1 do begin
+    if machine = SAKI then begin
+      if ready() then break
+      k := choose()
+      d := dk[k]
+    end else begin
+      k := rnd(NK)
+      d := machine = ALWAYS -> 0, min(2500, i * 3)
+    end
+    o := trial(k, d)
+    outc[o + 1] := outc[o + 1] + 1
+    ntrials := ntrials + 1
+    attsum := attsum + att
+    if machine = SAKI then begin
+      adapt(k, o, d)
+      if first_at[k] = 0 and dk[k] >= 1500 then first_at[k] := ntrials
+    end
+    if show and ntrials mod 50 = 0 then chart_row(ntrials - 49)
+  end
+end
+
+-- no lights: how many keys are found, and how fast?
+global t_right, t_lat
+
+proc test(n)
+begin
+  var o
+  t_right := 0; t_lat := 0
+  for i := 1 to n do begin
+    o := trial(rnd(NK), NEVER)
+    if o > 0 then begin t_right := t_right + 1; t_lat := t_lat + resp end
+  end
+  if t_right > 0 then t_lat := t_lat / t_right
+end
+
+-- ---------------------------------------------------------------------
+proc part1()
+begin
+  var errs := 0
+  prints("1. AN AVERAGE TRAINEE UNDER SAKI\n\n")
+  prints("   SAKI's delay before each key's light, in tenths of a second,\n")
+  prints("   after every 50 items; then, for those 50, the keys found from\n")
+  prints("   memory (+), by the light (0) and wrongly (-), and the trainee's\n")
+  prints("   attention.\n\n")
+  prints("       items     0  1  2  3  4  5  6  7  8  9      +   0   -")
+  prints("  attention\n")
+  seed := 1101
+  new_trainee(1000)
+  show := true
+  teach(SAKI)
+  show := false
+  if ntrials mod 50 <> 0 then chart_row(ntrials - ntrials mod 50 + 1)
+  prints("\n   SAKI judged the trainee ready after "); print(ntrials)
+  prints(" items.  The order in which the\n")
+  prints("   keys' lights were first held back past 1.5 seconds:  ")
+  var done[NK], best
+  for j := 0 to NK - 1 do done[j] := false
+  for n := 1 to NK do begin
+    best := -1
+    for j := 0 to NK - 1 do
+      if not done[j] and first_at[j] > 0 and
+         (best < 0 or first_at[j] < first_at[best]) then best := j
+    if best >= 0 then begin done[best] := true; print(best); spaces(1) end
+  end
+  prints("\n   -- each key at its own pace.  An error brings a light back at\n")
+  prints("   once, and it is withdrawn again as the key is found.  SAKI's\n")
+  prints("   delays are its model of the trainee.  Beside the trainee's\n")
+  prints("   memory, which SAKI never saw:\n\n")
+  prints("   key            ")
+  for j := 0 to NK - 1 do printw(j, 5)
+  prints("\n   SAKI's delay   ")
+  for j := 0 to NK - 1 do printw(dk[j], 5)
+  prints("\n   memory (/1000) ")
+  for j := 0 to NK - 1 do printw(s[j], 5)
+  newline()
+  test(100)
+  prints("\n   Tested with no lights: "); print(t_right)
+  prints(" keys of 100 found, in "); print(t_lat); prints(" ms on average.\n\n")
+end
+
+global kinds := table(700, 1000, 1500)
+const PER = 5                         -- trainees of each kind
+-- results: [machine * 3 + kind]
+global r_right[9], r_lat[9], r_err[9], r_items[9], r_att[9]
+
+proc part2()
+begin
+  var m, i
+  prints("2. FIFTEEN TRAINEES, SLOW, AVERAGE AND FAST, UNDER EACH MACHINE\n\n")
+  for x := 0 to 8 do begin
+    r_right[x] := 0; r_lat[x] := 0; r_err[x] := 0; r_items[x] := 0
+    r_att[x] := 0
+  end
+  for kind := 0 to 2 do
+    for j := 1 to PER do
+      for machine := 0 to 2 do begin
+        seed := 2000 + kind * 100 + j       -- the same trainee each time
+        new_trainee(kinds[kind])
+        teach(machine)
+        i := machine * 3 + kind
+        r_err[i] := r_err[i] + outc[0]
+        r_items[i] := r_items[i] + ntrials
+        r_att[i] := r_att[i] + attsum / ntrials
+        test(100)
+        r_right[i] := r_right[i] + t_right
+        r_lat[i] := r_lat[i] + t_lat
+      end
+  prints("                          tested, no lights      in the lesson\n")
+  prints("   machine     trainee    found   time (ms)    items  errors")
+  prints("  attention\n")
+  for machine := 0 to 2 do begin
+    newline()
+    for kind := 0 to 2 do begin
+      i := machine * 3 + kind
+      spaces(3)
+      printsw(kind = 0 -> (machine = ALWAYS -> "ALWAYS LIT",
+                           machine = FIXED -> "FIXED", "SAKI"), "", 12)
+      printsw(kind = 0 -> "slow", kind = 1 -> "average", "fast", 8)
+      printw(r_right[i] / PER, 6); prints("%")
+      printw(r_lat[i] / PER, 10)
+      printw(r_items[i] / PER, 11)
+      printw(r_err[i] / PER, 8)
+      printw(r_att[i] / PER / 10, 10); prints("%")
+      newline()
+    end
+  end
+end
+
+proc part3()
+begin
+  var lo := 100, hi := 0
+  for k := 0 to 2 do begin
+    lo := min(lo, r_right[6 + k] / PER)
+    hi := max(hi, r_right[k] / PER)
+  end
+  prints("\n3. WHAT THE TABLE SAYS\n\n")
+  prints("   A machine that always lights the key teaches the lights, not the\n")
+  prints("   keyboard: its trainees find at most "); print(hi)
+  prints("% of the keys without them, and\n")
+  prints("   grow bored (attention "); print(r_att[1] / PER / 10)
+  prints("%).\n\n")
+  prints("   The fixed schedule suits the average trainee it was set for, and\n")
+  prints("   the fast ones, though they sit through ")
+  print(LESSON); prints(" items where SAKI needed\n   ")
+  print(r_items[8] / PER)
+  prints(".  The slow trainees, outpaced, make ")
+  print(r_err[3] / PER)
+  prints(" errors in the lesson, their\n   attention falls to ")
+  print(r_att[3] / PER / 10)
+  prints("%, and they find only ")
+  print(r_right[3] / PER)
+  prints("% of the keys.\n\n")
+  prints("   SAKI gives each trainee the lesson that trainee needs: ")
+  for k := 0 to 2 do begin
+    print(r_items[6 + k] / PER)
+    prints(k = 0 -> ", ", k = 1 -> "\n   and ", " items")
+  end
+  prints(" to slow, average and fast trainees.  Every kind finds\n")
+  prints("   at least "); print(lo)
+  prints("% of the keys.  SAKI could not have done this by a schedule.\n")
+  prints("   It had to watch the trainee, as the trainee watched it.\n")
+end
+
+proc main()
+begin
+  prints("PASK'S SAKI: THE SELF-ADAPTIVE KEYBOARD INSTRUCTOR\n\n")
+  part1()
+  part2()
+  part3()
+  return 0
+end
