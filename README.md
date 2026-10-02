@@ -26,6 +26,7 @@ This repository contains the whole machine, and software that runs on it:
 | **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
 | **SALISH/S** | the SALISH compiler written in SALISH, optimiser included: it compiles itself on the Duwamish, card for card identical to the satellite's compilers, and builds a faster copy of itself |
 | **TRILISP** | a LISP 1.5-style interpreter written in SALISH, with one-trit type tags, tail calls and garbage collection |
+| **Refal** | Turchin's pattern-matching language (Moscow, 1966) in the manner of Refal-5, interpreted in SALISH: e-variables that backtrack, conditions, the store, tail calls and garbage collection; the ground for mixed computation |
 | **TRI-TRAN** | the Duwamish FORTRAN (1966): fixed-form cards, FORMAT, COMMON; three-valued LOGICAL; the arithmetic IF as one three-way jump; DO indices in index registers, as in FORTRAN I |
 | **WHALE** | the Woodworth Heuristic Associative Learning Evaluator: SALISH with an associative store, as SAIL was ALGOL with LEAP. Facts are triples with weights of evidence in decibans, true, false or unknown by Wald's test |
 
@@ -55,6 +56,7 @@ python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, a teaching
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sorting, ternary trees, radix 3
 python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
 python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
+python -m duwamish run jobs/refal.job --model 90       # Turchin's Refal: patterns, a sieve, a three-way quicksort (ten seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -314,8 +316,8 @@ comparison.
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): principles of operation, as
   the committee's report
 * [docs/SALISH.md](docs/SALISH.md), [docs/TRILISP.md](docs/TRILISP.md),
-  [docs/TRITRAN.md](docs/TRITRAN.md) and [docs/WHALE.md](docs/WHALE.md):
-  the language manuals
+  [docs/TRITRAN.md](docs/TRITRAN.md), [docs/WHALE.md](docs/WHALE.md) and
+  [docs/REFAL.md](docs/REFAL.md): the language manuals
 * [docs/DEMONSTRATOR.md](docs/DEMONSTRATOR.md): the principles and their
   demonstrations
 * [docs/IDENTITY.md](docs/IDENTITY.md): the house style of the Special
@@ -339,11 +341,12 @@ duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
                      tritran.sal (TRI-TRAN's FORMAT and mathematical library),
                      whale.sal (WHALE's associative store), devices.sal
                      (tape, drum and disc for SALISH), pager.sal (the
-                     one-level store's supervisor routine)
+                     one-level store's supervisor routine), refal.sal
+                     (Turchin's Refal)
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH, TRILISP, TRI-TRAN (.ftn) and WHALE (.whl)
                      programs (good/, hofstadter/, ashby/, pask/, knuth/,
-                     atlas/, ai/, whale/, trilisp/,
+                     atlas/, ai/, whale/, refal/, trilisp/,
                      selfhost/: the compiler in SALISH)
 jobs/                card decks
 data/                Genesis 1 (KJV), for Good-Turing

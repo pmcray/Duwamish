@@ -24,7 +24,7 @@ A job deck is a sequence of cards (lines).  Control cards begin with //:
                                     last step (SVC 5), when this step runs:
                                     a compiler's output becomes a program
     //EXEC [name]                   run the program just translated, or a
-                                    catalogued program (e.g. TRILISP)
+                                    catalogued program (TRILISP, REFAL)
     //DATA [FROM=path]              the cards that follow (or a file) are
                                     read by the program through SVC 2
     //TAPE unit [FILE=path] [RING] [CARDS]
@@ -71,6 +71,7 @@ CYCLE_NS = 200
 
 CATALOGUE = {
     "TRILISP": os.path.join(HERE, "lib", "trilisp.sal"),
+    "REFAL": os.path.join(HERE, "lib", "refal.sal"),
 }
 
 

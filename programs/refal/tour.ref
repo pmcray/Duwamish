@@ -1,0 +1,81 @@
+* =====================================================================
+*  A TOUR OF REFAL ON THE DUWAMISH
+*
+*  Turchin's language (Moscow, 1966): a program is functions, a function
+*  is sentences, pattern = result, tried in order.  s.X is one symbol,
+*  t.X one term, e.X any expression; (...) is structure; <F ...> calls.
+* =====================================================================
+
+$ENTRY Go {
+  = <Prout '1. Patterns'>
+    <Prout '   reverse abcdefg:          ' <Reverse 'abcdefg'>>
+    <Prout '   palindromes:              ' <Pal 'redivider'> <Pal 'refal'>>
+    <Prout '   13 factorial:             ' <Fact 13>>
+    <Prout '   change o to 0:            ' <Change 'o' '0' 'moscow to novosibirsk'>>
+    <Prout '   the same symbol twice:    ' <Double 'committee'>>
+    <Prout>
+    <Prout '2. Structure, and the e-variable that backtracks'>
+    <Prout '   split at a comma with something before it:  ' <Split ',abc,de'>>
+    <Prout '   d/dx (x*x + 3*x):  ' <Diff ((x '*' x) '+' (3 '*' x)) x>>
+    <Prout '   d/dx (x*(x*x)):    ' <Diff (x '*' (x '*' x)) x>>
+    <Prout>
+    <Prout '3. Numbers: the primes below 200, and a sort'>
+    <Prout '   ' <Primes <Upto 2 199>>>
+    <Prout '   ' <Sort 31 4 159 26 5 35 89 79 32 38 46 26 43 38 32 79 50>>
+    <Prout>
+    <Prout '4. Calling by name, and the store'>
+    <Prout '   <Mu Reverse 123> gives ' <Mu Reverse 1 2 3>>
+    <Br 'name' '=' 'Akademgorodok'>
+    <Prout '   dug up from the store: ' <Dg 'name'>>
+    <Prout '   and the second time:   ' <Dg 'name'> '(nothing)'>;
+}
+
+Reverse { t.1 e.2 = <Reverse e.2> t.1; = ; }
+
+Pal { = True; s.1 = True; s.1 e.2 s.1 = <Pal e.2>; e.1 = False; }
+
+Fact { 0 = 1; s.N = <Mul s.N <Fact <Sub s.N 1>>>; }
+
+Change {
+  s.Old s.New e.1 s.Old e.2 = e.1 s.New <Change s.Old s.New e.2>;
+  s.Old s.New e.1 = e.1;
+}
+
+* the first letter that appears twice in a row
+Double { e.1 s.X s.X e.2 = s.X; e.1 = 'none'; }
+
+* a condition that fails sends e.1 back to grow longer
+Split { e.1 ',' e.2, <Lenw e.1> : s.N e.3, <Compare s.N 0> : '+' = (e.1) (e.2); }
+
+* differentiation, simplifying as it goes: Plus and Times leave out
+* the zeros and ones
+Diff {
+  (t.1 '+' t.2) s.X = <Plus <Diff t.1 s.X> <Diff t.2 s.X>>;
+  (t.1 '*' t.2) s.X = <Plus <Times <Diff t.1 s.X> t.2> <Times t.1 <Diff t.2 s.X>>>;
+  s.X s.X = 1;
+  t.1 s.X = 0;
+}
+Plus { 0 t.2 = t.2; t.1 0 = t.1; t.1 t.2 = (t.1 '+' t.2); }
+Times { 0 t.2 = 0; t.1 0 = 0; 1 t.2 = t.2; t.1 1 = t.1; t.1 t.2 = (t.1 '*' t.2); }
+
+Upto { s.A s.B, <Compare s.A s.B> : '+' = ; s.A s.B = s.A <Upto <Add s.A 1> s.B>; }
+
+* the sieve: take the first, strike out its multiples
+Primes { s.P e.Rest = s.P <Primes <Strike s.P e.Rest>>; = ; }
+Strike {
+  s.P s.N e.Rest, <Mod s.N s.P> : 0 = <Strike s.P e.Rest>;
+  s.P s.N e.Rest = s.N <Strike s.P e.Rest>;
+  s.P = ;
+}
+
+* quicksort, the partition by Compare's three answers
+Sort { = ; s.P e.Rest = <Part s.P () () () e.Rest>; }
+Part {
+  s.P (e.L) (e.E) (e.G) = <Sort e.L> s.P e.E <Sort e.G>;
+  s.P (e.L) (e.E) (e.G) s.X e.Rest = <Part3 <Compare s.X s.P> s.P (e.L) (e.E) (e.G) s.X e.Rest>;
+}
+Part3 {
+  '-' s.P (e.L) (e.E) (e.G) s.X e.Rest = <Part s.P (e.L s.X) (e.E) (e.G) e.Rest>;
+  '0' s.P (e.L) (e.E) (e.G) s.X e.Rest = <Part s.P (e.L) (e.E s.X) (e.G) e.Rest>;
+  '+' s.P (e.L) (e.E) (e.G) s.X e.Rest = <Part s.P (e.L) (e.E) (e.G s.X) e.Rest>;
+}

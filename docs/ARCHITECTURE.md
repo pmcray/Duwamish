@@ -189,7 +189,7 @@ Executive (`duwamish/satellite.py`):
 //TRITRAN [FROM=file] [LIST]    compile TRI-TRAN, the Duwamish FORTRAN
 //TRIAD  [FROM=file] [LIST]      assemble
 //TRIAD  PUNCHED [LIST]          assemble the cards the last step punched
-//EXEC   [TRILISP]               run what was just translated, or a catalogued program
+//EXEC   [TRILISP|REFAL]         run what was just translated, or a catalogued program
 //DATA   [FROM=file]             cards for the program's card reader
 //TAPE   unit [FILE=f] [RING] [CARDS]  mount a reel for the job
 //DISC   unit [FILE=f] [PROTECT]       mount a disc pack
@@ -446,6 +446,7 @@ SALISH procedures. `TIM R` reads the cycle clock.
 | SALISH/O | the optimising compiler: register allocation by usage counts, index-register addressing, loop rotation, peephole | `duwamish/optimise.py`, [SALISH.md](SALISH.md) |
 | SALISH/S | the SALISH compiler written in SALISH, with the optimiser; runs on the Duwamish and punches its code; compiles itself, card for card, to the same deck as the satellite's compilers, with or without OPT | `programs/selfhost/salish.sal` |
 | TRILISP | LISP 1.5-style interpreter written in SALISH, ternary-tagged | [TRILISP.md](TRILISP.md) |
+| Refal | Turchin's language, in the manner of Refal-5, interpreted in SALISH | [REFAL.md](REFAL.md) |
 | TRI-TRAN | FORTRAN (1966) with three-valued LOGICAL, the arithmetic IF as one J3, DO indices in index registers as in FORTRAN I; its FORMAT and mathematical library written in SALISH | `duwamish/tritran.py`, [TRITRAN.md](TRITRAN.md) |
 
 ## 11. Speed

@@ -1,0 +1,961 @@
+-- =====================================================================
+--  REFAL -- Turchin's Recursive Functions Algorithmic Language, for the
+--  Duwamish, written in SALISH.
+--
+--  Valentin Turchin designed Refal in Moscow from 1966 as a language
+--  for working on programs and texts by pattern matching, and as the
+--  ground for his "metasystem transitions": programs that run, and
+--  transform, other programs.  This is a Refal in the manner of Refal-5:
+--
+--      * comment
+--      $ENTRY Go { = <Prout 'Hello, world'>; }
+--      Reverse { t.1 e.2 = <Reverse e.2> t.1; = ; }
+--
+--  A program is a set of functions; a function is a list of sentences,
+--  pattern = result, tried in order.  The data are expressions: symbols
+--  (characters 'a', words Name, numbers 42) and structure brackets ( ).
+--  Variables s.X stand for one symbol, t.X for one term, e.X for any
+--  expression; <F e> calls F.  A sentence may carry conditions,
+--      pattern, <F e.1> : pattern2 = result
+--  which, if they fail, send the matching back to try e-variables
+--  longer, as in Refal-5.
+--
+--  The interpreter reads the program from the cards, then evaluates
+--  <Go>.  Expressions are lists of nodes in a heap reclaimed by a
+--  mark-and-sweep collector that scans the stack, as TRILISP's does;
+--  a node is named by its index plus NB, so that the collector can tell
+--  a node from any other number on the stack.
+-- =====================================================================
+
+const NODES = 30000                   -- the heap
+const NB = 1000000                    -- node i is the word NB + i
+const MAXW = 600, POOL = 8000         -- words (compound symbols)
+const MAXSENT = 900, MAXCOND = 300
+const BSTACK = 20000, KSTACK = 3000, MSTACK = 20000
+const MAXVARS = 40
+const STACKTOP = 265720
+
+-- kinds of node
+const K_CHAR = 1, K_WORD = 2, K_NUM = 3, K_PAREN = 4, K_CALL = 5
+const K_SVAR = 6, K_TVAR = 7, K_EVAR = 8
+
+global nk[NODES], nv[NODES], nn[NODES], nmark[NODES]
+global ptop := 1                      -- the program's nodes: 1 .. ptop-1
+global freelist := 0, nfree := 0, ngc := 0
+global steps := 0
+
+inline proc kind(p) = nk[p - NB]
+inline proc val(p) = nv[p - NB]
+inline proc nxt(p) = nn[p - NB]
+
+proc rerror(msg)
+begin
+  prints("\n*** REFAL: "); prints(msg); newline()
+  exit(9)
+end
+
+-- ---------------------------------------------------------------------
+--  storage
+-- ---------------------------------------------------------------------
+global mstack[MSTACK]
+global bs[BSTACK], bsp := 0           -- variable bindings, by frames
+global ks[KSTACK], ksp := 0, kbase := 0   -- continuations of matching
+global store := 0                     -- what Br has buried
+
+proc isnode(v) = v > NB and v < NB + NODES
+
+proc marklist(v)
+begin
+  var sp := 0, i
+  if not isnode(v) then return 0
+  mstack[0] := v
+  sp := 1
+  while sp > 0 do begin
+    sp := sp - 1
+    v := mstack[sp]
+    while isnode(v) do begin
+      i := v - NB
+      -- (marks are 1 and 0: in SALISH 0 is unknown, not false)
+      if nmark[i] = 1 or i < ptop then break
+      nmark[i] := 1
+      if (nk[i] = K_PAREN or nk[i] = K_CALL) and isnode(nv[i]) then begin
+        if sp >= MSTACK then rerror("MARK STACK OVERFLOW")
+        mstack[sp] := nv[i]
+        sp := sp + 1
+      end
+      v := nn[i]
+    end
+  end
+end
+
+proc gc()
+begin
+  ngc := ngc + 1
+  marklist(store)
+  marklist(handoff)
+  for i := 0 to bsp - 1 do marklist(bs[i])
+  for i := 0 to ksp - 1 do marklist(ks[i])
+  for a := stackptr() to STACKTOP do marklist(peek(a))
+  freelist := 0
+  nfree := 0
+  for i := NODES - 1 to ptop by -1 do
+    if nmark[i] <> 1 then begin
+      nn[i] := freelist
+      freelist := NB + i
+      nfree := nfree + 1
+    end else nmark[i] := 0
+end
+
+proc node(k, v, n)
+begin
+  var p
+  if freelist = 0 then begin
+    gc()
+    if nfree < NODES / 20 then rerror("STORAGE EXHAUSTED")
+  end
+  p := freelist
+  freelist := nxt(p)
+  nk[p - NB] := k; nv[p - NB] := v; nn[p - NB] := n
+  nfree := nfree - 1
+  return p
+end
+
+-- a node of the program itself, never reclaimed
+proc pnode(k, v)
+begin
+  if ptop >= NODES / 3 then rerror("PROGRAM TOO LONG")
+  nk[ptop] := k; nv[ptop] := v; nn[ptop] := 0
+  ptop := ptop + 1
+  return NB + ptop - 1
+end
+
+proc setnext(p, q)
+begin
+  nn[p - NB] := q
+end
+
+-- ---------------------------------------------------------------------
+--  words: compound symbols, and the functions they name
+-- ---------------------------------------------------------------------
+global wname[MAXW], nwords := 0, pool[POOL], poolfree := 0
+global fsent[MAXW], fbuiltin[MAXW]
+
+proc intern(s)
+begin
+  var p
+  for j := 0 to nwords - 1 do
+    if streq(wname[j], s) then return j
+  if nwords >= MAXW or poolfree + s[0] + 1 > POOL then rerror("TOO MANY WORDS")
+  p := pool + poolfree
+  for i := 0 to s[0] do p[i] := s[i]
+  poolfree := poolfree + s[0] + 1
+  wname[nwords] := p
+  fsent[nwords] := 0
+  fbuiltin[nwords] := 0
+  nwords := nwords + 1
+  return nwords - 1
+end
+
+-- ---------------------------------------------------------------------
+--  sentences: pattern, conditions, result
+-- ---------------------------------------------------------------------
+global spat[MAXSENT], sres[MAXSENT], snext[MAXSENT], scond[MAXSENT]
+global snvars[MAXSENT], nsent := 1
+global cexpr[MAXCOND], cpat[MAXCOND], cnext[MAXCOND], ncond := 1
+
+-- ---------------------------------------------------------------------
+--  printing
+-- ---------------------------------------------------------------------
+global lastsym := false
+
+proc printterm(p)
+begin
+  var k := kind(p)
+  if k = K_CHAR then begin putc(val(p)); lastsym := false; return 0 end
+  if k = K_WORD or k = K_NUM then begin
+    if lastsym then putc(' ')
+    if k = K_WORD then prints(wname[val(p)]) else print(val(p))
+    lastsym := true
+    return 0
+  end
+  if k = K_PAREN then begin
+    putc('('); lastsym := false
+    printexpr(val(p))
+    putc(')'); lastsym := false
+    return 0
+  end
+  if k = K_CALL then begin
+    putc('<'); lastsym := false
+    printexpr(val(p))
+    putc('>'); lastsym := false
+    return 0
+  end
+  putc(k = K_SVAR -> 's', k = K_TVAR -> 't', 'e')
+  putc('.'); print(val(p)); lastsym := true
+end
+
+proc printexpr(p)
+begin
+  while p <> 0 do begin
+    printterm(p)
+    p := nxt(p)
+  end
+end
+
+-- ---------------------------------------------------------------------
+--  matching
+--
+--  match(p, x, xe): does the pattern list p match the subject from x up
+--  to (not including) xe?  Bindings go in the current frame of bs: two
+--  words for each variable, the start and the end of what it matched
+--  (an s- or t-variable matches one term: end = next of start).  When a
+--  list is finished the continuation stack ks says what comes after (a
+--  parenthesis closed); when it is empty, the pending conditions are
+--  tried.  Failure anywhere comes back here and tries the next choice.
+-- ---------------------------------------------------------------------
+global bp := 0                        -- the current frame
+global pending := 0                   -- conditions still to try
+
+proc term_equal(a, b)
+begin
+  if kind(a) <> kind(b) then return false
+  if kind(a) = K_PAREN then return list_equal(val(a), 0, val(b), 0)
+  return val(a) = val(b)
+end
+
+proc list_equal(a, ae, b, be)
+begin
+  while a <> ae and b <> be do begin
+    if not term_equal(a, b) then return false
+    a := nxt(a); b := nxt(b)
+  end
+  return a = ae and b = be
+end
+
+proc issym(x) = kind(x) <= K_NUM
+
+proc conditions()
+begin
+  var c := pending, v, ok, kb
+  if c = 0 then return true
+  pending := cnext[c]
+  v := build(cexpr[c])
+  kb := kbase
+  kbase := ksp
+  ok := match(cpat[c], v, 0)
+  kbase := kb
+  pending := c
+  return ok
+end
+
+proc match(p, x, xe)
+begin
+  var k, slot, y, cp, cx, ce
+  if p = 0 then begin
+    if x <> xe then return false
+    if ksp = kbase then return conditions()
+    ksp := ksp - 3
+    cp := ks[ksp]; cx := ks[ksp + 1]; ce := ks[ksp + 2]
+    if match(cp, cx, ce) then return true
+    ks[ksp] := cp; ks[ksp + 1] := cx; ks[ksp + 2] := ce
+    ksp := ksp + 3
+    return false
+  end
+  k := kind(p)
+  if k <= K_NUM then begin
+    if x = xe then return false
+    if kind(x) <> k or val(x) <> val(p) then return false
+    return match(nxt(p), nxt(x), xe)
+  end
+  if k = K_PAREN then begin
+    if x = xe then return false
+    if kind(x) <> K_PAREN then return false
+    if ksp + 3 > KSTACK then rerror("PATTERN TOO DEEP")
+    ks[ksp] := nxt(p); ks[ksp + 1] := nxt(x); ks[ksp + 2] := xe
+    ksp := ksp + 3
+    if match(val(p), val(x), 0) then return true
+    ksp := ksp - 3
+    return false
+  end
+  slot := bp + 2 * val(p)
+  if k = K_SVAR or k = K_TVAR then begin
+    if x = xe then return false
+    if k = K_SVAR and not issym(x) then return false
+    if bs[slot] <> 0 then begin
+      if not term_equal(bs[slot], x) then return false
+      return match(nxt(p), nxt(x), xe)
+    end
+    bs[slot] := x; bs[slot + 1] := nxt(x)
+    if match(nxt(p), nxt(x), xe) then return true
+    bs[slot] := 0
+    return false
+  end
+  -- an e-variable: bound already, it must match the same again
+  if bs[slot] <> 0 or bs[slot + 1] <> 0 then begin
+    if bs[slot] = -1 then return match(nxt(p), x, xe)
+    y := bs[slot]
+    while y <> bs[slot + 1] do begin
+      if x = xe then return false
+      if not term_equal(y, x) then return false
+      y := nxt(y); x := nxt(x)
+    end
+    return match(nxt(p), x, xe)
+  end
+  -- last in its list, it can only take all the rest
+  if nxt(p) = 0 then begin
+    bs[slot] := x = xe -> -1, x; bs[slot + 1] := xe
+    if match(0, xe, xe) then return true
+    bs[slot] := 0; bs[slot + 1] := 0
+    return false
+  end
+  -- otherwise as short as possible, then longer
+  y := x
+  repeat
+    bs[slot] := x; bs[slot + 1] := y
+    if x = y then bs[slot] := -1     -- bound, and empty
+    if match(nxt(p), y, xe) then return true
+    if y = xe then break
+    y := nxt(y)
+  until false
+  bs[slot] := 0; bs[slot + 1] := 0
+  return false
+end
+
+-- ---------------------------------------------------------------------
+--  building a result from a template, with the bindings, evaluating
+--  each call as it comes: the value is passive.
+--
+--  The data are never changed once built, so they may be shared: an
+--  e-variable that matched the tail of its subject, written last in a
+--  result, is not copied but linked.  A list that may be shared is
+--  copied only when something must follow it.
+-- ---------------------------------------------------------------------
+proc copyseg(a, ae, tail)
+begin
+  -- copy the terms from a up to ae onto the end of the list at tail[0..1]
+  var q
+  while a <> ae do begin
+    q := node(kind(a), val(a), 0)
+    if tail[0] = 0 then tail[0] := q else setnext(tail[1], q)
+    tail[1] := q
+    a := nxt(a)
+  end
+end
+
+proc link(r, tail)
+begin
+  -- end the list at tail[0..1] with r, shared
+  if r = 0 then return 0
+  if tail[0] = 0 then tail[0] := r else setnext(tail[1], r)
+  tail[1] := 0
+end
+
+proc build(t)
+begin
+  var out[2], k, slot, q, r
+  out[0] := 0; out[1] := 0
+  while t <> 0 do begin
+    k := kind(t)
+    if k <= K_NUM then begin
+      q := node(k, val(t), 0)
+      if out[0] = 0 then out[0] := q else setnext(out[1], q)
+      out[1] := q
+    end else if k = K_PAREN then begin
+      q := node(k, 0, 0)
+      if out[0] = 0 then out[0] := q else setnext(out[1], q)
+      out[1] := q
+      nv[q - NB] := build(val(t))
+    end else if k = K_CALL then begin
+      r := call(val(t))
+      if nxt(t) = 0 then link(r, out)
+      else copyseg(r, 0, out)
+    end else begin
+      slot := bp + 2 * val(t)
+      if bs[slot] > 0 then begin
+        if nxt(t) = 0 and bs[slot + 1] = 0 then link(bs[slot], out)
+        else copyseg(bs[slot], bs[slot + 1], out)
+      end
+    end
+    t := nxt(t)
+  end
+  return out[0]
+end
+
+-- ---------------------------------------------------------------------
+--  evaluation
+-- ---------------------------------------------------------------------
+
+-- a call written in a template: its argument built (and evaluated)
+-- under the present bindings, then the function applied
+proc call(c)
+begin
+  if kind(c) <> K_WORD then rerror("A CALL MUST BEGIN WITH A FUNCTION NAME")
+  return apply(val(c), build(nxt(c)))
+end
+
+-- apply function f to the passive expression arg; a result that is a
+-- single call is followed in a loop, not by recursion
+proc apply(f, arg)
+begin
+  var s, n, r, t, savebp := bp, kb := kbase, pend := pending, found
+  var last, prefix, q
+  -- the machine's stack grows down toward the heap: stop well short
+  if stackptr() < heapbase() + 2000 then rerror("RECURSION TOO DEEP")
+  repeat
+    steps := steps + 1
+    if fbuiltin[f] then return builtin(fbuiltin[f], arg)
+    s := fsent[f]
+    if s = 0 then begin
+      prints("\n*** REFAL: NO FUNCTION "); prints(wname[f]); newline()
+      exit(9)
+    end
+    found := false
+    while s <> 0 and not found do begin
+      n := snvars[s]
+      if bsp + 2 * n > BSTACK then rerror("BINDINGS OVERFLOW: RECURSION TOO DEEP")
+      bp := bsp
+      for i := 0 to 2 * n - 1 do bs[bsp + i] := 0
+      bsp := bsp + 2 * n
+      kbase := ksp
+      pending := scond[s]
+      if match(spat[s], arg, 0) then found := true
+      else begin
+        bsp := bp
+        bp := savebp
+        s := snext[s]
+      end
+    end
+    kbase := kb; pending := pend
+    if not found then begin
+      prints("\n*** REFAL: RECOGNITION IMPOSSIBLE: <")
+      prints(wname[f]); putc(' ')
+      lastsym := false
+      printexpr(arg)
+      prints(">\n")
+      exit(9)
+    end
+    t := sres[s]
+    last := t
+    while last <> 0 and nxt(last) <> 0 do last := nxt(last)
+    if last = 0 or kind(last) <> K_CALL then begin
+      r := build(t)
+      bsp := bp
+      bp := savebp
+      return r
+    end
+    -- the result ends with a call: build what comes before it and the
+    -- call's argument, then let go of this level's bindings and argument
+    -- before calling, so that a recursion like s.P <F ...> holds only
+    -- its s.P while it waits
+    prefix := buildupto(t, last)
+    t := val(last)
+    if kind(t) <> K_WORD then rerror("A CALL MUST BEGIN WITH A FUNCTION NAME")
+    f := val(t)
+    handoff := build(nxt(t))
+    bsp := bp
+    bp := savebp
+    arg := 0
+    if prefix <> 0 then begin
+      r := apply(f, take())
+      q := prefix
+      while nxt(q) <> 0 do q := nxt(q)
+      setnext(q, r)
+      return prefix
+    end
+    -- nothing before it: a tail call, round again
+    arg := take()
+  until false
+end
+
+-- the argument for the next call, handed over so that no frame keeps a
+-- copy of it (the collector counts whatever the stack holds as live)
+global handoff := 0
+
+proc take()
+begin
+  var v := handoff
+  handoff := 0
+  return v
+end
+
+-- build the template up to (not including) node stop
+proc buildupto(t, stop)
+begin
+  var out[2], k, slot, q, r
+  out[0] := 0; out[1] := 0
+  while t <> stop do begin
+    k := kind(t)
+    if k <= K_NUM then begin
+      q := node(k, val(t), 0)
+      if out[0] = 0 then out[0] := q else setnext(out[1], q)
+      out[1] := q
+    end else if k = K_PAREN then begin
+      q := node(k, 0, 0)
+      if out[0] = 0 then out[0] := q else setnext(out[1], q)
+      out[1] := q
+      nv[q - NB] := build(val(t))
+    end else if k = K_CALL then copyseg(call(val(t)), 0, out)
+    else begin
+      slot := bp + 2 * val(t)
+      if bs[slot] > 0 then copyseg(bs[slot], bs[slot + 1], out)
+    end
+    t := nxt(t)
+  end
+  return out[0]
+end
+
+-- ---------------------------------------------------------------------
+--  the built-in functions
+-- ---------------------------------------------------------------------
+const B_PROUT = 1, B_PRINT = 2, B_CARD = 3, B_ADD = 4, B_SUB = 5
+const B_MUL = 6, B_DIV = 7, B_MOD = 8, B_COMPARE = 9, B_NUMB = 10
+const B_SYMB = 11, B_CHR = 12, B_ORD = 13, B_EXPLODE = 14
+const B_IMPLODE = 15, B_LENW = 16, B_BR = 17, B_DG = 18, B_CP = 19
+const B_MU = 20, B_STEP = 21, B_TYPE = 22
+
+global cardline[200], eof := false
+
+proc defb(name, code)
+begin
+  fbuiltin[intern(name)] := code
+end
+
+proc chars(s)
+begin
+  var out[2], q
+  out[0] := 0; out[1] := 0
+  for i := 1 to s[0] do begin
+    q := node(K_CHAR, s[i], 0)
+    if out[0] = 0 then out[0] := q else setnext(out[1], q)
+    out[1] := q
+  end
+  return out[0]
+end
+
+-- the number in a term: a number, or a parenthesis holding one
+proc numarg(p)
+begin
+  if p <> 0 and kind(p) = K_PAREN then p := val(p)
+  if p = 0 or kind(p) <> K_NUM then rerror("A NUMBER IS WANTED")
+  return val(p)
+end
+
+proc second(p)
+begin
+  if p = 0 then rerror("TWO ARGUMENTS ARE WANTED")
+  return nxt(p)
+end
+
+proc digitstr(n, buf)
+begin
+  var m := abs(n), d[16], k := 0
+  repeat d[k] := m mod 10; m := m / 10; k := k + 1 until m = 0
+  buf[0] := 0
+  if n < 0 then begin buf[0] := 1; buf[1] := '-' end
+  for i := k - 1 to 0 by -1 do begin
+    buf[0] := buf[0] + 1; buf[buf[0]] := '0' + d[i]
+  end
+end
+
+-- the store of Br and Dg: a list of (name) value pairs, kept as terms
+-- ((name) value) in the list `store'
+proc find_store(name)
+begin
+  var p := store, prev := 0
+  while p <> 0 do begin
+    if list_equal(val(val(p)), 0, name, 0) then return p
+    p := nxt(p)
+  end
+  return 0
+end
+
+proc builtin(b, arg)
+begin
+  var a, c, n, s[200], p, q, prev, out[2]
+  if b = B_PROUT or b = B_PRINT then begin
+    lastsym := false
+    printexpr(arg)
+    newline()
+    return b = B_PRINT -> arg, 0
+  end
+  if b = B_CARD then begin
+    if eof or not readline(cardline, 199) then begin
+      eof := true
+      return node(K_NUM, 0, 0)
+    end
+    return chars(cardline)
+  end
+  if b >= B_ADD and b <= B_MOD then begin
+    a := numarg(arg)
+    n := numarg(second(arg))
+    if (b = B_DIV or b = B_MOD) and n = 0 then rerror("DIVISION BY ZERO")
+    return node(K_NUM, b = B_ADD -> a + n, b = B_SUB -> a - n,
+                b = B_MUL -> a * n, b = B_DIV -> a / n, a mod n, 0)
+  end
+  if b = B_COMPARE then begin
+    a := numarg(arg)
+    n := numarg(second(arg))
+    sign a - n of
+      - : c := '-'
+      0 : c := '0'
+      + : c := '+'
+    end
+    return node(K_CHAR, c, 0)
+  end
+  if b = B_NUMB then begin
+    n := 0; c := 1; p := arg
+    if p <> 0 and kind(p) = K_CHAR and val(p) = '-' then begin c := -1; p := nxt(p) end
+    while p <> 0 and kind(p) = K_CHAR and val(p) >= '0' and val(p) <= '9' do begin
+      n := n * 10 + val(p) - '0'
+      p := nxt(p)
+    end
+    return node(K_NUM, c * n, 0)
+  end
+  if b = B_SYMB then begin
+    digitstr(numarg(arg), s)
+    return chars(s)
+  end
+  if b = B_CHR or b = B_ORD then begin
+    out[0] := 0; out[1] := 0
+    p := arg
+    while p <> 0 do begin
+      if b = B_CHR and kind(p) = K_NUM then q := node(K_CHAR, val(p), 0)
+      else if b = B_ORD and kind(p) = K_CHAR then q := node(K_NUM, val(p), 0)
+      else q := node(kind(p), val(p), 0)
+      if out[0] = 0 then out[0] := q else setnext(out[1], q)
+      out[1] := q
+      p := nxt(p)
+    end
+    return out[0]
+  end
+  if b = B_EXPLODE then begin
+    if arg = 0 or kind(arg) <> K_WORD then rerror("EXPLODE WANTS A WORD")
+    return chars(wname[val(arg)])
+  end
+  if b = B_IMPLODE then begin
+    s[0] := 0; p := arg
+    while p <> 0 and kind(p) = K_CHAR and s[0] < 199 do begin
+      s[0] := s[0] + 1; s[s[0]] := val(p); p := nxt(p)
+    end
+    q := node(K_WORD, intern(s), 0)
+    setnext(q, p)
+    return q
+  end
+  if b = B_LENW then begin
+    n := 0; p := arg
+    while p <> 0 do begin n := n + 1; p := nxt(p) end
+    return node(K_NUM, n, arg)
+  end
+  if b = B_TYPE then begin
+    -- 'L' letter, 'D' digit, 'W' word, 'N' number, 'B' bracket,
+    -- 'O' other character, '*' empty; followed by the argument
+    if arg = 0 then c := '*'
+    else if kind(arg) = K_WORD then c := 'W'
+    else if kind(arg) = K_NUM then c := 'N'
+    else if kind(arg) = K_PAREN then c := 'B'
+    else begin
+      c := val(arg)
+      c := (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') -> 'L',
+           c >= '0' and c <= '9' -> 'D', 'O'
+    end
+    return node(K_CHAR, c, arg)
+  end
+  if b = B_BR then begin
+    -- <Br e.name '=' e.value>
+    p := arg; prev := 0
+    while p <> 0 and not (kind(p) = K_CHAR and val(p) = '=') do begin
+      prev := p; p := nxt(p)
+    end
+    if p = 0 then rerror("BR WANTS NAME = VALUE")
+    -- the name, copied into a bracket; the value after it
+    out[0] := 0; out[1] := 0
+    copyseg(arg, p, out)
+    q := node(K_PAREN, out[0], nxt(p))
+    q := node(K_PAREN, q, store)
+    store := q
+    return 0
+  end
+  if b = B_DG or b = B_CP then begin
+    p := store; prev := 0
+    while p <> 0 do begin
+      if list_equal(val(val(p)), 0, arg, 0) then begin
+        q := nxt(val(p))
+        if b = B_DG then begin
+          if prev = 0 then store := nxt(p) else setnext(prev, nxt(p))
+        end
+        out[0] := 0; out[1] := 0
+        copyseg(q, 0, out)
+        return out[0]
+      end
+      prev := p
+      p := nxt(p)
+    end
+    return 0
+  end
+  if b = B_MU then begin
+    if arg = 0 or kind(arg) <> K_WORD then rerror("MU WANTS A FUNCTION NAME")
+    return apply(val(arg), nxt(arg))
+  end
+  if b = B_STEP then return node(K_NUM, steps, 0)
+  rerror("UNKNOWN BUILT-IN")
+end
+
+-- ---------------------------------------------------------------------
+--  the reader: Refal-5 syntax, from the cards
+-- ---------------------------------------------------------------------
+global ch := 10, line := 0, atline := true
+global tk, tval, tstr[200]             -- the token: kind, value, text
+const T_EOF = 0, T_WORD = 1, T_NUM = 2, T_STR = 3, T_VAR = 4, T_PUNCT = 5
+const T_ENTRY = 6
+
+proc nextch()
+begin
+  if ch = 10 then begin line := line + 1; atline := true end
+  else atline := false
+  ch := getc()
+  -- a line beginning with * is a comment
+  while atline and ch = '*' do begin
+    while ch <> 10 and ch >= 0 do ch := getc()
+    if ch < 0 then return 0
+    line := line + 1
+    ch := getc()
+  end
+end
+
+proc synerr(msg)
+begin
+  prints("\n*** REFAL SYNTAX ERROR, LINE "); print(line); prints(": ")
+  prints(msg); newline()
+  exit(9)
+end
+
+proc isletter(c) = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
+proc isdigit(c) = c >= '0' and c <= '9'
+proc isidch(c) = isletter(c) or isdigit(c) or c = '_' or c = '-'
+
+proc gettoken()
+begin
+  var q
+  repeat
+    while ch = ' ' or ch = 10 or ch = 9 or ch = 13 do nextch()
+    if ch = '/' then begin
+      nextch()
+      if ch <> '*' then synerr("/ ALONE")
+      nextch()
+      repeat
+        while ch <> '*' and ch >= 0 do nextch()
+        if ch < 0 then synerr("UNFINISHED COMMENT")
+        nextch()
+      until ch = '/'
+      nextch()
+    end else break
+  until false
+  if ch < 0 then begin tk := T_EOF; return 0 end
+  if ch = '$' then begin
+    nextch(); tstr[0] := 0
+    while isletter(ch) do begin tstr[0] := tstr[0] + 1; tstr[tstr[0]] := ch; nextch() end
+    if streq(tstr, "ENTRY") then begin tk := T_ENTRY; return 0 end
+    -- $EXTERN and the like are accepted and ignored, to the semicolon
+    while ch <> ';' and ch >= 0 do nextch()
+    nextch()
+    return gettoken()
+  end
+  if isdigit(ch) then begin
+    tval := 0
+    while isdigit(ch) do begin tval := tval * 10 + ch - '0'; nextch() end
+    tk := T_NUM
+    return 0
+  end
+  if isletter(ch) then begin
+    tstr[0] := 0
+    while isidch(ch) or ch = '.' do begin
+      if ch = '.' then begin
+        -- s.X, t.X, e.X: a variable
+        if tstr[0] = 1 and (tstr[1] = 's' or tstr[1] = 't' or tstr[1] = 'e') then begin
+          tval := tstr[1]
+          nextch()
+          tstr[0] := 0
+          while isidch(ch) do begin tstr[0] := tstr[0] + 1; tstr[tstr[0]] := ch; nextch() end
+          if tstr[0] = 0 then synerr("A VARIABLE NEEDS A NAME")
+          tk := T_VAR
+          return 0
+        end
+        break
+      end
+      tstr[0] := tstr[0] + 1; tstr[tstr[0]] := ch
+      nextch()
+    end
+    tk := T_WORD
+    return 0
+  end
+  if ch = 39 or ch = '"' then begin
+    -- a string of characters, or "a compound symbol"
+    q := ch
+    nextch()
+    tstr[0] := 0
+    while ch <> q do begin
+      if ch < 0 or ch = 10 then synerr("UNFINISHED STRING")
+      if ch = 92 then begin
+        nextch()
+        ch := ch = 'n' -> 10, ch = 't' -> 9, ch
+      end
+      tstr[0] := tstr[0] + 1; tstr[tstr[0]] := ch
+      nextch()
+    end
+    nextch()
+    tk := q = '"' -> T_WORD, T_STR
+    return 0
+  end
+  tk := T_PUNCT
+  tval := ch
+  nextch()
+end
+
+-- the variables of the sentence being read
+global vname[MAXVARS], vtype[MAXVARS], nvars, vpool[1200], vfree
+
+proc varslot(t, name, create)
+begin
+  var p
+  for i := 0 to nvars - 1 do
+    if vtype[i] = t and streq(vname[i], name) then return i
+  if not create then synerr("A VARIABLE IN THE RESULT THAT THE PATTERN DID NOT BIND")
+  if nvars >= MAXVARS then synerr("TOO MANY VARIABLES IN ONE SENTENCE")
+  p := vpool + vfree
+  for i := 0 to name[0] do p[i] := name[i]
+  vfree := vfree + name[0] + 1
+  vname[nvars] := p
+  vtype[nvars] := t
+  nvars := nvars + 1
+  return nvars - 1
+end
+
+-- an expression up to one of the stop characters; a pattern may bind
+-- new variables, a result may call functions
+proc readexpr(pattern)
+begin
+  var head := 0, tail := 0, q, k, inner
+  repeat
+    q := 0
+    if tk = T_PUNCT and (tval = '=' or tval = ';' or tval = ',' or
+                         tval = ':' or tval = ')' or tval = '>' or
+                         tval = '}') then break
+    if tk = T_EOF then synerr("UNEXPECTED END OF THE PROGRAM")
+    if tk = T_WORD then begin q := pnode(K_WORD, intern(tstr)); gettoken() end
+    else if tk = T_NUM then begin q := pnode(K_NUM, tval); gettoken() end
+    else if tk = T_VAR then begin
+      k := tval = 's' -> K_SVAR, tval = 't' -> K_TVAR, K_EVAR
+      q := pnode(k, varslot(k, tstr, pattern))
+      gettoken()
+    end else if tk = T_STR then begin
+      for i := 1 to tstr[0] do begin
+        q := pnode(K_CHAR, tstr[i])
+        if head = 0 then head := q else setnext(tail, q)
+        tail := q
+      end
+      q := 0
+      gettoken()
+    end else if tval = '(' then begin
+      gettoken()
+      inner := readexpr(pattern)
+      if not (tk = T_PUNCT and tval = ')') then synerr("A ( WITHOUT ITS )")
+      gettoken()
+      q := pnode(K_PAREN, inner)
+    end else if tval = '<' then begin
+      if pattern then synerr("A CALL IN A PATTERN")
+      gettoken()
+      if tk <> T_WORD then synerr("A CALL MUST NAME A FUNCTION")
+      inner := readexpr(false)
+      if not (tk = T_PUNCT and tval = '>') then synerr("A < WITHOUT ITS >")
+      gettoken()
+      q := pnode(K_CALL, inner)
+    end else begin
+      tstr[0] := 1; tstr[1] := tval
+      synerr("UNEXPECTED CHARACTER")
+    end
+    if q <> 0 then begin
+      if head = 0 then head := q else setnext(tail, q)
+      tail := q
+    end
+  until false
+  return head
+end
+
+global entry := -1
+
+proc readprogram()
+begin
+  var f, isentry, s, last, c, lastc
+  nextch()
+  gettoken()
+  while tk <> T_EOF do begin
+    isentry := false
+    if tk = T_ENTRY then begin isentry := true; gettoken() end
+    if tk <> T_WORD then synerr("A FUNCTION NAME IS WANTED")
+    f := intern(tstr)
+    if fsent[f] <> 0 or fbuiltin[f] then synerr("A FUNCTION DEFINED TWICE")
+    if isentry and entry < 0 then entry := f
+    gettoken()
+    if not (tk = T_PUNCT and tval = '{') then synerr("{ IS WANTED")
+    gettoken()
+    last := 0
+    while not (tk = T_PUNCT and tval = '}') do begin
+      if nsent >= MAXSENT then synerr("TOO MANY SENTENCES")
+      s := nsent; nsent := nsent + 1
+      nvars := 0; vfree := 0
+      spat[s] := readexpr(true)
+      scond[s] := 0; lastc := 0
+      while tk = T_PUNCT and tval = ',' do begin
+        gettoken()
+        if ncond >= MAXCOND then synerr("TOO MANY CONDITIONS")
+        c := ncond; ncond := ncond + 1
+        cexpr[c] := readexpr(false)
+        if not (tk = T_PUNCT and tval = ':') then synerr(": IS WANTED")
+        gettoken()
+        cpat[c] := readexpr(true)
+        cnext[c] := 0
+        if lastc = 0 then scond[s] := c else cnext[lastc] := c
+        lastc := c
+      end
+      if not (tk = T_PUNCT and tval = '=') then synerr("= IS WANTED")
+      gettoken()
+      sres[s] := readexpr(false)
+      snvars[s] := nvars
+      snext[s] := 0
+      if last = 0 then fsent[f] := s else snext[last] := s
+      last := s
+      if tk = T_PUNCT and tval = ';' then gettoken()
+      else if not (tk = T_PUNCT and tval = '}') then synerr("; OR } IS WANTED")
+    end
+    gettoken()
+  end
+end
+
+proc main()
+begin
+  var go, t0
+  defb("Prout", B_PROUT); defb("Print", B_PRINT); defb("Card", B_CARD)
+  defb("Add", B_ADD); defb("Sub", B_SUB); defb("Mul", B_MUL)
+  defb("Div", B_DIV); defb("Mod", B_MOD); defb("Compare", B_COMPARE)
+  defb("Numb", B_NUMB); defb("Symb", B_SYMB); defb("Chr", B_CHR)
+  defb("Ord", B_ORD); defb("Explode", B_EXPLODE); defb("Implode", B_IMPLODE)
+  defb("Lenw", B_LENW); defb("Br", B_BR); defb("Dg", B_DG); defb("Cp", B_CP)
+  defb("Mu", B_MU); defb("Step", B_STEP); defb("Type", B_TYPE)
+  readprogram()
+  -- the free list: every node above the program's
+  for i := NODES - 1 to ptop by -1 do begin
+    nn[i] := freelist; freelist := NB + i
+  end
+  nfree := NODES - ptop
+  go := intern("Go")
+  if fsent[go] = 0 then begin
+    if entry < 0 then rerror("NO $ENTRY FUNCTION, AND NO Go")
+    go := entry
+  end
+  t0 := clock()
+  apply(go, 0)
+  prints("\n*** REFAL: "); print(steps); prints(" steps, ")
+  print(ngc); prints(" collections, ")
+  printfix((clock() - t0) / 500000, 1); prints(" s\n")
+  return 0
+end
