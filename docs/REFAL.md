@@ -117,8 +117,15 @@ A classical Refal machine keeps the whole computation in one "view field"
 and needs no stack. This interpreter recurses where results nest calls
 inside other terms, so such nesting is limited to about 2,000 levels.
 Beyond that it stops with "RECURSION TOO DEEP", where Refal-5 would go
-on. Loops written as accumulating tail calls have no limit. The
-interpreter runs about a thousand Refal steps a second of Duwamish time.
+on. Loops written as accumulating tail calls have no limit.
+
+Copying has a cost too. Data here are never changed in place, so a
+variable written anywhere but at the end of a result is copied. A
+function that grows an accumulator, such as the quicksort's partition
+`(e.L s.X)`, copies the whole accumulator at every step. Refal-5 relinks
+in place instead. The interpreter runs about a thousand simple Refal steps
+a second of Duwamish time, fewer where accumulators grow: sorting 200
+numbers takes about 11,000 steps and a minute and a half.
 
 **A bug worth recording.** In SALISH, 0 is *unknown*, not false. The
 collector's first version tested its mark bits with `if not nmark[i]`.
