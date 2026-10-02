@@ -26,7 +26,7 @@ This repository contains the whole machine, and software that runs on it:
 | **SALISH/O** | the optimising compiler: registers allocated by usage counts, index-register addressing, loop rotation, a peephole pass |
 | **SALISH/S** | the SALISH compiler written in SALISH, optimiser included: it compiles itself on the Duwamish, card for card identical to the satellite's compilers, and builds a faster copy of itself |
 | **TRILISP** | a LISP 1.5-style interpreter written in SALISH, with one-trit type tags, tail calls and garbage collection |
-| **Refal** | Turchin's pattern-matching language (Moscow, 1966) in the manner of Refal-5, interpreted in SALISH: e-variables that backtrack, conditions, the store, tail calls and garbage collection; the ground for mixed computation |
+| **Refal** | Turchin's pattern-matching language (Moscow, 1966) in the manner of Refal-5, interpreted in SALISH: e-variables that backtrack, conditions, the store, tail calls and garbage collection; with a specialiser that turns an interpreter into a compiler, by mixed computation (Futamura's first projection) |
 | **TRI-TRAN** | the Duwamish FORTRAN (1966): fixed-form cards, FORMAT, COMMON; three-valued LOGICAL; the arithmetic IF as one three-way jump; DO indices in index registers, as in FORTRAN I |
 | **WHALE** | the Woodworth Heuristic Associative Learning Evaluator: SALISH with an associative store, as SAIL was ALGOL with LEAP. Facts are triples with weights of evidence in decibans, true, false or unknown by Wald's test |
 
@@ -57,6 +57,7 @@ python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, 3-way sort
 python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
 python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
 python -m duwamish run jobs/refal.job --model 90       # Turchin's Refal: patterns, a sieve, a three-way quicksort (ten seconds)
+python -m duwamish run jobs/mix.job --model 90         # mixed computation in Refal: an interpreter specialised into a compiler (twenty seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -267,6 +268,12 @@ shows, and what it does not.
   wanted from how long it lay idle before, takes 295 faults. Least
   recently used takes 362, first-in first-out 398 and random 349.
   Belady's optimum, computed afterwards, is 214.
+* `refal/mix.ref`: mixed computation, in Turchin's Refal. A specialiser
+  is given an interpreter for Turing machines, written as a flowchart,
+  and one Turing-machine program. It does all the interpreter's work that
+  depends only on the program, and writes out the rest: three blocks,
+  the program compiled (Futamura's first projection). The compiled
+  program gives the same answers in an eighth of the steps.
 
 **The AI of the period, in TRILISP** (`programs/ai/`)
 * `eliza.lsp`: ELIZA and the DOCTOR script. It reproduces the

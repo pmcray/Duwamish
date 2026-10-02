@@ -28,6 +28,7 @@ python -m duwamish run jobs/saki.job --model 90        # Pask's SAKI, the teachi
 python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, ternary trees, radix 3 (half a minute)
 python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
 python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
+python -m duwamish run jobs/mix.job --model 90         # mixed computation in Refal: an interpreter becomes a compiler (twenty seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi (twenty seconds)
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -1083,6 +1084,60 @@ with 9 faults in three frames and 10 in four (tested in
 `tests/test_devices.py`). Nor does it show Atlas's real sizes: 512-word
 pages, 32 of them in core, and a drum several times faster than this
 one.
+
+## Programs about programs
+
+### 32. Mixed computation: the interpreter becomes a compiler — `programs/refal/mix.ref` (the `mix` job)
+
+The tower of §16 pays for every level: each interpreter costs a hundred
+times the level below it. Mixed computation asks whether a level can be
+*removed* once its subject is known. In the 1970s Ershov at Novosibirsk,
+Futamura in Tokyo and Turchin in Moscow each came to the same answer.
+Take a program, and the part of its input that is known now. Do the work
+that depends only on that part, and write out a residual program for the
+rest. When the program is an interpreter and the known part is the program
+it interprets, the residual program is that program **compiled**:
+Futamura's first projection.
+
+In `mix.ref`, written in Turchin's Refal (`docs/REFAL.md`), there are
+three pieces: a flowchart language, its interpreter `Run`, and a
+specialiser `Mix` that finds which variables are known, does their work,
+and writes out the rest. Its subject is a Turing-machine interpreter, 13
+blocks of flowchart, specialised to a four-instruction Turing machine
+that changes the first 0 on its tape to 1. The output is three blocks:
+
+```
+   program (R)
+     B1: L := (); if Eq(0, First(R)) then B2 else B3
+     B2: R := Cons(1, Rest(R)); return Join(L, R)
+     B3: L := Cons(First(R), L); R := Rest(R); if Eq(0, First(R)) then B2 else B3
+```
+
+Nothing of the interpreter is left in it: no fetching, no decoding, no
+search for a jump's target. The Turing machine's loop (`2 Goto 0`) has
+become the residual program's loop, B3 to B3. That loop exists because
+`Mix` makes one residual block for each pair of (place in the
+interpreter, what is known there), and jumps back to a block when the
+same pair comes round again. On the same tapes, the compiled program
+gives the same answers in an eighth of the Refal steps: 1,116 against
+150, and 2,268 against 288.
+
+This is Hofstadter's levels of description, done as a computation.
+"Interpreted Turing machine" and "Turing machine" are two descriptions
+of the same process. `Mix` turns the first into the second mechanically,
+by doing ahead of time everything the lower level would have done the
+same way every time. Ershov called the ideal "the program that knows what
+it is for".
+
+**What it does not show:** the second and third projections, where `Mix`
+specialises *itself*: to the interpreter, which makes a compiler, and to
+itself, which makes a compiler generator. That needs `Mix` written in the
+language it specialises, so that it can be its own subject. It is the
+strange loop of §17 done again for specialisation, and Jones's group
+first made it work in the mid-1980s. Nor is this Turchin's
+supercompiler, which drives Refal itself and finds the residual
+program's loops by generalising configurations, not by the binding
+times fixed in advance that `Mix` uses.
 
 ---
 

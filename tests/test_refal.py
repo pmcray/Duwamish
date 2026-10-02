@@ -113,5 +113,37 @@ Loop { 0 s.A = s.A; s.N s.A = <Loop <Sub s.N 1> <Add s.A 1>>; }
         self.assertIn("193 197 199", out)
 
 
+class TestMixedComputation(unittest.TestCase):
+    def test_first_projection(self):
+        with open(os.path.join(ROOT, "jobs", "mix.job")) as f:
+            deck = f.read().replace("../", ROOT + "/")
+        out = run_job(deck).jobs[0].steps[0].output
+        # the power program unrolled for n = 5
+        self.assertIn("     B1: P := 1;" + " P := Mul(P, X);" * 5 + " return P", out)
+        # the interpreter specialised to the Turing machine: its loop
+        # has become the residual program's own loop, B3 to B3
+        for line in (
+                "     B1: L := (); if Eq(0, First(R)) then B2 else B3",
+                "     B2: R := Cons(1, Rest(R)); return Join(L, R)",
+                "     B3: L := Cons(First(R), L); R := Rest(R); "
+                "if Eq(0, First(R)) then B2 else B3"):
+            self.assertIn(line, out)
+        steps = {}
+        for l in out.splitlines():
+            if "->" in l:
+                label, rest = l.split("->")
+                value, n = rest.rsplit(None, 2)[0:2]
+                steps[" ".join(label.split())] = (value.strip(), int(n))
+        self.assertEqual(steps["Run (power, x = 3, n = 5)"][0], "243")
+        self.assertEqual(steps["Run (residual, x = 3)"][0], "243")
+        for tape, want in (("1 1 0 1 0 1", "(1 1 1 1 0 1)"),
+                           ("1 1 1 1 1 0", "(1 1 1 1 1 1)")):
+            interp = steps["interpreted, tape " + tape]
+            comp = steps["compiled, tape " + tape]
+            self.assertEqual(interp[0], want)
+            self.assertEqual(comp[0], want)
+            self.assertGreater(interp[1], 5 * comp[1])
+
+
 if __name__ == "__main__":
     unittest.main()

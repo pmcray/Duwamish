@@ -1,0 +1,4 @@
+//JOB MIX                        -- mixed computation, and Futamura's first projection
+//EXEC REFAL
+//DATA FROM=../programs/refal/mix.ref
+//END

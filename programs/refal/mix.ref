@@ -1,0 +1,342 @@
+* =====================================================================
+*  MIXED COMPUTATION, IN REFAL
+*
+*  A program and the part of its data known in advance: mixed
+*  computation does the work that depends only on the known part, and
+*  writes out a residual program that waits for the rest.  Ershov's
+*  school at Novosibirsk called it mixed computation; Futamura (1971)
+*  and Turchin (supercompilation) reached the same idea.  Applied to an
+*  interpreter and a program, it compiles the program: Futamura's first
+*  projection.
+*
+*  The object language is a flowchart language of the kind Ershov's
+*  school studied as program schemes:
+*
+*    (Program (params) blocks)
+*    block:   (label (assignments) jump)
+*    assign:  (var expr)
+*    jump:    (Goto label) | (If expr label label) | (Return expr)
+*    expr:    var | number | (Const value) | (op expr ...)
+*    ops:     Add Sub Mul Eq Hd Tl Cons First Rest Tail Join
+*
+*  Values are numbers, words and lists (parenthesised).  Run interprets
+*  a program; Mix specialises one to the values of its static variables.
+* =====================================================================
+
+$ENTRY Go {
+  = <Prout 'MIXED COMPUTATION IN REFAL'>
+    <Prout>
+    <Prout '1. x to the power n, with n known: 5'>
+    <Prout>
+    <Show <Power>>
+    <Prout '   specialised to n = 5, by Mix:'>
+    <Prout>
+    <Show <Mix <Power> ((N 5))>>
+    <Measure ('   Run (power, x = 3, n = 5)    ') Run <Power> 3 5>
+    <Measure ('   Run (residual, x = 3)        ') Run <Mix <Power> ((N 5))> 3>
+    <Prout>
+    <Prout '2. The first projection: a Turing-machine interpreter, written'>
+    <Prout '   as a flowchart, specialised to one Turing-machine program'>
+    <Prout>
+    <Show <TMint>>
+    <Prout '   The Turing machine: change the first 0 on the tape to 1'>
+    <Prout>
+    <ShowTM <TMprog>>
+    <Prout>
+    <Prout '   Compiled, by specialising the interpreter to it:'>
+    <Prout>
+    <Show <Mix <TMint> ((Q <TMprog>))>>
+    <Measure ('   interpreted, tape 1 1 0 1 0 1') Run <TMint> <TMprog> (1 1 0 1 0 1)>
+    <Measure ('   compiled,    tape 1 1 0 1 0 1') Run <Mix <TMint> ((Q <TMprog>))> (1 1 0 1 0 1)>
+    <Measure ('   interpreted, tape 1 1 1 1 1 0') Run <TMint> <TMprog> (1 1 1 1 1 0)>
+    <Measure ('   compiled,    tape 1 1 1 1 1 0') Run <Mix <TMint> ((Q <TMprog>))> (1 1 1 1 1 0)>;
+}
+
+* <Measure (label) F args>: the value of <F args>, and the Refal steps
+* it took (the arguments are evaluated before Measure is called, so
+* only F's own work is counted)
+Measure { (e.Label) s.F e.Args = <Measure1 (e.Label) <Step> (<Mu s.F e.Args>) <Step>>; }
+Measure1 {
+  (e.Label) s.T0 (e.V) s.T1
+    = <Prout e.Label '  ->  ' <Words e.V> '   ' <Symb <Sub s.T1 s.T0>> ' steps'>;
+}
+
+* ---------------------------------------------------------------------
+*  the programs
+* ---------------------------------------------------------------------
+Power {
+  = (Program (X N)
+      (Init ((P 1)) (Goto Test))
+      (Test () (If (Eq N 0) Done Loop))
+      (Loop ((P (Mul P X)) (N (Sub N 1))) (Goto Test))
+      (Done () (Return P)));
+}
+
+* the Turing machine of Jones, Gomard and Sestoft's book: instructions
+* (label Right) (label Left) (label Write s) (label Goto l) (label If s l)
+TMprog { = ((0 If 0 3) (1 Right) (2 Goto 0) (3 Write 1)); }
+
+* its interpreter, as a flowchart: Q the program, R and L the tape to
+* the right of the head (the head on its first symbol) and to the left,
+* L nearest first; Join puts the tape back together at the end
+TMint {
+  = (Program (Q R)
+      (Init ((Qtail Q) (L (Const ()))) (Goto Loop))
+      (Loop () (If (Eq Qtail (Const ())) Stop Cont))
+      (Cont ((Instr (Hd Qtail)) (Qtail (Tl Qtail)) (Oper (Hd (Tl Instr))))
+            (If (Eq Oper (Const Right)) DoRight C1))
+      (C1 () (If (Eq Oper (Const Left)) DoLeft C2))
+      (C2 () (If (Eq Oper (Const Write)) DoWrite C3))
+      (C3 () (If (Eq Oper (Const Goto)) DoGoto DoIf))
+      (DoRight ((L (Cons (First R) L)) (R (Rest R))) (Goto Loop))
+      (DoLeft ((R (Cons (First L) R)) (L (Rest L))) (Goto Loop))
+      (DoWrite ((Sym (Hd (Tl (Tl Instr)))) (R (Cons Sym (Rest R)))) (Goto Loop))
+      (DoGoto ((Next (Hd (Tl (Tl Instr)))) (Qtail (Tail Next Q))) (Goto Loop))
+      (DoIf ((Sym (Hd (Tl (Tl Instr)))) (Next (Hd (Tl (Tl (Tl Instr))))))
+            (If (Eq Sym (First R)) Jump Loop))
+      (Jump ((Qtail (Tail Next Q))) (Goto Loop))
+      (Stop () (Return (Join L R))));
+}
+
+* ---------------------------------------------------------------------
+*  Run: the interpreter of the flowchart language
+* ---------------------------------------------------------------------
+Run {
+  (Program (e.Params) (s.L e.B) e.Blocks) e.Args
+    = <Exec s.L (<Bind (e.Params) e.Args>) (s.L e.B) e.Blocks>;
+}
+
+Bind { (s.V e.Vs) t.A e.As = (s.V t.A) <Bind (e.Vs) e.As>; () = ; }
+
+Exec {
+  s.L (e.Env) e.Blocks, <Block s.L e.Blocks> : ((e.Assigns) t.Jump)
+    = <Jump t.Jump (<Assign (e.Assigns) (e.Env)>) e.Blocks>;
+}
+
+Block { s.L e.1 (s.L t.As t.J) e.2 = (t.As t.J); }
+
+Assign {
+  () (e.Env) = e.Env;
+  ((s.V t.E) e.Rest) (e.Env) = <Assign (e.Rest) <Set s.V <Ev t.E (e.Env)> (e.Env)>>;
+}
+
+Jump {
+  (Goto s.L) (e.Env) e.Blocks = <Exec s.L (e.Env) e.Blocks>;
+  (If t.E s.L1 s.L2) (e.Env) e.Blocks
+    = <Exec <Choose <Ev t.E (e.Env)> s.L1 s.L2> (e.Env) e.Blocks>;
+  (Return t.E) (e.Env) e.Blocks = <Ev t.E (e.Env)>;
+}
+
+Choose { True s.L1 s.L2 = s.L1; False s.L1 s.L2 = s.L2; }
+
+* the value of an expression
+Ev {
+  (Const t.V) (e.Env) = t.V;
+  (s.Op e.Args) (e.Env) = <Op s.Op <EvArgs (e.Args) (e.Env)>>;
+  s.X (e.Env), <Type s.X> : 'N' e.1 = s.X;
+  s.X (e.Env) = <Lookup s.X e.Env>;
+}
+EvArgs { (t.A e.As) (e.Env) = <Ev t.A (e.Env)> <EvArgs (e.As) (e.Env)>; () (e.Env) = ; }
+
+Lookup {
+  s.V e.1 (s.V t.Val) e.2 = t.Val;
+  s.V e.1 = <Prout '*** unbound variable ' s.V>;
+}
+Set {
+  s.V t.Val (e.1 (s.V t.Old) e.2) = (e.1 (s.V t.Val) e.2);
+  s.V t.Val (e.1) = (e.1 (s.V t.Val));
+}
+
+Op {
+  Add s.A s.B = <Add s.A s.B>;
+  Sub s.A s.B = <Sub s.A s.B>;
+  Mul s.A s.B = <Mul s.A s.B>;
+  Eq t.A t.A = True;
+  Eq t.A t.B = False;
+  Hd (t.X e.R) = t.X;
+  Tl (t.X e.R) = (e.R);
+  Cons t.X (e.R) = (t.X e.R);
+  First (t.X e.R) = t.X;
+  First () = B;
+  Rest (t.X e.R) = (e.R);
+  Rest () = ();
+  Tail s.L (e.1 (s.L e.I) e.2) = ((s.L e.I) e.2);
+  Join (t.X e.L) (e.R) = <Op Join (e.L) (t.X e.R)>;
+  Join () (e.R) = (e.R);
+}
+
+* ---------------------------------------------------------------------
+*  Mix: the specialiser
+*
+*  The static variables are those given values, and those computed
+*  only from static ones (a binding-time analysis finds them); the rest
+*  are dynamic.
+*  Mix drives each block from a point of the program with a store of
+*  static values: static assignments are done, dynamic ones written out
+*  with what is known put in; a jump on a known condition, or a Goto, is
+*  followed at once; a jump on an unknown condition is written out, to
+*  two new residual blocks, one for each (label, static store) -- made
+*  once each, however often they are reached (polyvariant).
+* ---------------------------------------------------------------------
+Mix {
+  (Program (e.Params) e.Blocks) (e.Static), e.Blocks : (s.L e.B) e.1
+    = <Br 'table' '='> <Br 'queue' '='> <Br 'count' '=' 0>
+      <Mix1 (<Dynamic (e.Params) e.Static>) <Name s.L (e.Static)> e.Blocks>;
+}
+Mix1 {
+  (e.DParams) s.Start e.Blocks
+    = <Mix2 (e.DParams) (<BTA (e.DParams) e.Blocks>) e.Blocks>;
+}
+Mix2 {
+  (e.DParams) (e.D) e.Blocks
+    = (Program (e.DParams) <Drive (e.D) e.Blocks>) <Forget <Dg 'table'> <Dg 'count'>>;
+}
+Forget { e.1 = ; }
+
+* the parameters with no static value
+Dynamic {
+  (s.V e.Vs) e.1 (s.V t.X) e.2 = <Dynamic (e.Vs) e.1 (s.V t.X) e.2>;
+  (s.V e.Vs) e.Static = s.V <Dynamic (e.Vs) e.Static>;
+  () e.Static = ;
+}
+
+* binding times: a variable is dynamic if it is a parameter with no
+* static value, or is ever given a value that depends on a dynamic one.
+* Sweep the program until nothing more becomes dynamic.
+BTA { (e.D) e.Blocks = <BTA1 (e.D) (<Sweep (e.D) e.Blocks>) e.Blocks>; }
+BTA1 {
+  (e.D) (e.D) e.Blocks = e.D;
+  (e.D) (e.D1) e.Blocks = <BTA (e.D1) e.Blocks>;
+}
+Sweep {
+  (e.D) (s.L (e.As) t.J) e.Rest = <Sweep (<SweepA (e.D) e.As>) e.Rest>;
+  (e.D) = e.D;
+}
+SweepA {
+  (e.D) (s.V t.E) e.Rest, e.D : e.1 s.V e.2 = <SweepA (e.D) e.Rest>;
+  (e.D) (s.V t.E) e.Rest, <Static t.E (e.D)> : False = <SweepA (e.D s.V) e.Rest>;
+  (e.D) t.A e.Rest = <SweepA (e.D) e.Rest>;
+  (e.D) = e.D;
+}
+
+* the residual label of (label, static store): made, and queued, the
+* first time it is wanted
+Name {
+  s.L (e.VS) = <Name1 s.L (e.VS) <Cp 'table'>>;
+}
+Name1 {
+  s.L (e.VS) e.1 (s.N s.L (e.VS)) e.2 = s.N;
+  s.L (e.VS) e.Table = <Name2 s.L (e.VS) <Add <Dg 'count'> 1>>;
+}
+Name2 {
+  s.L (e.VS) s.K, <Implode 'B' <Symb s.K>> : s.N
+    = <Br 'count' '=' s.K>
+      <Br 'table' '=' <Dg 'table'> (s.N s.L (e.VS))>
+      <Br 'queue' '=' <Dg 'queue'> (s.N s.L (e.VS))>
+      s.N;
+}
+
+* make residual blocks until the queue is empty
+Drive {
+  (e.D) e.Blocks = <Drive1 (e.D) (<Dg 'queue'>) e.Blocks>;
+}
+Drive1 {
+  (e.D) () e.Blocks = ;
+  (e.D) ((s.N s.L (e.VS)) e.Rest) e.Blocks
+    = <Br 'queue' '=' e.Rest>
+      <Block1 s.N <Spec s.L (e.VS) (e.D) () e.Blocks>>
+      <Drive (e.D) e.Blocks>;
+}
+Block1 { s.N (e.Code) t.Jump = (s.N (e.Code) t.Jump); }
+
+* drive one point: (residual code) jump
+Spec {
+  s.L (e.VS) (e.D) (e.Code) e.Blocks, <Block s.L e.Blocks> : ((e.Assigns) t.Jump)
+    = <SAssign (e.Assigns) t.Jump (e.VS) (e.D) (e.Code) e.Blocks>;
+}
+
+* a static assignment is done; a dynamic one is written out
+SAssign {
+  () t.Jump (e.VS) (e.D) (e.Code) e.Blocks
+    = <SJump t.Jump (e.VS) (e.D) (e.Code) e.Blocks>;
+  ((s.V t.E) e.Rest) t.Jump (e.VS) (e.D) (e.Code) e.Blocks, e.D : e.1 s.V e.2
+    = <SAssign (e.Rest) t.Jump (e.VS) (e.D) (e.Code (s.V <Reduce t.E (e.VS) (e.D)>)) e.Blocks>;
+  ((s.V t.E) e.Rest) t.Jump (e.VS) (e.D) (e.Code) e.Blocks
+    = <SAssign (e.Rest) t.Jump <Set s.V <Ev t.E (e.VS)> (e.VS)> (e.D) (e.Code) e.Blocks>;
+}
+
+* a known jump is followed at once; an unknown one is written out
+SJump {
+  (Goto s.L) (e.VS) (e.D) (e.Code) e.Blocks
+    = <Spec s.L (e.VS) (e.D) (e.Code) e.Blocks>;
+  (If t.E s.L1 s.L2) (e.VS) (e.D) (e.Code) e.Blocks, <Static t.E (e.D)> : True
+    = <Spec <Choose <Ev t.E (e.VS)> s.L1 s.L2> (e.VS) (e.D) (e.Code) e.Blocks>;
+  (If t.E s.L1 s.L2) (e.VS) (e.D) (e.Code) e.Blocks
+    = (e.Code) (If <Reduce t.E (e.VS) (e.D)> <Name s.L1 (e.VS)> <Name s.L2 (e.VS)>);
+  (Return t.E) (e.VS) (e.D) (e.Code) e.Blocks
+    = (e.Code) (Return <Reduce t.E (e.VS) (e.D)>);
+}
+
+* is an expression static: no dynamic variable in it?
+Static {
+  (Const t.V) (e.D) = True;
+  (s.Op e.Args) (e.D) = <AllStatic (e.Args) (e.D)>;
+  s.X (e.D), <Type s.X> : 'N' e.1 = True;
+  s.X (e.1 s.X e.2) = False;
+  s.X (e.D) = True;
+}
+AllStatic {
+  () (e.D) = True;
+  (t.A e.As) (e.D), <Static t.A (e.D)> : True = <AllStatic (e.As) (e.D)>;
+  (t.A e.As) (e.D) = False;
+}
+
+* an expression with what is known put in
+Reduce {
+  t.E (e.VS) (e.D), <Static t.E (e.D)> : True = <Lift <Ev t.E (e.VS)>>;
+  (s.Op e.Args) (e.VS) (e.D) = (s.Op <ReduceArgs (e.Args) (e.VS) (e.D)>);
+  s.X (e.VS) (e.D) = s.X;
+}
+ReduceArgs {
+  (t.A e.As) (e.VS) (e.D) = <Reduce t.A (e.VS) (e.D)> <ReduceArgs (e.As) (e.VS) (e.D)>;
+  () (e.VS) (e.D) = ;
+}
+* a value as an expression: numbers stand for themselves
+Lift { s.X, <Type s.X> : 'N' e.1 = s.X; t.V = (Const t.V); }
+
+* ---------------------------------------------------------------------
+*  printing programs
+* ---------------------------------------------------------------------
+Show {
+  (Program (e.Params) e.Blocks)
+    = <Prout '   program (' <Words e.Params> ')'> <ShowBlocks e.Blocks> <Prout>;
+}
+ShowBlocks {
+  (s.L (e.Assigns) t.Jump) e.Rest
+    = <Prout '     ' <Explode s.L> ':' <ShowAssigns e.Assigns> ' ' <ShowJump t.Jump>>
+      <ShowBlocks e.Rest>;
+  = ;
+}
+ShowAssigns { (s.V t.E) e.Rest = ' ' <Explode s.V> ' := ' <Show1 t.E> ';' <ShowAssigns e.Rest>; = ; }
+ShowJump {
+  (Goto s.L) = 'goto ' <Explode s.L>;
+  (If t.E s.L1 s.L2) = 'if ' <Show1 t.E> ' then ' <Explode s.L1> ' else ' <Explode s.L2>;
+  (Return t.E) = 'return ' <Show1 t.E>;
+}
+Show1 {
+  (Const t.V) = <Quote t.V>;
+  (s.Op e.Args) = <Explode s.Op> '(' <ShowArgs e.Args> ')';
+  s.X, <Type s.X> : 'N' e.1 = <Symb s.X>;
+  s.X = <Explode s.X>;
+  (e.L) = '(' <Words e.L> ')';
+}
+ShowArgs { t.A = <Show1 t.A>; t.A e.As = <Show1 t.A> ', ' <ShowArgs e.As>; = ; }
+Quote { (e.L) = '(' <Words e.L> ')'; s.X = <Show1 s.X>; }
+Words {
+  t.A = <Word t.A>;
+  t.A e.As = <Word t.A> ' ' <Words e.As>;
+  = ;
+}
+Word { (e.L) = '(' <Words e.L> ')'; s.X, <Type s.X> : 'N' e.1 = <Symb s.X>; s.X = <Explode s.X>; }
+ShowTM { (e.Instrs) = <ShowTM1 e.Instrs>; }
+ShowTM1 { (e.I) e.Rest = <Prout '     ' <Words e.I>> <ShowTM1 e.Rest>; = ; }
