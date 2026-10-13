@@ -1,0 +1,201 @@
+	.TITLE	CONSOLE	MiniVMS console terminal driver (OPA0:)
+	.IDENT	/V1.0/
+;
+; Polled driver for the KA630 console serial line, reached through the
+; RXCS/RXDB/TXCS/TXDB processor registers.  Characters that arrive while a
+; program is running are kept in a small type-ahead buffer, except CTRL/Y
+; and CTRL/C, which abort the program.
+;
+	.PSECT	$DATA
+CON$K_TASIZE	= 128
+CON$TYPEAHEAD:	.BLKB	CON$K_TASIZE
+CON$GL_TAIN:	.LONG	0
+CON$GL_TAOUT:	.LONG	0
+CON$GL_ABORT::	.LONG	0		; CTRL/Y seen, image not yet stopped
+CON$GL_COLUMN::	.LONG	0		; cursor column (for TAB handling)
+
+	.PSECT	$CODE
+;
+; CON$INIT -- reset driver state.
+;
+CON$INIT::
+	CLRL	CON$GL_TAIN
+	CLRL	CON$GL_TAOUT
+	CLRL	CON$GL_ABORT
+	CLRL	CON$GL_COLUMN
+	MTPR	#0,#PR$_RXCS		; no interrupts: we poll
+	MTPR	#0,#PR$_TXCS
+	RSB
+
+;
+; CON$POLL -- move any received character into the type-ahead buffer.
+; Returns R0 low bit set if CTRL/Y or CTRL/C was typed.  Called from the
+; clock interrupt as well as from kernel mode, so it runs at IPL 22.
+; Preserves all registers but R0.
+;
+CON$POLL::
+	PUSHR	#^M<R1,R2>
+	MFPR	#PR$_IPL,R2
+	MTPR	#22,#PR$_IPL
+	CLRL	R0
+10$:	MFPR	#PR$_RXCS,R1
+	BBC	#7,R1,90$		; nothing waiting
+	MFPR	#PR$_RXDB,R1
+	BICL2	#^C^XFF,R1
+	CMPB	R1,#CTRLY
+	BEQL	20$
+	CMPB	R1,#CTRLC
+	BEQL	20$
+	SUBL3	CON$GL_TAOUT,CON$GL_TAIN,R0
+	CMPL	R0,#CON$K_TASIZE-1
+	BGEQ	15$			; buffer full: drop it
+	BICL3	#^C<CON$K_TASIZE-1>,CON$GL_TAIN,R0
+	MOVB	R1,CON$TYPEAHEAD[R0]
+	INCL	CON$GL_TAIN
+15$:	CLRL	R0
+	BRB	10$
+20$:	MOVL	#1,CON$GL_ABORT		; flush type-ahead, flag the abort
+	MOVL	CON$GL_TAIN,CON$GL_TAOUT
+	MOVL	#1,R0
+90$:	MTPR	R2,#PR$_IPL
+	POPR	#^M<R1,R2>
+	RSB
+
+;
+; CON$GETC -- wait for a character; return it in R0.
+;
+CON$GETC::
+10$:	JSB	CON$POLL
+	CMPL	CON$GL_TAIN,CON$GL_TAOUT
+	BEQL	10$
+	BICL3	#^C<CON$K_TASIZE-1>,CON$GL_TAOUT,R0
+	MOVZBL	CON$TYPEAHEAD[R0],R0
+	INCL	CON$GL_TAOUT
+	BICL2	#^X80,R0		; 7-bit terminal
+	RSB
+
+;
+; CON$PUTC -- output the character in R0 (all registers preserved).
+;
+CON$PUTC::
+	PUSHL	R1
+10$:	MFPR	#PR$_TXCS,R1
+	BBC	#7,R1,10$
+	MTPR	R0,#PR$_TXDB
+	CMPB	R0,#CR
+	BNEQ	20$
+	CLRL	CON$GL_COLUMN
+	BRB	30$
+20$:	CMPB	R0,#^X20
+	BLSSU	30$
+	INCL	CON$GL_COLUMN
+30$:	MOVL	(SP)+,R1
+	RSB
+
+;
+; CON$PUTS -- output R0 bytes at (R1).  Preserves R2-R11.
+;
+CON$PUTS::
+	PUSHR	#^M<R2,R3>
+	MOVL	R0,R2
+	MOVL	R1,R3
+	BRB	20$
+10$:	MOVZBL	(R3)+,R0
+	JSB	CON$PUTC
+20$:	SOBGEQ	R2,10$
+	POPR	#^M<R2,R3>
+	RSB
+
+;
+; CON$CRLF -- output a carriage return and line feed.
+;
+CON$CRLF::
+	PUSHL	R0
+	MOVL	#CR,R0
+	JSB	CON$PUTC
+	MOVL	#LF,R0
+	JSB	CON$PUTC
+	MOVL	(SP)+,R0
+	RSB
+
+;
+; CON$GETLINE -- read a line with echo and editing.
+;	R1 = buffer, R2 = buffer size, R3 = flags (bit 0: no echo)
+; Returns R0 = number of characters (or -1 for CTRL/Z),
+;	   R1 = terminator character.
+; Editing: DELETE/BACKSPACE erase a character, CTRL/U erases the line,
+;	   CTRL/R retypes it.  RETURN ends the line.
+;
+CON$GETLINE::
+	PUSHR	#^M<R2,R3,R4,R5>
+	MOVL	R1,R4			; buffer
+	CLRL	R5			; count
+10$:	JSB	CON$GETC
+	CMPB	R0,#CR
+	BEQL	80$
+	CMPB	R0,#DEL
+	BEQL	30$
+	CMPB	R0,#BS
+	BEQL	30$
+	CMPB	R0,#CTRLU
+	BEQL	40$
+	CMPB	R0,#CTRLR
+	BEQL	50$
+	CMPB	R0,#CTRLZ
+	BEQL	70$
+	CMPB	R0,#TAB
+	BEQL	15$
+	CMPB	R0,#^X20
+	BLSSU	10$			; ignore other control characters
+15$:	CMPL	R5,R2
+	BGEQ	10$			; buffer full
+	MOVB	R0,(R4)[R5]
+	INCL	R5
+	JSB	CON$ECHO
+	BRB	10$
+30$:	TSTL	R5			; rubout
+	BEQL	10$
+	DECL	R5
+	MOVAB	CON$RUBOUT,R0
+	JSB	CON$ECHOSTR
+	BRB	10$
+40$:	CLRL	R5			; CTRL/U
+	MOVAB	CON$CTRLU,R0
+	JSB	CON$ECHOSTR
+	BRB	10$
+50$:	BLBS	R3,10$			; CTRL/R
+	JSB	CON$CRLF
+	MOVL	R5,R0
+	MOVL	R4,R1
+	JSB	CON$PUTS
+	BRB	10$
+70$:	MOVAB	CON$CTRLZ,R0		; CTRL/Z
+	JSB	CON$ECHOSTR
+	MNEGL	#1,R0
+	MOVL	#CTRLZ,R1
+	BRB	90$
+80$:	JSB	CON$CRLF
+	MOVL	R5,R0
+	MOVL	#CR,R1
+90$:	POPR	#^M<R2,R3,R4,R5>
+	RSB
+
+CON$ECHO:				; echo R0 unless R3<0> (no echo)
+	BLBS	R3,10$
+	JSB	CON$PUTC
+10$:	RSB
+
+CON$ECHOSTR:				; echo the ASCIC string at R0
+	BLBS	R3,10$
+	PUSHR	#^M<R0,R1,R2>
+	MOVZBL	(R0),R2
+	ADDL3	#1,R0,R1
+	MOVL	R2,R0
+	JSB	CON$PUTS
+	POPR	#^M<R0,R1,R2>
+10$:	RSB
+
+	.PSECT	$DATA
+CON$RUBOUT:	.ASCIC	<BS>/ /<BS>
+CON$CTRLU:	.ASCIC	<^A/^/>/U/<CR><LF>
+CON$CTRLZ:	.ASCIC	/^Z/<CR><LF>

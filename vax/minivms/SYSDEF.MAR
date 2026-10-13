@@ -1,0 +1,207 @@
+	.TITLE	SYSDEF	MiniVMS executive definitions
+	.IDENT	/V1.0/
+;
+; Hardware and executive definitions shared by the MiniVMS modules.
+; Target: KA630 processor (MicroVAX II / VAXstation II) as simulated by SIMH.
+;
+
+;
+; Internal processor registers (MTPR/MFPR)
+;
+PR$_KSP		= 0
+PR$_ESP		= 1
+PR$_SSP		= 2
+PR$_USP		= 3
+PR$_ISP		= 4
+PR$_P0BR	= 8
+PR$_P0LR	= 9
+PR$_P1BR	= 10
+PR$_P1LR	= 11
+PR$_SBR		= 12
+PR$_SLR		= 13
+PR$_PCBB	= 16
+PR$_SCBB	= 17
+PR$_IPL		= 18
+PR$_ASTLVL	= 19
+PR$_SIRR	= 20
+PR$_SISR	= 21
+PR$_ICCS	= 24
+PR$_RXCS	= 32
+PR$_RXDB	= 33
+PR$_TXCS	= 34
+PR$_TXDB	= 35
+PR$_MAPEN	= 56
+PR$_TBIA	= 57
+PR$_TBIS	= 58
+PR$_SID		= 62
+
+;
+; Processor status longword
+;
+PSL$M_IS	= ^X04000000
+PSL$V_CURMOD	= 24
+PSL$V_PRVMOD	= 22
+PSL$C_KERNEL	= 0
+PSL$C_USER	= 3
+PSL$K_USER	= ^X03C00000	; current=user, previous=user, IPL 0
+PSL$K_KERNEL	= ^X00000000	; kernel mode, IPL 0, kernel stack
+PSL$K_BOOT	= ^X041F0000	; interrupt stack, IPL 31
+
+;
+; Page table entries
+;
+PTE$M_VALID	= ^X80000000
+PTE$M_MODIFY	= ^X04000000
+PTE$K_KW	= ^X94000000	; valid, modified, kernel write
+PTE$K_UW	= ^XA4000000	; valid, modified, user write
+PTE$K_URKW	= ^XF4000000	; valid, modified, user read / kernel write
+PTE$M_PFN	= ^X001FFFFF
+
+;
+; Physical memory layout.  The kernel is linked at S0 address ^X80000000
+; and loaded at physical address 0; all of physical memory is mapped one to
+; one into S0 space.  User P0 page n lives in physical page USR$K_PFN0+n,
+; the user stack occupies the top USR$K_STKPAGES pages of memory.
+;
+MEM$K_SIZE	= ^X500000	; 5 MB (SIMH: SET CPU 5M)
+MEM$K_PAGES	= MEM$K_SIZE/512
+S0$K_BASE	= ^X80000000
+USR$K_PFN0	= ^X800		; user P0 pages start at 1 MB
+USR$K_STKPAGES	= 128		; 64 KB user stack
+USR$K_STKPFN	= MEM$K_PAGES-USR$K_STKPAGES
+USR$K_MAXPAGES	= USR$K_STKPFN-USR$K_PFN0
+USR$K_P1LR	= ^X200000-USR$K_STKPAGES
+USR$K_STKTOP	= ^X80000000	; initial user SP (top of P1)
+
+;
+; KA630 I/O registers
+;
+KA$K_IPCR	= ^X20001F40	; interprocessor communication register
+KA$M_LMEAE	= ^X20		; local memory external access enable
+KA$K_QMAP	= ^X20088000	; Q22 bus map registers
+KA$K_QMAPREGS	= 8192
+QMAP$M_VALID	= ^X80000000
+
+;
+; RQDX3 MSCP disk controller (UQSSP port)
+;
+DU$K_IP		= ^X20001468
+DU$K_SA		= ^X2000146A
+UQ$M_OWN	= ^X80000000
+UQ$M_FLAG	= ^X40000000
+SA$M_ERR	= ^X8000
+SA$M_S4		= ^X4000
+SA$M_S3		= ^X2000
+SA$M_S2		= ^X1000
+SA$M_S1		= ^X0800
+
+MSCP$L_CRF	= 0		; command reference number
+MSCP$W_UNIT	= 4
+MSCP$B_OPCODE	= 8
+MSCP$B_FLAGS	= 9
+MSCP$W_MODIFIER	= 10
+MSCP$W_STATUS	= 10		; (end packet)
+MSCP$L_BYTE_CNT	= 12
+MSCP$L_BUFFER	= 16
+MSCP$L_MAP	= 20
+MSCP$L_LBN	= 28
+MSCP$W_VERSION	= 12		; SET CONTROLLER CHARACTERISTICS
+MSCP$W_CNT_FLGS	= 14
+MSCP$W_HST_TMO	= 16
+MSCP$L_UNT_SIZE	= 36		; ONLINE end packet
+MSCP$K_LEN	= 48		; length of our command packets
+
+MSCP$K_GTUNT	= 3
+MSCP$K_STCON	= 4
+MSCP$K_ONLIN	= 9
+MSCP$K_READ	= 33
+MSCP$K_WRITE	= 34
+MSCP$K_OP_END	= ^X80
+MSCP$M_ST_MASK	= ^X1F
+
+DU$K_MAXBLKS	= 64		; largest single transfer (32 KB)
+
+;
+; MiniVMS on-disk structure (MFS-1)
+;
+;   LBN 0          bootstrap (reserved)
+;   LBN 1          home block
+;   LBN 2..17      directory: 128 entries of 64 bytes
+;   LBN 18..       file data, each file one contiguous extent
+;
+HOM$K_LBN	= 1
+HOM$T_MAGIC	= 0		; "MINIVMS-MFS1    "
+HOM$T_VOLNAME	= 16		; 12 characters
+HOM$L_MAXBLK	= 28		; volume size in blocks
+HOM$L_DIRLBN	= 32
+HOM$L_DIRBLKS	= 36
+HOM$L_FREELBN	= 40		; first never-allocated block
+HOM$T_OWNER	= 44		; 12 characters
+
+DIR$K_LBN	= 2
+DIR$K_BLOCKS	= 16
+DIR$K_ENTSIZE	= 64
+DIR$K_ENTRIES	= DIR$K_BLOCKS*512/DIR$K_ENTSIZE
+DIR$K_DATALBN	= DIR$K_LBN+DIR$K_BLOCKS
+
+DIR$T_NAME	= 0		; "NAME.TYPE", blank padded
+DIR$K_NAMELEN	= 32
+DIR$W_VERSION	= 32
+DIR$B_FLAGS	= 34
+DIR$B_RFM	= 35
+DIR$L_LBN	= 36		; first block
+DIR$L_ALLOC	= 40		; blocks allocated
+DIR$L_SIZE	= 44		; bytes in file
+DIR$Q_CDT	= 48		; creation date/time (VMS format)
+DIR$L_ATTR	= 56		; record attributes (RAT) / spare
+DIR$M_INUSE	= 1
+
+;
+; Open file table (file control blocks)
+;
+FCB$K_COUNT	= 4
+FCB$K_BUFBLKS	= 16
+FCB$K_BUFSIZE	= FCB$K_BUFBLKS*512
+FCB$B_INUSE	= 0
+FCB$B_MODE	= 1		; 1 = read, 2 = write
+FCB$B_RFM	= 2
+FCB$B_RAT	= 3
+FCB$L_DIRENT	= 4		; address of directory entry
+FCB$L_LBN	= 8
+FCB$L_ALLOC	= 12
+FCB$L_SIZE	= 16		; bytes in file (read) / written (write)
+FCB$L_POS	= 20		; current byte position
+FCB$L_BUFVBN	= 24		; first VBN in buffer (0-based), -1 = empty
+FCB$L_BUFCNT	= 28		; valid bytes in buffer
+FCB$L_BUFFER	= 32		; address of buffer
+FCB$K_LENGTH	= 36
+FCB$K_MODE_READ	= 1
+FCB$K_MODE_WRITE = 2
+
+;
+; Image header written by MACRO32.PY
+;
+IHD$T_MAGIC	= 0		; "MVMSEXE1"
+IHD$L_BASE	= 8
+IHD$L_TRANSFER	= 12
+IHD$L_STORED	= 16
+IHD$L_TOTAL	= 20
+IHD$L_STACK	= 24
+IHD$T_NAME	= 32
+IHD$T_IDENT	= 64
+IHD$T_TITLE	= 80
+
+;
+; Miscellaneous
+;
+CR		= 13
+LF		= 10
+ESC		= 27
+TAB		= 9
+BS		= 8
+DEL		= 127
+CTRLC		= 3
+CTRLU		= 21
+CTRLY		= 25
+CTRLZ		= 26
+CTRLR		= 18

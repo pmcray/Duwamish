@@ -1,0 +1,418 @@
+	.TITLE	STARLET	MiniVMS system definitions and macro library
+	.IDENT	/V1.0/
+;
+; STARLET.MAR -- the MiniVMS equivalent of SYS$LIBRARY:STARLET.MLB.
+;
+; Assembled in front of every user program (and the executive itself).  It
+; generates no code: it defines the record-management control blocks (FAB,
+; RAB), I/O function codes, status codes and the familiar $xxx macros that a
+; VAX/VMS MACRO programmer of 1985 would have used.
+;
+; Field names follow VAX/VMS.  Offsets follow VAX/VMS where they were known
+; to the authors; MiniVMS only ever interprets them through these
+; definitions, so the two always agree.
+;
+; The addresses of the system service entry points (SYS$OPEN, LIB$PUT_OUTPUT
+; ...) are not defined here: they are imported from MINIVMS.STB, the symbol
+; table written when the executive is built -- the role SYS.STB plays on VMS.
+;
+
+;
+; Status codes.  Bits <2:0> severity (0=W 1=S 2=E 3=I 4=F), <27:16> facility.
+;
+SS$_NORMAL	= 1
+SS$_ACCVIO	= ^X0C
+SS$_BADPARAM	= ^X14
+SS$_EXQUOTA	= ^X1C
+SS$_NOPRIV	= ^X24
+SS$_ABORT	= ^X2C
+SS$_IVCHAN	= ^X13C
+SS$_NOSUCHDEV	= ^X908
+SS$_ENDOFFILE	= ^X870
+SS$_BUFFEROVF	= ^X601
+SS$_CONTROLY	= ^X651
+SS$_IVLOGNAM	= ^X154
+SS$_INSFMEM	= ^X124
+SS$_OPINCOMPL	= ^X2F4
+SS$_RESIGNAL	= ^X918
+SS$_UNWIND	= ^X920
+SS$_ILLSER	= ^X154C
+
+RMS$_NORMAL	= ^X10001
+RMS$_EOF	= ^X1827A
+RMS$_FNF	= ^X18292
+RMS$_FNM	= ^X184C4
+RMS$_SYN	= ^X1C4D4
+RMS$_FAB	= ^X184D4
+RMS$_RAB	= ^X185C4
+RMS$_IFI	= ^X1856C
+RMS$_ISI	= ^X185AC
+RMS$_FUL	= ^X1C452
+RMS$_DME	= ^X1C55C
+RMS$_RTB	= ^X184A0
+RMS$_RER	= ^X1C4C4
+RMS$_WER	= ^X1C4BC
+RMS$_FAC	= ^X1857C
+RMS$_ACT	= ^X1C42C
+RMS$_RSZ	= ^X186A4
+RMS$_BUG	= ^X1C474
+
+STS$M_SEVERITY	= 7
+STS$K_WARNING	= 0
+STS$K_SUCCESS	= 1
+STS$K_ERROR	= 2
+STS$K_INFO	= 3
+STS$K_SEVERE	= 4
+
+;
+; String descriptors
+;
+DSC$W_LENGTH	= 0
+DSC$B_DTYPE	= 2
+DSC$B_CLASS	= 3
+DSC$A_POINTER	= 4
+DSC$K_DTYPE_T	= 14
+DSC$K_CLASS_S	= 1
+DSC$K_LENGTH	= 8
+
+;
+; I/O function codes and modifiers
+;
+IO$_READLBLK	= ^X21
+IO$_READVBLK	= ^X31
+IO$_WRITELBLK	= ^X20
+IO$_WRITEVBLK	= ^X30
+IO$_READPROMPT	= ^X37
+IO$_SETMODE	= ^X23
+IO$M_NOECHO	= ^X40
+IO$M_CVTLOW	= ^X100
+IO$M_NOFORMAT	= ^X100
+IO$M_PURGE	= ^X800
+IO$M_TIMED	= ^X80
+
+;
+; File access block (FAB)
+;
+FAB$C_BID	= 3
+FAB$C_BLN	= 80
+FAB$B_BID	= 0
+FAB$B_BLN	= 1
+FAB$W_IFI	= 2
+FAB$L_FOP	= 4
+FAB$L_STS	= 8
+FAB$L_STV	= 12
+FAB$L_ALQ	= 16
+FAB$W_DEQ	= 20
+FAB$B_FAC	= 22
+FAB$B_SHR	= 23
+FAB$L_CTX	= 24
+FAB$B_RTV	= 28
+FAB$B_ORG	= 29
+FAB$B_RAT	= 30
+FAB$B_RFM	= 31
+FAB$L_XAB	= 36
+FAB$L_NAM	= 40
+FAB$L_FNA	= 44
+FAB$L_DNA	= 48
+FAB$B_FNS	= 52
+FAB$B_DNS	= 53
+FAB$W_MRS	= 54
+FAB$L_MRN	= 56
+FAB$W_BLS	= 60
+FAB$L_DEV	= 64
+FAB$L_EBK	= 68		; MiniVMS: end-of-file block (also FAB$L_SDC)
+FAB$W_FFB	= 72		; MiniVMS: first free byte in EOF block
+
+FAB$M_PUT	= 1		; FAC bits
+FAB$M_GET	= 2
+FAB$M_DEL	= 4
+FAB$M_UPD	= 8
+FAB$M_TRN	= 16
+FAB$M_BIO	= 32
+FAB$M_BRO	= 64
+
+FAB$C_UDF	= 0		; record formats
+FAB$C_FIX	= 1
+FAB$C_VAR	= 2
+FAB$C_VFC	= 3
+FAB$C_STM	= 4
+FAB$C_STMLF	= 5
+FAB$C_STMCR	= 6
+
+FAB$M_CR	= 2		; RAT bits
+FAB$M_CTG	= ^X80		; FOP contiguous
+FAB$M_SUP	= ^X04		; FOP supersede
+
+;
+; Record access block (RAB)
+;
+RAB$C_BID	= 1
+RAB$C_BLN	= 68
+RAB$B_BID	= 0
+RAB$B_BLN	= 1
+RAB$W_ISI	= 2
+RAB$L_ROP	= 4
+RAB$L_STS	= 8
+RAB$L_STV	= 12
+RAB$W_RFA	= 16
+RAB$L_CTX	= 24
+RAB$B_RAC	= 30
+RAB$B_TMO	= 31
+RAB$W_USZ	= 32
+RAB$W_RSZ	= 34
+RAB$L_UBF	= 36
+RAB$L_RBF	= 40
+RAB$L_RHB	= 44
+RAB$L_KBF	= 48
+RAB$B_KSZ	= 52
+RAB$B_KRF	= 53
+RAB$B_MBF	= 54
+RAB$B_MBC	= 55
+RAB$L_BKT	= 56
+RAB$L_FAB	= 60
+RAB$L_XAB	= 64
+
+RAB$C_SEQ	= 0
+RAB$C_KEY	= 1
+RAB$C_RFA	= 2
+
+;
+; Compatibility macros: on VMS these define the symbols above; here the
+; symbols are always defined, so the macros expand to nothing.
+;
+	.MACRO	$FABDEF
+	.ENDM	$FABDEF
+	.MACRO	$RABDEF
+	.ENDM	$RABDEF
+	.MACRO	$SSDEF
+	.ENDM	$SSDEF
+	.MACRO	$RMSDEF
+	.ENDM	$RMSDEF
+	.MACRO	$IODEF
+	.ENDM	$IODEF
+	.MACRO	$DSCDEF
+	.ENDM	$DSCDEF
+	.MACRO	$STSDEF
+	.ENDM	$STSDEF
+
+;
+; $FAB -- allocate and initialise a file access block.
+;
+	.MACRO	$FAB	FAC=0,FNA=0,FNM=,FNS=0,DNM=,RFM=0,RAT=0,ALQ=0,MRS=0,FOP=0,ORG=0,?STR,?DSTR
+	.BYTE	FAB$C_BID, FAB$C_BLN
+	.WORD	0			; IFI
+	.LONG	FOP			; FOP
+	.LONG	0, 0			; STS, STV
+	.LONG	ALQ			; ALQ
+	.WORD	0			; DEQ
+	.BYTE	FAC, 0			; FAC, SHR
+	.LONG	0			; CTX
+	.BYTE	0, ORG, RAT, RFM	; RTV, ORG, RAT, RFM
+	.LONG	0, 0, 0			; JNL, XAB, NAM
+	.IF	NB <FNM>
+	.ADDRESS STR			; FNA
+	.IF_FALSE
+	.ADDRESS FNA
+	.ENDC
+	.IF	NB <DNM>
+	.ADDRESS DSTR			; DNA
+	.IF_FALSE
+	.LONG	0
+	.ENDC
+	.IF	NB <FNM>
+	.BYTE	%LENGTH(FNM)		; FNS
+	.IF_FALSE
+	.BYTE	FNS
+	.ENDC
+	.IF	NB <DNM>
+	.BYTE	%LENGTH(DNM)		; DNS
+	.IF_FALSE
+	.BYTE	0
+	.ENDC
+	.WORD	MRS			; MRS
+	.LONG	0			; MRN
+	.WORD	0			; BLS
+	.BYTE	0, 0			; BKS, FSZ
+	.LONG	0, 0			; DEV, EBK
+	.WORD	0			; FFB
+	.BYTE	0, 0			; ACMODES, RCF
+	.LONG	0			; reserved
+	.IF	NB <FNM>
+STR:	.ASCII	"FNM"
+	.ENDC
+	.IF	NB <DNM>
+DSTR:	.ASCII	"DNM"
+	.ENDC
+	.ALIGN	LONG			; keep following blocks aligned
+	.ENDM	$FAB
+
+;
+; $RAB -- allocate and initialise a record access block.
+;
+	.MACRO	$RAB	FAB=0,UBF=0,USZ=0,RBF=0,RSZ=0,ROP=0,RAC=0,BKT=0
+	.BYTE	RAB$C_BID, RAB$C_BLN
+	.WORD	0			; ISI
+	.LONG	ROP			; ROP
+	.LONG	0, 0			; STS, STV
+	.WORD	0, 0, 0			; RFA
+	.WORD	0			; (pad)
+	.LONG	0			; CTX
+	.WORD	0			; (pad)
+	.BYTE	RAC, 0			; RAC, TMO
+	.WORD	USZ, RSZ		; USZ, RSZ
+	.ADDRESS UBF, RBF		; UBF, RBF
+	.LONG	0, 0			; RHB, KBF
+	.BYTE	0, 0, 0, 0		; KSZ, KRF, MBF, MBC
+	.LONG	BKT			; BKT
+	.ADDRESS FAB			; FAB
+	.LONG	0			; XAB
+	.ENDM	$RAB
+
+;
+; Helpers used by the service macros.
+;
+	.MACRO	$PUSHADR ARG
+	.IF	IDN <ARG>,<0>
+	PUSHL	#0
+	.IF_FALSE
+	PUSHAB	ARG
+	.ENDC
+	.ENDM	$PUSHADR
+
+	.MACRO	$RMSCALL SERVICE,BLOCK
+	.IF	NB <BLOCK>
+	PUSHAB	BLOCK
+	.IF_FALSE
+	PUSHL	R0
+	.ENDC
+	CALLS	#1,G^SYS$'SERVICE
+	.ENDM	$RMSCALL
+
+;
+; RMS services.  FAB=/RAB= name the control block; with no argument the
+; address is taken from R0, as on VMS.
+;
+	.MACRO	$OPEN	FAB
+	$RMSCALL OPEN,FAB
+	.ENDM	$OPEN
+	.MACRO	$CREATE	FAB
+	$RMSCALL CREATE,FAB
+	.ENDM	$CREATE
+	.MACRO	$CLOSE	FAB
+	$RMSCALL CLOSE,FAB
+	.ENDM	$CLOSE
+	.MACRO	$ERASE	FAB
+	$RMSCALL ERASE,FAB
+	.ENDM	$ERASE
+	.MACRO	$CONNECT RAB
+	$RMSCALL CONNECT,RAB
+	.ENDM	$CONNECT
+	.MACRO	$DISCONNECT RAB
+	$RMSCALL DISCONNECT,RAB
+	.ENDM	$DISCONNECT
+	.MACRO	$GET	RAB
+	$RMSCALL GET,RAB
+	.ENDM	$GET
+	.MACRO	$PUT	RAB
+	$RMSCALL PUT,RAB
+	.ENDM	$PUT
+	.MACRO	$READ	RAB
+	$RMSCALL READ,RAB
+	.ENDM	$READ
+	.MACRO	$WRITE	RAB
+	$RMSCALL WRITE,RAB
+	.ENDM	$WRITE
+	.MACRO	$REWIND	RAB
+	$RMSCALL REWIND,RAB
+	.ENDM	$REWIND
+
+;
+; System services
+;
+	.MACRO	$EXIT_S	CODE=#1
+	PUSHL	CODE
+	CALLS	#1,G^SYS$EXIT
+	.ENDM	$EXIT_S
+
+	.MACRO	$ASSIGN_S DEVNAM,CHAN,ACMODE=#0,MBXNAM=0
+	$PUSHADR MBXNAM
+	PUSHL	ACMODE
+	PUSHAW	CHAN
+	PUSHAQ	DEVNAM
+	CALLS	#4,G^SYS$ASSIGN
+	.ENDM	$ASSIGN_S
+
+	.MACRO	$DASSGN_S CHAN
+	MOVZWL	CHAN,-(SP)
+	CALLS	#1,G^SYS$DASSGN
+	.ENDM	$DASSGN_S
+
+	.MACRO	$QIOW_S	EFN=#0,CHAN,FUNC,IOSB=0,ASTADR=0,ASTPRM=#0,P1=0,P2=#0,P3=#0,P4=#0,P5=#0,P6=#0
+	PUSHL	P6
+	PUSHL	P5
+	PUSHL	P4
+	PUSHL	P3
+	PUSHL	P2
+	$PUSHADR P1
+	PUSHL	ASTPRM
+	$PUSHADR ASTADR
+	$PUSHADR IOSB
+	PUSHL	FUNC
+	MOVZWL	CHAN,-(SP)
+	PUSHL	EFN
+	CALLS	#12,G^SYS$QIOW
+	.ENDM	$QIOW_S
+
+	.MACRO	$FAO_S	CTRSTR,OUTLEN=0,OUTBUF,P1=#0,P2=#0,P3=#0,P4=#0,P5=#0,P6=#0,P7=#0,P8=#0
+	PUSHL	P8
+	PUSHL	P7
+	PUSHL	P6
+	PUSHL	P5
+	PUSHL	P4
+	PUSHL	P3
+	PUSHL	P2
+	PUSHL	P1
+	PUSHAQ	OUTBUF
+	$PUSHADR OUTLEN
+	PUSHAQ	CTRSTR
+	CALLS	#11,G^SYS$FAO
+	.ENDM	$FAO_S
+
+	.MACRO	$FAOL_S	CTRSTR,OUTLEN=0,OUTBUF,PRMLST=0
+	$PUSHADR PRMLST
+	PUSHAQ	OUTBUF
+	$PUSHADR OUTLEN
+	PUSHAQ	CTRSTR
+	CALLS	#4,G^SYS$FAOL
+	.ENDM	$FAOL_S
+
+	.MACRO	$GETTIM_S TIMADR
+	PUSHAQ	TIMADR
+	CALLS	#1,G^SYS$GETTIM
+	.ENDM	$GETTIM_S
+
+	.MACRO	$ASCTIM_S TIMLEN=0,TIMBUF,TIMADR=0,CVTFLG=#0
+	PUSHL	CVTFLG
+	$PUSHADR TIMADR
+	PUSHAQ	TIMBUF
+	$PUSHADR TIMLEN
+	CALLS	#4,G^SYS$ASCTIM
+	.ENDM	$ASCTIM_S
+
+	.MACRO	$EXPREG_S PAGCNT,RETADR=0,ACMODE=#0,REGION=#0
+	PUSHL	REGION
+	PUSHL	ACMODE
+	$PUSHADR RETADR
+	PUSHL	PAGCNT
+	CALLS	#4,G^SYS$EXPREG
+	.ENDM	$EXPREG_S
+
+;
+; Error-check helper used throughout DEC example code:
+;	BLBS R0,label  -- branch if the low bit (success) is set.
+;
+	.MACRO	CHECK	?OK
+	BLBS	R0,OK
+	$EXIT_S	R0
+OK:
+	.ENDM	CHECK

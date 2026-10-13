@@ -1,0 +1,899 @@
+	.TITLE	DCL	MiniVMS command language interpreter and image activator
+	.IDENT	/V1.0/
+;
+; A small DCL: it logs the user in, prompts with "$ ", and understands
+;
+;	DIRECTORY [spec]	TYPE spec		RUN spec
+;	DELETE spec;version	PURGE [spec]		HELP
+;	SHOW TIME | DEVICES | MEMORY | SYSTEM		LOGOUT
+;	SHUTDOWN
+;
+; Verbs may be abbreviated (DIR, SH TIME, ...) and qualifiers are
+; accepted and ignored.  RUN activates a MiniVMS image in user mode.
+;
+	.PSECT	$DATA
+DCL$K_LINESIZE	= 256
+DCL$LINE:	.BLKB	DCL$K_LINESIZE
+DCL$GL_LINEEND:	.LONG	0
+DCL$GL_PTR:	.LONG	0
+DCL$VERB:	.BLKB	32
+DCL$GL_VERBLEN:	.LONG	0
+DCL$USER:	.BLKB	13		; ASCIC user name
+DCL$PASS:	.BLKB	32
+DCL$TEMP:	.BLKB	512
+DCL$HDR:	.BLKB	512		; image header
+	.ALIGN	LONG
+DCL$LIST:	.BLKL	DIR$K_ENTRIES
+DCL$GL_LOGINDAY: .LONG	0
+DCL$GL_LOGINCS:	.LONG	0
+DCL$NAME:	.BLKB	40
+DCL$DATE:	.BLKB	24
+DCL$ALLTYPES:	.ASCIC	/.*/
+DCL$EXETYPE:	.ASCIC	/.EXE/
+DCL$LISTYPE:	.ASCIC	/.LIS/
+DCL$IMGMAGIC:	.ASCII	/MVMSEXE1/
+
+	.PSECT	$CODE
+;
+; ----------------------------------------------------------------------
+; Log in
+; ----------------------------------------------------------------------
+;
+DCL$START::
+	MOVL	#EXE$KSTACK_TOP,SP
+	JSB	CON$CRLF
+	JSB	CON$CRLF
+10$:	MOVAB	DCL$M_USERNAME,R2
+	JSB	DCL$PROMPT
+	MOVAB	DCL$USER+1,R1
+	MOVL	#12,R2
+	CLRL	R3
+	JSB	CON$GETLINE
+	TSTL	R0
+	BLEQ	10$
+	MOVB	R0,DCL$USER
+	MOVAB	DCL$USER+1,R1		; upper case the user name
+15$:	CMPB	(R1),#^A/a/
+	BLSSU	17$
+	CMPB	(R1),#^A/z/
+	BGTRU	17$
+	BICB2	#^X20,(R1)
+17$:	INCL	R1
+	SOBGTR	R0,15$
+	MOVAB	DCL$M_PASSWORD,R2
+	JSB	DCL$PROMPT
+	MOVAB	DCL$PASS,R1
+	MOVL	#32,R2
+	MOVL	#1,R3			; no echo
+	JSB	CON$GETLINE
+	JSB	TIM$NOW
+	MOVQ	R0,DCL$GL_LOGINDAY
+	PUSHAB	HOM$VOLNAME
+	PUSHAB	DCL$M_WELCOME
+	CALLS	#2,EXE$PRINT
+	BRW	DCL$LOOP
+
+DCL$PROMPT:				; print the ASCID at R2 (no newline)
+	MOVZWL	(R2),R0
+	MOVL	4(R2),R1
+	JSB	CON$PUTS
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; Command loop
+; ----------------------------------------------------------------------
+;
+DCL$LOOP::
+	MOVL	#EXE$KSTACK_TOP,SP
+	MTPR	#0,#PR$_IPL
+	CLRL	CON$GL_ABORT
+	MOVAB	DCL$M_PROMPT,R2
+	JSB	DCL$PROMPT
+	MOVAB	DCL$LINE,R1
+	MOVL	#DCL$K_LINESIZE,R2
+	CLRL	R3
+	JSB	CON$GETLINE
+	TSTL	R0
+	BLEQ	DCL$LOOP		; empty line or CTRL/Z
+	MOVAB	DCL$LINE,R1
+	MOVL	R1,DCL$GL_PTR
+	ADDL3	R0,R1,DCL$GL_LINEEND
+;
+; Extract the verb: letters, digits, '$' and '_', upper-cased.
+;
+	JSB	DCL$SKIPSP
+	MOVL	DCL$GL_PTR,R3
+	CMPB	(R3),#^A/$/		; tolerate "$ DIR" typed at the prompt
+	BNEQ	5$
+	INCL	DCL$GL_PTR
+	JSB	DCL$SKIPSP
+	MOVL	DCL$GL_PTR,R3
+5$:	MOVL	DCL$GL_LINEEND,R4
+	MOVAB	DCL$VERB,R5
+	CLRL	R6
+10$:	CMPL	R3,R4
+	BGEQU	20$
+	MOVZBL	(R3),R0
+	CMPB	R0,#^A/a/
+	BLSSU	12$
+	CMPB	R0,#^A/z/
+	BGTRU	12$
+	BICB2	#^X20,R0
+12$:	CMPB	R0,#^A/A/
+	BLSSU	14$
+	CMPB	R0,#^A/Z/
+	BLEQU	16$
+14$:	CMPB	R0,#^A/@/
+	BEQL	16$
+	CMPB	R0,#^A/_/
+	BNEQ	20$
+16$:	CMPL	R6,#31
+	BGEQ	18$
+	MOVB	R0,(R5)+
+	INCL	R6
+18$:	INCL	R3
+	BRB	10$
+20$:	MOVL	R3,DCL$GL_PTR
+	MOVL	R6,DCL$GL_VERBLEN
+	BNEQ	30$
+	BRW	DCL$IVVERB
+;
+; Look the verb up.  Table entries: minimum abbreviation, ASCIC name,
+; longword routine address.
+;
+30$:	MOVAB	DCL$COMMANDS,R7
+40$:	MOVZBL	(R7),R8			; minimum length (0 = end of table)
+	BNEQ	45$
+	BRW	DCL$IVVERB
+45$:	MOVZBL	1(R7),R9		; full name length
+	MOVAB	2(R7),R10		; name
+	CMPL	R6,R8
+	BLSS	50$
+	CMPL	R6,R9
+	BGTR	50$
+	CMPC3	R6,DCL$VERB,(R10)
+	BEQL	60$
+50$:	MOVZBL	1(R7),R9
+	MOVAB	2(R7)[R9],R7		; skip name
+	ADDL2	#4,R7			; and address
+	BRB	40$
+60$:	MOVZBL	1(R7),R9
+	MOVAB	2(R7)[R9],R7
+	MOVL	(R7),R7
+	JSB	(R7)
+	BRW	DCL$LOOP
+
+DCL$IVVERB:
+	PUSHAB	DCL$VERB
+	PUSHL	DCL$GL_VERBLEN
+	PUSHAB	DCL$M_IVVERB
+	CALLS	#3,EXE$PRINT
+	BRW	DCL$LOOP
+
+;
+; DCL$SKIPSP -- advance DCL$GL_PTR past blanks.
+;
+DCL$SKIPSP:
+	MOVL	DCL$GL_PTR,R0
+10$:	CMPL	R0,DCL$GL_LINEEND
+	BGEQU	20$
+	CMPB	(R0),#^A/ /
+	BEQL	15$
+	CMPB	(R0),#TAB
+	BNEQ	20$
+15$:	INCL	R0
+	BRB	10$
+20$:	MOVL	R0,DCL$GL_PTR
+	RSB
+
+;
+; DCL$NEXTPARAM -- next parameter, skipping /qualifiers.
+; Returns R0 = length (0 if none), R1 = address.
+;
+DCL$NEXTPARAM:
+	PUSHR	#^M<R2,R3>
+10$:	JSB	DCL$SKIPSP
+	MOVL	DCL$GL_PTR,R1
+	CMPL	R1,DCL$GL_LINEEND
+	BGEQU	80$
+	CMPB	(R1),#^A"/"		; qualifier: skip it
+	BNEQ	30$
+	INCL	R1
+20$:	CMPL	R1,DCL$GL_LINEEND
+	BGEQU	25$
+	CMPB	(R1),#^A/ /
+	BEQL	25$
+	CMPB	(R1),#^A"/"
+	BEQL	25$
+	INCL	R1
+	BRB	20$
+25$:	MOVL	R1,DCL$GL_PTR
+	BRB	10$
+30$:	MOVL	R1,R2			; parameter
+35$:	CMPL	R2,DCL$GL_LINEEND
+	BGEQU	40$
+	CMPB	(R2),#^A/ /
+	BEQL	40$
+	CMPB	(R2),#^A"/"
+	BEQL	40$
+	CMPB	(R2),#^A/=/
+	BEQL	40$
+	INCL	R2
+	BRB	35$
+40$:	MOVL	R2,DCL$GL_PTR
+	SUBL3	R1,R2,R0
+	BRB	90$
+80$:	CLRL	R0
+90$:	POPR	#^M<R2,R3>
+	RSB
+
+;
+; DCL$MISSING -- "missing command parameters".
+;
+DCL$MISSING:
+	PUSHAB	DCL$M_INSFPRM
+	CALLS	#1,EXE$PRINT
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; DIRECTORY [spec]
+; ----------------------------------------------------------------------
+;
+DCL$DIRECTORY:
+	JSB	DCL$NEXTPARAM
+	TSTL	R0
+	BNEQ	10$
+	MOVAB	DCL$STARSTAR,R1		; default "*.*;*"
+	MOVL	#5,R0
+10$:	MOVAB	DCL$ALLTYPES,R2
+	JSB	FIL$PARSE
+	BLBS	R0,15$
+	BRW	DCL$RMSERR
+15$:	TSTW	FIL$GW_PVER		; no version given: all versions
+	BNEQ	20$
+	MNEGW	#1,FIL$GW_PVER
+;
+; Collect the matching entries.
+;
+20$:	MOVAB	DIR$BUFFER,R2
+	MOVL	#DIR$K_ENTRIES,R3
+	MOVAL	DCL$LIST,R4
+	CLRL	R5			; count
+30$:	BLBC	DIR$B_FLAGS(R2),40$
+	MOVL	R2,R1
+	JSB	FIL$MATCH
+	BLBC	R0,40$
+	TSTW	FIL$GW_PVER
+	BLSS	35$
+	CMPW	DIR$W_VERSION(R2),FIL$GW_PVER
+	BNEQ	40$
+35$:	MOVL	R2,(R4)+
+	INCL	R5
+40$:	ADDL2	#DIR$K_ENTSIZE,R2
+	SOBGTR	R3,30$
+	TSTL	R5
+	BNEQ	50$
+	PUSHAB	DCL$M_NOFILES
+	CALLS	#1,EXE$PRINT
+	RSB
+;
+; Sort: name ascending, version descending (insertion sort).
+;
+50$:	MOVL	#1,R6
+55$:	CMPL	R6,R5
+	BGEQ	70$
+	MOVL	DCL$LIST[R6],R7		; key
+	MOVL	R6,R8
+60$:	TSTL	R8
+	BLEQ	65$
+	SUBL3	#1,R8,R9
+	MOVL	DCL$LIST[R9],R10
+	JSB	DCL$DIRCMP		; R10 > R7 ?
+	BLBC	R0,65$
+	MOVL	R10,DCL$LIST[R8]
+	DECL	R8
+	BRB	60$
+65$:	MOVL	R7,DCL$LIST[R8]
+	INCL	R6
+	BRB	55$
+70$:	MOVL	R5,R10			; (MOVC3 below clobbers R0-R5)
+;
+; List them.
+;
+	PUSHAB	HOM$OWNER
+	PUSHAB	DCL$M_DIRHDR
+	CALLS	#2,EXE$PRINT
+	CLRL	R6			; index
+	CLRL	R11			; total blocks
+80$:	MOVL	DCL$LIST[R6],R7
+	JSB	DCL$FMTNAME		; DCL$NAME / R0 = length
+	MOVL	R0,R8
+	ADDL3	#511,DIR$L_SIZE(R7),R9
+	ASHL	#-9,R9,R9		; blocks used
+	ADDL2	R9,R11
+	MOVL	DIR$Q_CDT(R7),R0
+	JSB	TIM$DATESTR
+	MOVC3	#12,FAO$NUMBUF,DCL$DATE
+	MOVL	DIR$Q_CDT+4(R7),R1
+	JSB	TIM$TIMESTR
+	MOVC3	#11,FAO$NUMBUF,DCL$DATE+12
+	PUSHAB	DCL$DATE
+	PUSHL	#20
+	PUSHL	R9
+	PUSHAB	DCL$NAME
+	PUSHL	R8
+	PUSHAB	DCL$M_DIRLINE
+	CALLS	#6,EXE$PRINT
+	AOBLSS	R10,R6,80$
+	PUSHL	R11
+	PUSHL	R10
+	PUSHAB	DCL$M_DIRTOTAL
+	CALLS	#3,EXE$PRINT
+	RSB
+
+;
+; DCL$DIRCMP -- R0 = 1 if entry R10 sorts after entry R7.
+;
+DCL$DIRCMP:
+	PUSHR	#^M<R1,R2,R3,R4,R5>
+	CMPC3	#DIR$K_NAMELEN,(R10),(R7)
+	BLSSU	20$
+	BGTRU	10$
+	CMPW	DIR$W_VERSION(R10),DIR$W_VERSION(R7)
+	BLSSU	10$			; equal names: lower version later
+20$:	CLRL	R0
+	BRB	90$
+10$:	MOVL	#1,R0
+90$:	POPR	#^M<R1,R2,R3,R4,R5>
+	RSB
+
+;
+; DCL$FMTNAME -- entry R7 -> "NAME.TYPE;version" in DCL$NAME, R0 = length.
+;
+DCL$FMTNAME:
+	PUSHR	#^M<R1,R2,R3,R4,R5>
+	MOVAB	DCL$NAME,R3
+	CLRL	R2
+10$:	CMPL	R2,#DIR$K_NAMELEN
+	BGEQ	20$
+	MOVB	(R7)[R2],R0
+	CMPB	R0,#^A/ /
+	BEQL	20$
+	MOVB	R0,(R3)+
+	INCL	R2
+	BRB	10$
+20$:	MOVB	#^A/;/,(R3)+
+	MOVZWL	DIR$W_VERSION(R7),R0
+	MOVL	#1,R1			; how many digits?
+	CMPL	R0,#10
+	BLSS	30$
+	INCL	R1
+	CMPL	R0,#100
+	BLSS	30$
+	INCL	R1
+	CMPL	R0,#1000
+	BLSS	30$
+	INCL	R1
+	CMPL	R0,#10000
+	BLSS	30$
+	INCL	R1
+30$:	JSB	TIM$DIGITS
+	MOVAB	DCL$NAME,R0
+	SUBL3	R0,R3,R0
+	POPR	#^M<R1,R2,R3,R4,R5>
+	RSB
+
+;
+; Print an RMS / system error for status R0 and return.
+;
+DCL$RMSERR:
+	JSB	DCL$PUTMSG
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; TYPE spec
+; ----------------------------------------------------------------------
+;
+DCL$TYPE:
+	JSB	DCL$NEXTPARAM
+	TSTL	R0
+	BNEQ	10$
+	BRW	DCL$MISSING
+10$:	MOVAB	DCL$LISTYPE,R2
+	JSB	FIL$OPENNAME
+	BLBS	R0,20$
+	BRW	DCL$RMSERR
+20$:	CMPB	FCB$B_RFM(R6),#FAB$C_FIX
+	BGTRU	30$
+	MOVL	#RMS$_FAC,R0		; not a text file
+	JSB	FIL$CLOSE
+	MOVL	#RMS$_FAC,R0
+	BRW	DCL$RMSERR
+30$:	MOVAB	DCL$TEMP,R7
+	MOVL	#512,R8
+	JSB	FIL$GETLINE
+	BLBC	R0,80$
+	MOVL	R1,R0
+	MOVAB	DCL$TEMP,R1
+	JSB	CON$PUTS
+	JSB	CON$CRLF
+	JSB	CON$POLL		; CTRL/Y or CTRL/C stops the listing
+	BLBC	R0,30$
+	CLRL	CON$GL_ABORT
+	PUSHAB	DCL$M_CANCEL
+	CALLS	#1,EXE$PRINT
+80$:	JSB	FIL$CLOSE
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; DELETE spec;version	and	PURGE [spec]
+; ----------------------------------------------------------------------
+;
+DCL$DELETE:
+	JSB	DCL$NEXTPARAM
+	TSTL	R0
+	BNEQ	10$
+	BRW	DCL$MISSING
+10$:	CLRL	R2
+	JSB	FIL$PARSE
+	BLBS	R0,20$
+	BRW	DCL$RMSERR
+20$:	TSTW	FIL$GW_PVER
+	BNEQ	30$
+	PUSHAB	DCL$M_DELVER
+	CALLS	#1,EXE$PRINT
+	RSB
+30$:	CLRL	R6			; files deleted
+	MOVAB	DIR$BUFFER,R7
+	MOVL	#DIR$K_ENTRIES,R8
+40$:	BLBC	DIR$B_FLAGS(R7),50$
+	MOVL	R7,R1
+	JSB	FIL$MATCH
+	BLBC	R0,50$
+	TSTW	FIL$GW_PVER
+	BLSS	45$
+	CMPW	DIR$W_VERSION(R7),FIL$GW_PVER
+	BNEQ	50$
+45$:	CMPL	R7,FIL$GL_WRITER
+	BEQL	50$
+	MOVL	R7,R1
+	JSB	FIL$DELETE
+	INCL	R6
+50$:	ADDL2	#DIR$K_ENTSIZE,R7
+	SOBGTR	R8,40$
+	TSTL	R6
+	BNEQ	60$
+	PUSHAB	DCL$M_NOFILES
+	CALLS	#1,EXE$PRINT
+60$:	RSB
+
+DCL$PURGE:
+	JSB	DCL$NEXTPARAM
+	TSTL	R0
+	BNEQ	10$
+	MOVAB	DCL$STARSTAR,R1
+	MOVL	#3,R0			; "*.*"
+10$:	MOVAB	DCL$ALLTYPES,R2
+	JSB	FIL$PARSE
+	BLBS	R0,20$
+	BRW	DCL$RMSERR
+;
+; For each matching entry, delete it if a higher version of the same
+; name exists.
+;
+20$:	CLRL	R6
+	MOVAB	DIR$BUFFER,R7
+	MOVL	#DIR$K_ENTRIES,R8
+30$:	BLBC	DIR$B_FLAGS(R7),60$
+	MOVL	R7,R1
+	JSB	FIL$MATCH
+	BLBC	R0,60$
+	MOVAB	DIR$BUFFER,R9
+	MOVL	#DIR$K_ENTRIES,R10
+40$:	BLBC	DIR$B_FLAGS(R9),50$
+	CMPW	DIR$W_VERSION(R9),DIR$W_VERSION(R7)
+	BLEQU	50$
+	PUSHR	#^M<R1,R2,R3,R4,R5>
+	CMPC3	#DIR$K_NAMELEN,(R9),(R7)
+	POPR	#^M<R1,R2,R3,R4,R5>
+	BNEQ	50$
+	MOVL	R7,R1			; a newer version exists
+	JSB	FIL$DELETE
+	INCL	R6
+	BRB	60$
+50$:	ADDL2	#DIR$K_ENTSIZE,R9
+	SOBGTR	R10,40$
+60$:	ADDL2	#DIR$K_ENTSIZE,R7
+	SOBGTR	R8,30$
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; SHOW TIME | DEVICES | MEMORY | SYSTEM
+; ----------------------------------------------------------------------
+;
+DCL$SHOW:
+	JSB	DCL$NEXTPARAM
+	TSTL	R0
+	BNEQ	5$
+	BRW	DCL$MISSING
+5$:	BICB3	#^X20,(R1),R2		; first letter decides
+	CMPB	R2,#^A/T/
+	BNEQ	20$
+	JSB	TIM$NOW			; SHOW TIME
+	PUSHL	R1
+	JSB	TIM$DATESTR
+	MOVC3	#12,FAO$NUMBUF,DCL$DATE
+	MOVL	(SP)+,R1
+	JSB	TIM$TIMESTR
+	MOVC3	#8,FAO$NUMBUF,DCL$DATE+12
+	PUSHAB	DCL$DATE
+	PUSHL	#20
+	PUSHAB	DCL$M_TIME
+	CALLS	#3,EXE$PRINT
+	RSB
+20$:	CMPB	R2,#^A/D/
+	BNEQ	30$
+	SUBL3	HOM$BUFFER+HOM$L_FREELBN,HOM$BUFFER+HOM$L_MAXBLK,-(SP)
+	PUSHAB	HOM$VOLNAME
+	PUSHAB	DCL$M_DEVICES
+	CALLS	#3,EXE$PRINT
+	RSB
+30$:	CMPB	R2,#^A/M/
+	BNEQ	40$
+	PUSHL	#USR$K_PFN0		; SHOW MEMORY: in use (executive)
+	SUBL3	#USR$K_PFN0,#MEM$K_PAGES,-(SP)	; free for programs
+	PUSHL	#MEM$K_PAGES		; total
+	PUSHL	#0			; (now)
+	PUSHAB	DCL$M_MEMORY
+	CALLS	#5,EXE$PRINT
+	RSB
+40$:	CMPB	R2,#^A/S/
+	BNEQ	50$
+	MOVL	EXE$GL_TICKS,R0		; SHOW SYSTEM
+	CLRL	R1
+	EDIV	#8640000,R0,R6,R1	; uptime: R6 days, R1 centiseconds
+	JSB	TIM$TIMESTR
+	MOVC3	#8,FAO$NUMBUF,DCL$DATE
+	JSB	TIM$NOW
+	JSB	TIM$DATESTR
+	MOVC3	#12,FAO$NUMBUF,DCL$DATE+8
+	PUSHAB	DCL$DATE
+	PUSHL	#8
+	PUSHL	R6
+	PUSHAB	DCL$DATE+8
+	PUSHL	#11
+	PUSHAB	DCL$M_SYSTEM
+	CALLS	#6,EXE$PRINT
+	PUSHAB	DCL$USER
+	PUSHAB	DCL$M_PROCESS
+	CALLS	#2,EXE$PRINT
+	RSB
+50$:	PUSHAB	DCL$M_SHOWWHAT
+	CALLS	#1,EXE$PRINT
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; HELP, LOGOUT, SHUTDOWN
+; ----------------------------------------------------------------------
+;
+DCL$HELP:
+	PUSHAB	DCL$M_HELP
+	CALLS	#1,EXE$PRINT
+	RSB
+
+DCL$LOGOUT:
+	JSB	TIM$NOW
+	PUSHL	R1
+	JSB	TIM$DATESTR
+	MOVC3	#12,FAO$NUMBUF,DCL$DATE
+	MOVL	(SP)+,R1
+	JSB	TIM$TIMESTR
+	MOVC3	#5,FAO$NUMBUF,DCL$DATE+12
+	PUSHAB	DCL$DATE
+	PUSHL	#17
+	PUSHAB	DCL$USER
+	PUSHAB	DCL$M_LOGOUT
+	CALLS	#4,EXE$PRINT
+	JMP	DCL$START
+
+DCL$SHUTDOWN:
+	PUSHAB	DCL$M_SHUTDOWN
+	CALLS	#1,EXE$PRINT
+	MTPR	#31,#PR$_IPL
+	HALT
+	BRB	DCL$SHUTDOWN
+
+;
+; ----------------------------------------------------------------------
+; RUN spec -- the image activator
+; ----------------------------------------------------------------------
+;
+DCL$RUN:
+	JSB	DCL$NEXTPARAM
+	TSTL	R0
+	BNEQ	10$
+	BRW	DCL$MISSING
+10$:	MOVL	R0,R10			; keep the name for messages
+	MOVL	R1,R11
+	MOVAB	DCL$EXETYPE,R2
+	JSB	FIL$OPENNAME
+	BLBS	R0,20$
+	BRW	DCL$ACTERR
+20$:	MOVAB	DCL$HDR,R7		; image header
+	MOVL	#512,R8
+	JSB	FIL$READBYTES
+	CMPL	R1,#512
+	BNEQ	25$
+	CMPC3	#8,DCL$HDR,DCL$IMGMAGIC
+	BEQL	30$
+25$:	JSB	FIL$CLOSE
+	MOVL	#^X44,R0		; "not an image"
+	BRW	DCL$ACTERR
+30$:	MOVL	DCL$HDR+IHD$L_BASE,R0	; pages needed
+	ADDL2	DCL$HDR+IHD$L_TOTAL,R0
+	ADDL2	#511,R0
+	ASHL	#-9,R0,R9
+	CMPL	R9,#USR$K_MAXPAGES
+	BLEQ	40$
+	JSB	FIL$CLOSE
+	MOVL	#SS$_INSFMEM,R0
+	BRW	DCL$ACTERR
+;
+; Map the P0 pages (page 0 stays inaccessible) and clear them.
+;
+40$:	CLRL	MMG$P0PT
+	MOVL	#1,R2
+45$:	CMPL	R2,R9
+	BGEQ	50$
+	ADDL3	#USR$K_PFN0,R2,R0
+	BISL3	#PTE$K_UW,R0,MMG$P0PT[R2]
+	INCL	R2
+	BRB	45$
+50$:	MOVL	#S0$K_BASE+<<USR$K_PFN0+1>*512>,R0
+	SUBL3	#1,R9,R1
+	ASHL	#9,R1,R1
+	JSB	DCL$ZERO
+	MOVL	R9,EXE$GL_FAULTS
+;
+; Read the image into place through the S0 alias of its pages.
+;
+	MOVL	#S0$K_BASE+<USR$K_PFN0*512>,R7
+	ADDL2	DCL$HDR+IHD$L_BASE,R7
+	MOVL	DCL$HDR+IHD$L_STORED,R8
+	JSB	FIL$READBYTES
+	PUSHL	R0
+	JSB	FIL$CLOSE
+	MOVL	(SP)+,R0
+	BLBS	R0,60$
+	BRW	DCL$ACTERR
+;
+; The user stack: top USR$K_STKPAGES pages of memory, at the top of P1.
+;
+60$:	CLRL	R2
+65$:	ADDL3	#USR$K_STKPFN,R2,R0
+	BISL3	#PTE$K_UW,R0,MMG$P1PT[R2]
+	AOBLSS	#USR$K_STKPAGES,R2,65$
+	MOVL	#S0$K_BASE+<USR$K_STKPFN*512>,R0
+	MOVL	#USR$K_STKPAGES*512,R1
+	JSB	DCL$ZERO
+;
+; Load the process memory management registers and go.
+;
+	MTPR	#MMG$P0PT,#PR$_P0BR
+	MTPR	R9,#PR$_P0LR
+	MTPR	#MMG$P1PT-<USR$K_P1LR*4>,#PR$_P1BR
+	MTPR	#USR$K_P1LR,#PR$_P1LR
+	MTPR	#0,#PR$_TBIA
+	MOVL	DCL$HDR+IHD$L_TRANSFER,IMG$TRANSFER
+	CLRL	CON$GL_ABORT
+	MOVL	#EXE$KSTACK_TOP,SP
+	MTPR	#USR$K_STKTOP,#PR$_USP
+	PUSHL	#PSL$K_USER
+	PUSHAB	IMG$START
+	REI
+
+DCL$ACTERR:
+	PUSHL	R0
+	PUSHL	R11
+	PUSHL	R10
+	PUSHAB	DCL$M_ACTIMAGE
+	CALLS	#3,EXE$PRINT
+	MOVL	(SP)+,R0
+	BISL2	#^X20000000,R0		; secondary message: '-' prefix
+	JSB	DCL$PUTMSG
+	RSB
+
+;
+; DCL$ZERO -- clear R1 bytes at R0.
+;
+DCL$ZERO:
+	PUSHR	#^M<R2,R3,R4,R5,R6,R7>
+	MOVL	R0,R6
+	ADDL3	R0,R1,R7
+10$:	SUBL3	R6,R7,R2
+	BLEQ	20$
+	CMPL	R2,#32768
+	BLEQ	15$
+	MOVL	#32768,R2
+15$:	MOVC5	#0,(SP),#0,R2,(R6)
+	MOVL	R3,R6
+	BRB	10$
+20$:	POPR	#^M<R2,R3,R4,R5,R6,R7>
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; Image rundown.  Entered (by JMP) from $EXIT, exceptions and CTRL/Y with
+; R0 = final status.
+; ----------------------------------------------------------------------
+;
+EXE$IMGEXIT::
+	MOVL	#EXE$KSTACK_TOP,SP
+	MTPR	#0,#PR$_IPL
+	CLRL	EXE$GL_INSERVICE
+	MOVL	R0,R6
+	JSB	FIL$CLOSEALL
+	MTPR	#0,#PR$_P0LR
+	MTPR	#^X200000,#PR$_P1LR
+	MTPR	#0,#PR$_TBIA
+	TSTL	CON$GL_ABORT
+	BEQL	10$
+	PUSHAB	DCL$M_CTRLY
+	CALLS	#1,EXE$PRINT
+	BRB	20$
+10$:	BBS	#28,R6,20$		; STS$M_INHIB_MSG
+	BLBS	R6,20$			; success: say nothing
+	MOVL	R6,R0
+	JSB	DCL$PUTMSG
+20$:	BRW	DCL$LOOP
+
+;
+; ----------------------------------------------------------------------
+; DCL$PUTMSG -- print the message text for status R0:
+;	%FACILITY-S-IDENT, text
+; Bit 29 set in R0 asks for the '-' prefix of a secondary message.
+; ----------------------------------------------------------------------
+;
+DCL$PUTMSG::
+	PUSHR	#^M<R1,R2,R3,R4,R5,R6,R7>
+	MOVL	R0,R6
+	MOVAB	MSG$PREFIX,R7		; "%"
+	BBC	#29,R6,5$
+	INCL	R7			; "-" for a secondary message
+5$:	BICL3	#^XF0000007,R6,R1	; facility and message number
+	MOVAB	MSG$TABLE,R2
+10$:	CMPL	(R2),#-1		; end of table?
+	BEQL	40$
+	CMPL	(R2),R1
+	BEQL	20$
+	ADDL2	#16,R2
+	BRB	10$
+20$:	EXTZV	#0,#3,R6,R3		; severity letter
+	MOVAB	MSG$SEVERITY[R3],R3
+	PUSHL	12(R2)			; text (ASCIC)
+	PUSHL	8(R2)			; ident (ASCIC)
+	PUSHL	R3
+	PUSHL	#1
+	PUSHL	4(R2)			; facility (ASCIC)
+	PUSHL	R7
+	PUSHL	#1
+	PUSHAB	MSG$FORMAT
+	CALLS	#8,EXE$PRINT
+	BRB	90$
+40$:	PUSHL	R6
+	PUSHL	R7
+	PUSHL	#1
+	PUSHAB	MSG$NOMSG
+	CALLS	#4,EXE$PRINT
+90$:	POPR	#^M<R1,R2,R3,R4,R5,R6,R7>
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; Tables and text
+; ----------------------------------------------------------------------
+;
+	.PSECT	$DATA
+	.MACRO	COMMAND	NAME,MIN,ROUTINE
+	.BYTE	MIN
+	.ASCIC	/NAME/
+	.ADDRESS ROUTINE
+	.ENDM	COMMAND
+DCL$COMMANDS:
+	COMMAND	DIRECTORY,3,DCL$DIRECTORY
+	COMMAND	TYPE,2,DCL$TYPE
+	COMMAND	RUN,2,DCL$RUN
+	COMMAND	DELETE,3,DCL$DELETE
+	COMMAND	PURGE,2,DCL$PURGE
+	COMMAND	SHOW,2,DCL$SHOW
+	COMMAND	HELP,1,DCL$HELP
+	COMMAND	LOGOUT,2,DCL$LOGOUT
+	COMMAND	EOJ,3,DCL$LOGOUT
+	COMMAND	SHUTDOWN,8,DCL$SHUTDOWN
+	.BYTE	0
+
+DCL$STARSTAR:	.ASCII	/*.*;*/
+DCL$M_USERNAME:	.ASCID	/Username: /
+DCL$M_PASSWORD:	.ASCID	/Password: /
+DCL$M_PROMPT:	.ASCID	/$ /
+DCL$M_WELCOME:	.ASCID	"!/	Welcome to MiniVMS V1.0 on node !AC!/"
+DCL$M_IVVERB:	.ASCID	"%DCL-W-IVVERB, unrecognized command verb - check validity and spelling!/ \!AD\"
+DCL$M_INSFPRM:	.ASCID	/%DCL-W-INSFPRM, missing command parameters - supply all required parameters/
+DCL$M_NOFILES:	.ASCID	/%DIRECT-W-NOFILES, no files found/
+DCL$M_DIRHDR:	.ASCID	"!/Directory DUA0:[!AC]!/"
+DCL$M_DIRLINE:	.ASCID	/!24AD!7UL  !AD/
+DCL$M_DIRTOTAL:	.ASCID	"!/Total of !UL file!%S, !UL block!%S."
+DCL$M_CANCEL:	.ASCID	/*Cancel*/
+DCL$M_DELVER:	.ASCID	/%DELETE-E-DELVER, explicit version number or wild card required/
+DCL$M_TIME:	.ASCID	/  !AD/
+DCL$M_DEVICES:	.ASCID	"!/Device                  Device           Error    Volume         Free!/ Name                   Status           Count     Label        Blocks!/DUA0:                   Mounted              0  !12AC!9UL"
+DCL$M_MEMORY:	.ASCID	"!/              System Memory Resources on !%D!/!/Physical Memory Usage (pages):     Total        Free      In Use!/  Main Memory (5.00Mb)          !9UL   !9UL   !9UL"
+DCL$M_SYSTEM:	.ASCID	"MiniVMS V1.0  on node VAXstation II  !AD   Uptime  !UL !AD"
+DCL$M_PROCESS:	.ASCID	"  Pid    Process Name    State  Pri!/00000020 !15AC LEF      4"
+DCL$M_SHOWWHAT:	.ASCID	/%DCL-W-IVKEYW, unrecognized keyword - check validity and spelling/
+DCL$M_HELP:	.ASCID	"!/  MiniVMS commands:!/!/    DIRECTORY [file]      list files!/    TYPE file             display a text file!/    RUN file              run a program (.EXE)!/    DELETE file;version   delete a file (;* for all versions)!/    PURGE [file]          delete all but the newest versions!/    SHOW TIME | DEVICES | MEMORY | SYSTEM!/    LOGOUT                end the session!/    SHUTDOWN              stop the system!/!/  CTRL/Y interrupts a running program.!/"
+DCL$M_LOGOUT:	.ASCID	/  !AC  logged out at !AD/
+DCL$M_SHUTDOWN:	.ASCID	"!/%SHUTDOWN-I-OPERATOR, this terminal is now an operator's console!/%SYSTEM-I-SHUTDOWN, MiniVMS shutdown complete - use console to halt system!/"
+DCL$M_ACTIMAGE:	.ASCID	/%DCL-W-ACTIMAGE, error activating image !AD/
+DCL$M_CTRLY:	.ASCID	"^Y!/*INTERRUPT*"
+MSG$FORMAT:	.ASCID	/!AD!AC-!AD-!AC, !AC/
+MSG$NOMSG:	.ASCID	/!ADNONAME-E-NOMSG, Message number !XL/
+MSG$PREFIX:	.ASCII	/%-/
+MSG$SEVERITY:	.ASCII	/WSEIFFFF/
+
+;
+; Message table: code (without severity), facility, ident, text.
+;
+	.MACRO	MESSAGE	CODE,FAC,IDENT,TEXT,?L1,?L2
+	.LONG	CODE&^C7
+	.ADDRESS FAC, L1, L2
+	.SAVE_PSECT
+	.PSECT	$MSGTEXT
+L1:	.ASCIC	/IDENT/
+L2:	.ASCIC	"TEXT"
+	.RESTORE_PSECT
+	.ENDM	MESSAGE
+
+	.PSECT	$MSGTEXT
+MSG$SYSTEM:	.ASCIC	/SYSTEM/
+MSG$RMS:	.ASCIC	/RMS/
+	.PSECT	$DATA
+	.ALIGN	LONG
+MSG$TABLE:
+	MESSAGE	SS$_NORMAL,MSG$SYSTEM,NORMAL,<normal successful completion>
+	MESSAGE	SS$_ACCVIO,MSG$SYSTEM,ACCVIO,<access violation>
+	MESSAGE	SS$_BADPARAM,MSG$SYSTEM,BADPARAM,<bad parameter value>
+	MESSAGE	SS$_EXQUOTA,MSG$SYSTEM,EXQUOTA,<exceeded quota>
+	MESSAGE	SS$_NOPRIV,MSG$SYSTEM,NOPRIV,<no privilege for attempted operation>
+	MESSAGE	SS$_ABORT,MSG$SYSTEM,ABORT,<abort>
+	MESSAGE	SS$_IVCHAN,MSG$SYSTEM,IVCHAN,<invalid I/O channel>
+	MESSAGE	SS$_NOSUCHDEV,MSG$SYSTEM,NOSUCHDEV,<no such device available>
+	MESSAGE	SS$_ENDOFFILE,MSG$SYSTEM,ENDOFFILE,<end of file>
+	MESSAGE	SS$_BUFFEROVF,MSG$SYSTEM,BUFFEROVF,<output buffer overflow>
+	MESSAGE	SS$_CONTROLY,MSG$SYSTEM,CONTROLY,<operation completed under CTRL/Y>
+	MESSAGE	SS$_INSFMEM,MSG$SYSTEM,INSFMEM,<insufficient dynamic memory>
+	MESSAGE	SS$_OPINCOMPL,MSG$SYSTEM,OPINCOMPL,<operation is incomplete>
+	MESSAGE	SS$_ILLSER,MSG$SYSTEM,ILLSER,<illegal system service>
+	MESSAGE	^X44,MSG$SYSTEM,NOTIMAGE,<file is not an executable image>
+	MESSAGE	RMS$_EOF,MSG$RMS,EOF,<end of file detected>
+	MESSAGE	RMS$_FNF,MSG$RMS,FNF,<file not found>
+	MESSAGE	RMS$_FNM,MSG$RMS,FNM,<error in file name>
+	MESSAGE	RMS$_SYN,MSG$RMS,SYN,<file specification syntax error>
+	MESSAGE	RMS$_FAB,MSG$RMS,FAB,<invalid FAB or FAB not accessible>
+	MESSAGE	RMS$_RAB,MSG$RMS,RAB,<invalid RAB or RAB not accessible>
+	MESSAGE	RMS$_IFI,MSG$RMS,IFI,<invalid internal file identifier (IFI) value>
+	MESSAGE	RMS$_ISI,MSG$RMS,ISI,<invalid internal stream identifier (ISI) value>
+	MESSAGE	RMS$_FUL,MSG$RMS,FUL,<device full (insufficient space for allocation)>
+	MESSAGE	RMS$_DME,MSG$RMS,DME,<dynamic memory exhausted>
+	MESSAGE	RMS$_RTB,MSG$RMS,RTB,<record too large for user's buffer>
+	MESSAGE	RMS$_ACT,MSG$RMS,ACT,<file activity precludes operation>
+	MESSAGE	RMS$_FAC,MSG$RMS,FAC,<record operation not permitted by specified file access (FAC)>
+	MESSAGE	RMS$_RER,MSG$RMS,RER,<file read error>
+	MESSAGE	RMS$_WER,MSG$RMS,WER,<file write error>
+	.LONG	-1

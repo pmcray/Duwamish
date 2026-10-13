@@ -1,0 +1,1874 @@
+	.TITLE	CDGEN	Compact Disc digital audio generator
+	.IDENT	/V2.3/
+;++
+; CDGEN -- render a musical manuscript directly into Compact Disc
+;	   digital audio.
+;
+; The output is the Red Book stream itself: 44,100 sample frames per
+; second, each frame a 16-bit two's complement left sample followed by a
+; 16-bit right sample, least significant byte first (the VAX's own byte
+; order), written in CD sectors of 588 frames (2352 bytes, 1/75 second).
+; Nothing is ever played out loud and recorded: every sample of the album
+; is computed here, and the file goes byte for byte to the mastering tape.
+;
+; The manuscript is a text file (default type .MSS):
+;
+;	! comment to end of line
+;	TITLE	Departure
+;	TEMPO	66			crotchets per minute
+;	REVERB	35			send to the reverberation, percent
+;	MASTER	80			overall level, percent
+;	TAIL	6			seconds of reverberation after the end
+;	VOICE	1 PAD   LEVEL 55 PAN 30 ATTACK 2000 RELEASE 4000
+;	VOICE	2 BELL  PAN 70 RATIO 3.5 INDEX 4
+;	PART	1
+;	  MP D3/1 | A2/2. G2/4 | |: F3/2 E3/2 :|3 R/1
+;	END
+;
+; Voices are SINE, PAD (two detuned oscillators), FM (Chowning's two-
+; operator frequency modulation), BELL (FM, inharmonic ratio), PLUCK
+; (the Karplus-Strong plucked string) and NOISE (filtered noise: wind,
+; surf).  Parameters: LEVEL PAN ATTACK DECAY SUSTAIN RELEASE (ms or %),
+; RATIO INDEX (FM), DETUNE (cents, PAD), GATE (% of each note sounded),
+; DAMP (PLUCK), TRANSPOSE (semitones).
+;
+; Notes are letter, optional # or B (flat), octave (C4 = middle C), and
+; optional /duration (1 2 4 8 16 32 64, then . for dotted or T for
+; triplet), optionally followed by ~ to tie into the next note.  R is a
+; rest.  PPP PP P MP MF F FF FFF set the dynamic.  |: and :|n repeat.
+; Bar lines | are for the reader only.  Each voice plays one note at a
+; time; chords are built from several voices.
+;
+; A. Fredericks.  VAXstation II, 1985-86.
+;--
+
+;
+; Constants
+;
+RATE		= 44100			; sample frames per second
+FRAMES		= 588			; frames per CD sector
+SECTOR		= FRAMES*4		; bytes per CD sector
+TICKS		= 1920			; ticks per whole note
+MAXVOICE	= 16
+MAXEV		= 3000			; events per voice
+DLINE		= 2048			; plucked-string delay line (words)
+FULL		= ^X1000000		; envelope full scale (2**24)
+
+EV_INC		= 0			; phase increment (0 = rest)
+EV_TICKS	= 4			; duration in ticks
+EV_VEL		= 8			; velocity 0-255 (word)
+EV_FLAGS	= 10			; bit 0: tied to next (word)
+EV_SIZE		= 12
+
+T_SINE		= 1			; render types
+T_PAD		= 2
+T_FM		= 3
+T_PLUCK		= 4
+T_NOISE		= 5
+
+;
+; Voice block.  The first P_SIZE bytes are the raw parameters, in the
+; same order as a preset.
+;
+V_TYPE		= 0
+V_PLEVEL	= 4
+V_PPAN		= 8
+V_A_MS		= 12
+V_D_MS		= 16
+V_S_PCT		= 20
+V_R_MS		= 24
+V_PRATIO	= 28			; 16.16
+V_PINDEX	= 32			; 16.16
+V_PDETUNE	= 36			; 16.16 cents
+V_PGATE		= 40
+V_PDAMP		= 44
+P_SIZE		= 48
+V_TRANS		= 48			; transposition, semitones
+V_LEVEL		= 52			; 0-256
+V_PAN		= 56			; 0 (left) - 256 (right)
+V_ATTACK	= 60			; envelope rates per sample
+V_DECAY		= 64
+V_SUSTAIN	= 68			; sustain level
+V_RELEASE	= 72
+V_RATIO		= 76			; 16.16
+V_DEPTH		= 80			; FM depth at full envelope
+V_DETUNE	= 84			; 16.16 frequency factor
+V_GATE		= 88			; percent
+V_DAMP		= 92			; Q15 loss factor
+V_GAINL		= 96
+V_GAINR		= 100
+V_EVBASE	= 104			; event list
+V_EVEND		= 108
+V_EVPTR		= 112
+V_LEFT		= 116			; samples left in this event
+V_GATELEFT	= 120			; samples until the key is released
+V_STAGE		= 124			; 0 idle 1 attack 2 decay 3 sustain 4 release
+V_ENV		= 128
+V_INC		= 132
+V_PHASE		= 136
+V_INC2		= 140
+V_PHASE2	= 144
+V_DLINE		= 148
+V_DLEN		= 152
+V_DPOS		= 156
+V_NZ1		= 160
+V_NZ2		= 164
+V_COEF		= 168
+V_MAKEUP	= 172
+V_TICK		= 176			; ticks played so far
+V_SPOS		= 180			; samples played so far
+V_DUR		= 184			; current note value (ticks), parsing
+V_VEL		= 188			; current dynamic, parsing
+V_RDEPTH	= 192			; repeat nesting
+V_RSTACK	= 196			; 4 repeat start addresses
+V_TOTAL		= 212			; total ticks in the part
+V_DEFINED	= 216
+V_NOTEON	= 220
+V_TIED		= 224			; the last note was tied to this one
+V_SIZE		= 228
+V_PX		= V_NZ1			; PLUCK: previous delay-line output,
+V_PAVG		= V_NZ2			;  previous averaged value,
+V_APY		= V_COEF		;  previous all-pass output,
+V_APC		= V_MAKEUP		;  all-pass coefficient (Q15)
+
+;
+; ----------------------------------------------------------------------
+; Read-only data
+; ----------------------------------------------------------------------
+;
+	.PSECT	CDGEN_CODE,NOWRT,EXE,LONG	; (program sections in memory order)
+	.PSECT	CDGEN_CONST,NOWRT,NOEXE,LONG
+	.PSECT	CDGEN_DATA,WRT,NOEXE,LONG
+	.PSECT	CDGEN_TABLES,WRT,NOEXE,PAGE
+	.PSECT	CDGEN_CONST
+
+BANNER:	.ASCID	"CDGEN V2.3 - Compact Disc digital audio generator          A. Fredericks"
+Q_IN:	.ASCID	/Manuscript: /
+Q_OUT:	.ASCID	/CD audio file [!AD]: /
+M_TITLE:	.ASCID	/%CDGEN-I-SCORE, "!AD": !UL voice!%S, !UL note!%S, tempo !UL/
+M_LENGTH:	.ASCID	/%CDGEN-I-LENGTH, !UL:!2ZL.!2ZL to render, !UL sectors, !UL bytes/
+M_PROGRESS:	.ASCID	/  !3UL:!2ZL:!2ZL  !7UL sectors/
+M_WRITTEN:	.ASCID	/%CDGEN-S-WRITTEN, !UL sectors (!UL:!2ZL:!2ZL) written to !AD/
+M_PEAK:	.ASCID	/%CDGEN-I-PEAK, peak level !UL% of full scale, !UL sample!%S clipped/
+M_CLIPPED:	.ASCID	/%CDGEN-W-CLIPPED, reduce MASTER or voice LEVELs to avoid distortion/
+M_SYNTAX:	.ASCID	/%CDGEN-E-SYNTAX, line !UL: !AS "!AD"/
+M_NOFILE:	.ASCID	/%CDGEN-E-OPENIN, error opening manuscript !AD/
+M_NOOUT:	.ASCID	/%CDGEN-E-OPENOUT, error creating !AD/
+M_NOVOICE:	.ASCID	/%CDGEN-E-NOVOICES, the manuscript has no parts/
+
+E_KEYWORD:	.ASCID	/unknown keyword/
+E_NUMBER:	.ASCID	/number expected/
+E_VOICE:	.ASCID	/voice must be 1 to 16/
+E_TIMBRE:	.ASCID	/unknown voice type/
+E_PARAM:	.ASCID	/unknown voice parameter/
+E_NOPART:	.ASCID	/notes before the first PART/
+E_UNDEF:	.ASCID	/PART names a voice with no VOICE line/
+E_NOTE:	.ASCID	/not a note/
+E_RANGE:	.ASCID	/note out of range/
+E_DURATION:	.ASCID	/bad note value/
+E_FULL:	.ASCID	/too many notes in this part/
+E_REPEAT:	.ASCID	/repeats nested too deeply/
+E_TEMPO:	.ASCID	/tempo must be 20 to 400/
+
+CDDA:	.ASCII	/.CDDA/
+
+;
+; Keywords: ASCIC name, then the address of the routine.
+;
+KEYWORDS:
+	.ASCIC	/TITLE/
+	.ADDRESS KW_TITLE
+	.ASCIC	/TEMPO/
+	.ADDRESS KW_TEMPO
+	.ASCIC	/REVERB/
+	.ADDRESS KW_REVERB
+	.ASCIC	/MASTER/
+	.ADDRESS KW_MASTER
+	.ASCIC	/TAIL/
+	.ADDRESS KW_TAIL
+	.ASCIC	/SPACE/
+	.ADDRESS KW_SPACE
+	.ASCIC	/VOICE/
+	.ADDRESS KW_VOICE
+	.ASCIC	/PART/
+	.ADDRESS KW_PART
+	.ASCIC	/END/
+	.ADDRESS KW_END
+	.BYTE	0
+
+;
+; Voice presets: ASCIC name, then type, level %, pan %, attack ms,
+; decay ms, sustain %, release ms, ratio, index, detune (cents),
+; gate %, damping.  (Ratio, index and detune are 16.16 fixed point.)
+;
+ONE	= ^X10000
+PRESETS:
+	.ASCIC	/SINE/
+	.LONG	T_SINE, 70, 50,   10,  300,  70,  400, ONE, 0, 0, 90, 0
+	.ASCIC	/PAD/
+	.LONG	T_PAD,  55, 50, 1500, 1500,  80, 3000, ONE, 0, 7*ONE, 100, 0
+	.ASCIC	/FM/
+	.LONG	T_FM,   60, 50,    8,  600,  50,  600, ONE, <5*ONE>/2, 0, 90, 0
+	.ASCIC	/BELL/
+	.LONG	T_FM,   55, 50,    2, 4000,   0, 4000, <7*ONE>/2, 4*ONE, 0, 100, 0
+	.ASCIC	/PLUCK/
+	.LONG	T_PLUCK,70, 50,    1,    0, 100,  150, ONE, 0, 0, 100, 99
+	.ASCIC	/NOISE/
+	.LONG	T_NOISE,45, 50, 2500, 1500,  70, 4000, ONE, 0, 0, 100, 0
+	.BYTE	0
+
+;
+; Voice parameters: ASCIC name, offset of the raw value, kind
+; (0 = integer, 1 = 16.16 fixed point, 2 = signed integer).
+;
+PARAMS:
+	.ASCIC	/LEVEL/
+	.LONG	V_PLEVEL, 0
+	.ASCIC	/PAN/
+	.LONG	V_PPAN, 0
+	.ASCIC	/ATTACK/
+	.LONG	V_A_MS, 0
+	.ASCIC	/DECAY/
+	.LONG	V_D_MS, 0
+	.ASCIC	/SUSTAIN/
+	.LONG	V_S_PCT, 0
+	.ASCIC	/RELEASE/
+	.LONG	V_R_MS, 0
+	.ASCIC	/RATIO/
+	.LONG	V_PRATIO, 1
+	.ASCIC	/INDEX/
+	.LONG	V_PINDEX, 1
+	.ASCIC	/DETUNE/
+	.LONG	V_PDETUNE, 1
+	.ASCIC	/GATE/
+	.LONG	V_PGATE, 0
+	.ASCIC	/DAMP/
+	.LONG	V_PDAMP, 0
+	.ASCIC	/TRANSPOSE/
+	.LONG	V_TRANS, 2
+	.BYTE	0
+
+;
+; Dynamics and their velocities.
+;
+DYNAMICS:
+	.ASCIC	/PPP/
+	.LONG	32
+	.ASCIC	/PP/
+	.LONG	56
+	.ASCIC	/P/
+	.LONG	80
+	.ASCIC	/MP/
+	.LONG	112
+	.ASCIC	/MF/
+	.LONG	144
+	.ASCIC	/F/
+	.LONG	176
+	.ASCIC	/FF/
+	.LONG	216
+	.ASCIC	/FFF/
+	.LONG	255
+	.BYTE	0
+
+;
+; Semitones above C of the note letters A to G.
+;
+LETTERS:	.BYTE	9, 11, 0, 2, 4, 5, 7
+
+;
+; Floating point constants (VAX F_floating).
+;
+	.ALIGN	LONG
+QSTEP:		.F_FLOATING 0.0015339808	; (pi/2)/1024
+FULLSCALE:	.F_FLOATING 32767.0
+C9FREQ:		.F_FLOATING 8372.0181		; C9, equal temperament, A4 = 440
+SEMITONE:	.F_FLOATING 1.0594631		; 2**(1/12)
+INCSCALE:	.F_FLOATING 97391.545		; 2**32 / 44100
+FMDEPTH:	.F_FLOATING 1303.8		; radians -> phase units / 32767 / 16
+FIX16:		.F_FLOATING 65536.0
+NOISEK:		.F_FLOATING 196608.0		; noise loudness compensation
+;
+; Taylor series for sin(x)/x in powers of x**2, highest degree first,
+; for the POLYF instruction.
+;
+SINCOEF:	.F_FLOATING -2.5052108E-8, 2.7557319E-6, -1.9841270E-4
+		.F_FLOATING 8.3333333E-3, -1.6666667E-1, 1.0
+;
+; 2**(c/1200) for a detuning of c cents, to second order.
+;
+CENTCOEF:	.F_FLOATING 1.6680E-7, 5.7779E-4, 1.0
+
+;
+; Render routines by voice type.
+;
+RENDERERS:	.ADDRESS 0, RENDER_SINE, RENDER_PAD, RENDER_FM
+		.ADDRESS RENDER_PLUCK, RENDER_NOISE
+
+;
+; ----------------------------------------------------------------------
+; Read-write data
+; ----------------------------------------------------------------------
+;
+	.PSECT	CDGEN_DATA,WRT,NOEXE,LONG
+
+INFAB:	$FAB	DNM=<.MSS>,FAC=FAB$M_GET
+INRAB:	$RAB	FAB=INFAB,UBF=LINE,USZ=255
+OUTFAB:	$FAB	RFM=FAB$C_UDF
+OUTRAB:	$RAB	FAB=OUTFAB,RBF=OUTBUF,RSZ=SECTOR
+
+INNAME_D:	.LONG	80
+		.ADDRESS INNAME
+OUTNAME_D:	.LONG	80
+		.ADDRESS OUTNAME
+INLEN:		.WORD	0
+OUTLEN:		.WORD	0
+DEFLEN:		.LONG	0
+SAYLEN:		.WORD	0
+		.ALIGN	LONG
+SAYBUF_D:	.LONG	255
+		.ADDRESS SAYBUF
+SAYOUT_D:	.LONG	0
+		.ADDRESS SAYBUF
+QBUF_D:		.LONG	100
+		.ADDRESS QBUF
+QOUT_D:		.LONG	0
+		.ADDRESS QBUF
+QLEN:		.WORD	0
+		.ALIGN	LONG
+
+TEMPO:		.LONG	72
+REVSEND:	.LONG	77		; 30% of 256
+MASTER:		.LONG	205		; 80% of 256
+TAIL:		.LONG	4		; seconds
+WHOLE:		.LONG	0		; samples per whole note
+LINENO:		.LONG	0
+ENDSEEN:	.LONG	0
+CURVOICE:	.LONG	0
+NVOICES:	.LONG	0
+NEVENTS:	.LONG	0
+TOTALFRAMES:	.LONG	0
+NSECTORS:	.LONG	0
+SECTORNO:	.LONG	0
+SEED:		.LONG	1985
+PEAK:		.LONG	0
+CLIPS:		.LONG	0
+TOKPTR:		.LONG	0
+TOKEND:		.LONG	0
+TOKLEN:		.LONG	0
+TITLELEN:	.LONG	8
+TITLE:		.ASCII	/Untitled/
+		.BLKB	72
+INNAME:		.BLKB	80
+OUTNAME:	.BLKB	80
+DEFNAME:	.BLKB	80
+TOKBUF:		.BLKB	40
+LINE:		.BLKB	260
+SAYBUF:		.BLKB	256
+QBUF:		.BLKB	100
+
+;
+; Reverberation: four parallel comb filters into two all-pass filters
+; per channel (after M. R. Schroeder, 1962).
+;
+CLEN1 = 1557
+CLEN2 = 1617
+CLEN3 = 1491
+CLEN4 = 1422
+ALEN1 = 556				; left
+ALEN2 = 441
+ALEN3 = 579				; right
+ALEN4 = 464
+RVDAMP = 205				; 1 - damping 0.2  (Q8)
+RVFEED:	.LONG	238			; comb feedback 0.93 (Q8), set by SPACE
+CIDX1:	.LONG	0
+CIDX2:	.LONG	0
+CIDX3:	.LONG	0
+CIDX4:	.LONG	0
+CST1:	.LONG	0
+CST2:	.LONG	0
+CST3:	.LONG	0
+CST4:	.LONG	0
+AIDX1:	.LONG	0
+AIDX2:	.LONG	0
+AIDX3:	.LONG	0
+AIDX4:	.LONG	0
+
+;
+; Large tables, left uninitialised in the image (demand zero).
+;
+	.PSECT	CDGEN_TABLES,WRT,NOEXE,PAGE
+SINE:	.BLKW	4096			; one cycle, 4096 points
+TOPOCT:	.BLKL	12			; increments for C9..B9
+PITCH:	.BLKL	128			; increments for MIDI notes 0..127
+MIX:	.BLKL	FRAMES*2		; mixing buffer (L,R longwords)
+OUTBUF:	.BLKW	FRAMES*2		; one CD sector
+VOICES:	.BLKB	MAXVOICE*V_SIZE
+CBUF1:	.BLKL	CLEN1
+CBUF2:	.BLKL	CLEN2
+CBUF3:	.BLKL	CLEN3
+CBUF4:	.BLKL	CLEN4
+ABUF1:	.BLKL	ALEN1
+ABUF2:	.BLKL	ALEN2
+ABUF3:	.BLKL	ALEN3
+ABUF4:	.BLKL	ALEN4
+DLINES:	.BLKW	MAXVOICE*DLINE
+EVENTS:	.BLKB	MAXVOICE*MAXEV*EV_SIZE
+
+;
+; ----------------------------------------------------------------------
+; Macros
+; ----------------------------------------------------------------------
+;
+; SAY fmt,args... -- format with $FAO and type it.
+;
+	.MACRO	SAY	FMT,A,B,C,D,E,F,G,H
+	$$N = 1
+	.IF	NB <H>
+	PUSHL	H
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <G>
+	PUSHL	G
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <F>
+	PUSHL	F
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <E>
+	PUSHL	E
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <D>
+	PUSHL	D
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <C>
+	PUSHL	C
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <B>
+	PUSHL	B
+	$$N = $$N+1
+	.ENDC
+	.IF	NB <A>
+	PUSHL	A
+	$$N = $$N+1
+	.ENDC
+	PUSHAB	FMT
+	CALLS	#$$N,SAYIT
+	.ENDM	SAY
+
+;
+; TICK -- count down the current event and the key gate.  RELOAD names
+; a routine that refreshes a renderer's registers after a new event.
+;
+	.MACRO	TICK	RELOAD,?A,?B
+	DECL	V_LEFT(R11)
+	BGTR	A
+	JSB	NEXT_EVENT
+	.IF	NB <RELOAD>
+	JSB	RELOAD
+	.ENDC
+A:	DECL	V_GATELEFT(R11)
+	BNEQ	B
+	TSTL	R7
+	BEQL	B
+	MOVL	#4,R7			; key released
+B:
+	.ENDM	TICK
+
+;
+; ENVELOPE -- advance the ADSR envelope (R8 level, R7 stage).
+;
+	.MACRO	ENVELOPE ?TAB,?ATT,?DEC,?REL,?DONE
+	CASEB	R7,#0,#4
+TAB:	.WORD	DONE-TAB, ATT-TAB, DEC-TAB, DONE-TAB, REL-TAB
+ATT:	ADDL2	V_ATTACK(R11),R8
+	CMPL	R8,#FULL
+	BLSS	DONE
+	MOVL	#FULL,R8
+	MOVL	#2,R7
+	BRB	DONE
+DEC:	SUBL2	V_DECAY(R11),R8
+	CMPL	R8,V_SUSTAIN(R11)
+	BGTR	DONE
+	MOVL	V_SUSTAIN(R11),R8
+	MOVL	#3,R7
+	BRB	DONE
+REL:	SUBL2	V_RELEASE(R11),R8
+	BGTR	DONE
+	CLRL	R8
+	CLRL	R7
+DONE:
+	.ENDM	ENVELOPE
+
+;
+; APPLYENV -- R0 = R0 * envelope.
+;
+	.MACRO	APPLYENV
+	ASHL	#-8,R8,R1
+	MULL2	R1,R0
+	ASHL	#-16,R0,R0
+	.ENDM	APPLYENV
+
+;
+; MIXIN -- add sample R0 into the mix buffer at (R9), panned.
+;
+	.MACRO	MIXIN
+	MULL3	R0,V_GAINL(R11),R1
+	ASHL	#-16,R1,R1
+	ADDL2	R1,(R9)+
+	MULL3	R0,V_GAINR(R11),R1
+	ASHL	#-16,R1,R1
+	ADDL2	R1,(R9)+
+	.ENDM	MIXIN
+
+;
+; NEXTSAMPLE label -- loop back for the next sample of the block.
+;
+	.MACRO	NEXTSAMPLE LOOP,?OUT
+	DECL	R10
+	BLEQ	OUT
+	BRW	LOOP
+OUT:
+	.ENDM	NEXTSAMPLE
+
+;
+; COMB n -- one comb filter: input R0, output added to R11.
+;
+	.MACRO	COMB	N,?W
+	MOVL	CIDX'N,R1
+	MOVL	CBUF'N[R1],R2		; delayed sample
+	ADDL2	R2,R11
+	SUBL3	CST'N,R2,R3		; low-pass in the loop (damping)
+	MULL2	#RVDAMP,R3
+	ASHL	#-8,R3,R3
+	ADDL2	R3,CST'N
+	MULL3	CST'N,RVFEED,R3
+	ASHL	#-8,R3,R3
+	ADDL2	R0,R3
+	MOVL	R3,CBUF'N[R1]
+	INCL	R1
+	CMPL	R1,#CLEN'N
+	BLSS	W
+	CLRL	R1
+W:	MOVL	R1,CIDX'N
+	.ENDM	COMB
+
+;
+; ALLPASS n -- one all-pass filter (gain 1/2) on R0.
+;
+	.MACRO	ALLPASS	N,?W
+	MOVL	AIDX'N,R1
+	MOVL	ABUF'N[R1],R2
+	ASHL	#-1,R2,R3
+	ADDL2	R0,R3
+	MOVL	R3,ABUF'N[R1]
+	SUBL3	R0,R2,R0
+	INCL	R1
+	CMPL	R1,#ALEN'N
+	BLSS	W
+	CLRL	R1
+W:	MOVL	R1,AIDX'N
+	.ENDM	ALLPASS
+
+;
+; CLIP reg -- limit to 16 bits, noting the peak.
+;
+	.MACRO	CLIP	REG,?NEG,?HIGH,?LOW,?OK
+	TSTL	REG
+	BLSS	NEG
+	CMPL	REG,PEAK
+	BLEQ	HIGH
+	MOVL	REG,PEAK
+HIGH:	CMPL	REG,#32767
+	BLEQ	OK
+	MOVL	#32767,REG
+	INCL	CLIPS
+	BRB	OK
+NEG:	MNEGL	REG,R0
+	CMPL	R0,PEAK
+	BLEQ	LOW
+	MOVL	R0,PEAK
+LOW:	CMPL	REG,#-32768
+	BGEQ	OK
+	MOVL	#-32768,REG
+	INCL	CLIPS
+OK:
+	.ENDM	CLIP
+
+;
+; ----------------------------------------------------------------------
+; Main program
+; ----------------------------------------------------------------------
+;
+	.PSECT	CDGEN_CODE,NOWRT,EXE,LONG
+
+	.ENTRY	CDGEN,^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11>
+	PUSHAQ	BANNER
+	CALLS	#1,G^LIB$PUT_OUTPUT
+	CALLS	#0,G^LIB$INIT_TIMER
+	JSB	MAKE_TABLES
+;
+; Ask for the manuscript and the output file.
+;
+	PUSHAW	INLEN
+	PUSHAQ	Q_IN
+	PUSHAQ	INNAME_D
+	CALLS	#3,G^LIB$GET_INPUT
+	BLBS	R0,10$
+	BRW	QUIT
+10$:	TSTW	INLEN
+	BNEQ	20$
+	BRW	QUIT
+20$:	JSB	DEFAULT_OUTPUT
+	$FAO_S	CTRSTR=Q_OUT,OUTLEN=QLEN,OUTBUF=QBUF_D,P1=DEFLEN,P2=#DEFNAME
+	MOVW	QLEN,QOUT_D
+	PUSHAW	OUTLEN
+	PUSHAQ	QOUT_D
+	PUSHAQ	OUTNAME_D
+	CALLS	#3,G^LIB$GET_INPUT
+	TSTW	OUTLEN
+	BNEQ	30$
+	MOVC3	DEFLEN,DEFNAME,OUTNAME	; take the default
+	MOVW	DEFLEN,OUTLEN
+30$:	JSB	READ_MANUSCRIPT
+	JSB	PREPARE
+	JSB	RENDER
+	CALLS	#0,G^LIB$SHOW_TIMER
+QUIT:	MOVL	#SS$_NORMAL,R0
+	RET
+
+;
+; DEFAULT_OUTPUT -- the manuscript's name with type .CDDA.
+;
+DEFAULT_OUTPUT:
+	MOVZWL	INLEN,R0
+	MOVAB	INNAME,R1
+	MOVL	R1,R2			; start of the name proper
+	CLRL	R3
+10$:	CMPL	R3,R0
+	BGEQ	30$
+	MOVB	(R1)[R3],R4
+	CMPB	R4,#^A/]/
+	BEQL	15$
+	CMPB	R4,#^A/:/
+	BNEQ	20$
+15$:	MOVAB	1(R1)[R3],R2
+20$:	INCL	R3
+	BRB	10$
+30$:	MOVAB	DEFNAME,R5		; copy the name up to . or ;
+	ADDL3	R0,R1,R6
+40$:	CMPL	R2,R6
+	BGEQU	50$
+	MOVB	(R2)+,R4
+	CMPB	R4,#^A/./
+	BEQL	50$
+	CMPB	R4,#^A/;/
+	BEQL	50$
+	CMPB	R4,#^A/a/
+	BLSSU	45$
+	BICB2	#^X20,R4
+45$:	MOVB	R4,(R5)+
+	BRB	40$
+50$:	MOVC3	#5,CDDA,(R5)
+	MOVAB	DEFNAME,R0
+	SUBL3	R0,R3,DEFLEN
+	RSB
+
+;
+; SAYIT -- CALLS #n,SAYIT with the ASCID control string and parameters.
+;
+	.ENTRY	SAYIT,^M<>
+	PUSHAL	8(AP)
+	PUSHAQ	SAYBUF_D
+	PUSHAW	SAYLEN
+	PUSHL	4(AP)
+	CALLS	#4,G^SYS$FAOL
+	MOVW	SAYLEN,SAYOUT_D
+	PUSHAQ	SAYOUT_D
+	CALLS	#1,G^LIB$PUT_OUTPUT
+	RET
+
+;
+; ----------------------------------------------------------------------
+; MAKE_TABLES -- the sine table and the pitch table.
+; ----------------------------------------------------------------------
+;
+MAKE_TABLES:
+;
+; First quadrant: sin x = x P(x**2), evaluated by POLYF.
+;
+	CLRL	R6
+10$:	CVTLF	R6,R7
+	MULF2	QSTEP,R7		; x
+	MULF3	R7,R7,R0		; x**2
+	POLYF	R0,#5,SINCOEF		; R0 = sin(x)/x
+	MULF2	R7,R0
+	MULF2	FULLSCALE,R0
+	CVTRFL	R0,R1
+	MOVW	R1,SINE[R6]
+	ACBL	#1024,#1,R6,10$
+;
+; The other three quadrants by symmetry.
+;
+	CLRL	R6
+20$:	SUBL3	R6,#1024,R1
+	MOVW	SINE[R1],R2
+	ADDL3	#1024,R6,R3
+	MOVW	R2,SINE[R3]		; sin(pi/2 + x) = sin(pi/2 - x)
+	MNEGW	SINE[R6],R4
+	ADDL3	#2048,R6,R3
+	MOVW	R4,SINE[R3]		; sin(pi + x) = -sin x
+	MNEGW	R2,R4
+	ADDL3	#3072,R6,R3
+	MOVW	R4,SINE[R3]
+	AOBLSS	#1024,R6,20$
+;
+; Phase increments for the top octave, then every MIDI note by shifting:
+; an increment of 2**32 is one cycle per sample.
+;
+	MOVF	C9FREQ,R6
+	CLRL	R7
+30$:	MULF3	R6,INCSCALE,R0
+	CVTRFL	R0,TOPOCT[R7]
+	MULF2	SEMITONE,R6
+	AOBLSS	#12,R7,30$
+	CLRL	R7
+40$:	DIVL3	#12,R7,R0		; octave
+	MULL3	#12,R0,R1
+	SUBL3	R1,R7,R1		; semitone
+	SUBL2	#10,R0			; shift right by (10 - octave)
+	ASHL	R0,TOPOCT[R1],PITCH[R7]
+	AOBLSS	#128,R7,40$
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; Reading the manuscript
+; ----------------------------------------------------------------------
+;
+READ_MANUSCRIPT:
+	MOVAB	INNAME,INFAB+FAB$L_FNA
+	MOVB	INLEN,INFAB+FAB$B_FNS
+	$OPEN	FAB=INFAB
+	BLBS	R0,5$
+	PUSHL	R0
+	MOVZWL	INLEN,R1
+	SAY	M_NOFILE,R1,#INNAME
+	$EXIT_S	(SP)+
+5$:	$CONNECT RAB=INRAB
+10$:	$GET	RAB=INRAB
+	BLBS	R0,20$
+	BRW	90$
+20$:	INCL	LINENO
+	MOVAB	LINE,R1
+	MOVL	R1,TOKPTR
+	MOVZWL	INRAB+RAB$W_RSZ,R0
+	ADDL3	R0,R1,TOKEND
+	LOCC	#^A/!/,R0,(R1)		; strip a comment
+	BEQL	25$
+	MOVL	R1,TOKEND
+25$:	JSB	GETTOKEN
+	TSTL	R0
+	BEQL	10$
+;
+; A keyword?
+;
+	MOVAB	KEYWORDS,R6
+30$:	MOVZBL	(R6),R7
+	BEQL	50$			; no: a line of notes
+	CMPL	R7,TOKLEN
+	BNEQ	40$
+	CMPC3	R7,TOKBUF,1(R6)
+	BNEQ	40$
+	MOVAB	1(R6)[R7],R6
+	JSB	@(R6)			; keyword routine
+	TSTL	ENDSEEN
+	BNEQ	90$
+	BRW	10$
+40$:	MOVAB	5(R6)[R7],R6
+	BRB	30$
+50$:	TSTL	CURVOICE
+	BNEQ	60$
+	MOVAB	E_NOPART,R0
+	BRW	SYNTAX
+60$:	JSB	NOTES
+	BRW	10$
+90$:	$CLOSE	FAB=INFAB
+	RSB
+
+KW_END:
+	MOVL	TOKEND,TOKPTR
+	MOVL	#1,ENDSEEN
+	RSB
+
+;
+; GETTOKEN -- next blank-separated token, upper case, into TOKBUF.
+; Bar lines are skipped; "|:" and ":|" are tokens.  Returns R0 = length.
+;
+GETTOKEN:
+	PUSHR	#^M<R1,R2,R3,R4>
+	MOVL	TOKPTR,R1
+	MOVL	TOKEND,R2
+10$:	CMPL	R1,R2
+	BLSSU	9809$
+	BRW	80$
+9809$:
+	MOVZBL	(R1),R0
+	CMPB	R0,#^A/ /
+	BEQL	15$
+	CMPB	R0,#9
+	BEQL	15$
+	CMPB	R0,#^A/,/
+	BEQL	15$
+	CMPB	R0,#^A/|/
+	BNEQ	20$
+	CMPB	1(R1),#^A/:/		; "|:" starts a repeat
+	BEQL	20$
+15$:	INCL	R1
+	BRB	10$
+20$:	MOVAB	TOKBUF,R3
+	CLRL	R4
+30$:	CMPL	R1,R2
+	BGEQU	50$
+	MOVZBL	(R1),R0
+	CMPB	R0,#^A/ /
+	BEQL	50$
+	CMPB	R0,#9
+	BEQL	50$
+	CMPB	R0,#^A/,/
+	BEQL	50$
+	CMPB	R0,#^A/|/
+	BNEQ	40$
+	TSTL	R4			; "|" ends a token, except in "|:" ...
+	BEQL	40$
+	CMPL	R4,#1			; ... and ":|"
+	BNEQ	50$
+	CMPB	TOKBUF,#^A/:/
+	BNEQ	50$
+40$:	CMPB	R0,#^A/a/
+	BLSSU	45$
+	CMPB	R0,#^A/z/
+	BGTRU	45$
+	BICB2	#^X20,R0
+45$:	CMPL	R4,#39
+	BGEQ	47$
+	MOVB	R0,(R3)+
+	INCL	R4
+47$:	INCL	R1
+	BRB	30$
+50$:	MOVL	R1,TOKPTR
+	MOVL	R4,TOKLEN
+	MOVL	R4,R0
+	POPR	#^M<R1,R2,R3,R4>
+	RSB
+80$:	MOVL	R1,TOKPTR
+	CLRL	TOKLEN
+	CLRL	R0
+	POPR	#^M<R1,R2,R3,R4>
+	RSB
+
+;
+; GETNUM -- next token as a number: R0 = value in 16.16 fixed point.
+; Accepts a sign and a decimal fraction ("3.5", "-12").
+;
+GETNUM:
+	PUSHR	#^M<R1,R2,R3,R4,R5>
+	JSB	GETTOKEN
+	TSTL	R0
+	BNEQ	9872$
+	BRW	90$
+9872$:
+	MOVAB	TOKBUF,R1
+	ADDL3	R0,R1,R2
+	CLRL	R5			; sign
+	CMPB	(R1),#^A/-/
+	BNEQ	5$
+	INCL	R5
+	INCL	R1
+5$:	CLRL	R3			; integer part
+	CLRL	R4			; digits seen
+10$:	CMPL	R1,R2
+	BGEQU	40$
+	MOVZBL	(R1)+,R0
+	CMPB	R0,#^A/./
+	BEQL	20$
+	SUBL2	#^A/0/,R0
+	CMPL	R0,#9
+	BGTRU	90$
+	MULL2	#10,R3
+	ADDL2	R0,R3
+	INCL	R4
+	BRB	10$
+20$:	ASHL	#16,R3,R3		; fraction: up to four digits
+	MOVL	#6554,R0		; 65536/10, rounded
+	PUSHL	R0
+25$:	CMPL	R1,R2
+	BGEQU	30$
+	MOVZBL	(R1)+,R0
+	SUBL2	#^A/0/,R0
+	CMPL	R0,#9
+	BGTRU	35$
+	INCL	R4
+	MULL2	(SP),R0
+	ADDL2	R0,R3
+	DIVL2	#10,(SP)
+	BRB	25$
+30$:	ADDL2	#4,SP
+	BRB	50$
+35$:	ADDL2	#4,SP
+	BRB	90$
+40$:	ASHL	#16,R3,R3
+50$:	TSTL	R4
+	BEQL	90$
+	BLBC	R5,60$
+	MNEGL	R3,R3
+60$:	MOVL	R3,R0
+	POPR	#^M<R1,R2,R3,R4,R5>
+	RSB
+90$:	MOVAB	E_NUMBER,R0
+	BRW	SYNTAX
+
+GETINT:					; next token as an integer
+	JSB	GETNUM
+	ASHL	#-16,R0,R0
+	RSB
+
+;
+; SYNTAX -- report an error in the manuscript (R0 = message) and stop.
+;
+SYNTAX:
+	SAY	M_SYNTAX,LINENO,R0,TOKLEN,#TOKBUF
+	$EXIT_S	#^X10000004		; error, message already given
+
+;
+; Keywords
+;
+KW_TITLE:
+	MOVL	TOKPTR,R1
+10$:	CMPL	R1,TOKEND		; the rest of the line
+	BGEQU	20$
+	CMPB	(R1),#^A/ /
+	BEQL	15$
+	CMPB	(R1),#9
+	BNEQ	20$
+15$:	INCL	R1
+	BRB	10$
+20$:	SUBL3	R1,TOKEND,R0
+	CMPL	R0,#80
+	BLEQ	30$
+	MOVL	#80,R0
+30$:	MOVL	R0,TITLELEN
+	MOVC3	R0,(R1),TITLE
+	MOVL	TOKEND,TOKPTR
+	RSB
+
+KW_TEMPO:
+	JSB	GETINT
+	CMPL	R0,#20
+	BLSS	10$
+	CMPL	R0,#400
+	BGTR	10$
+	MOVL	R0,TEMPO
+	RSB
+10$:	MOVAB	E_TEMPO,R0
+	BRW	SYNTAX
+
+KW_REVERB:
+	JSB	GETINT
+	MULL2	#256,R0
+	DIVL3	#100,R0,REVSEND
+	RSB
+
+KW_MASTER:
+	JSB	GETINT
+	MULL2	#256,R0
+	DIVL3	#100,R0,MASTER
+	RSB
+
+KW_TAIL:
+	JSB	GETINT
+	MOVL	R0,TAIL
+	RSB
+
+;
+; SPACE n -- size of the reverberant space, 0 (a small room) to 100 (a
+; cathedral): comb feedback from 0.70 to 0.97.
+;
+KW_SPACE:
+	JSB	GETINT
+	CMPL	R0,#100
+	BLEQ	10$
+	MOVL	#100,R0
+10$:	MULL2	#69,R0
+	DIVL2	#100,R0
+	ADDL3	#179,R0,RVFEED
+	RSB
+
+;
+; VOICE n type [parameter value] ...
+;
+KW_VOICE:
+	JSB	GETINT
+	DECL	R0
+	CMPL	R0,#MAXVOICE
+	BLSSU	10$
+	MOVAB	E_VOICE,R0
+	BRW	SYNTAX
+10$:	MULL3	#V_SIZE,R0,R11
+	MOVAB	VOICES[R11],R11
+	TSTL	V_DEFINED(R11)
+	BNEQ	15$
+	INCL	NVOICES
+	MULL3	#MAXEV*EV_SIZE,R0,R1	; first definition: its event list
+	MOVAB	EVENTS[R1],V_EVBASE(R11)
+	MOVL	V_EVBASE(R11),V_EVEND(R11)
+	MULL3	#DLINE*2,R0,R1
+	MOVAB	DLINES[R1],V_DLINE(R11)
+	MOVL	#480,V_DUR(R11)		; crotchets, mezzo-forte
+	MOVL	#144,V_VEL(R11)
+	MOVL	#1,V_DEFINED(R11)
+15$:	JSB	GETTOKEN		; the voice type
+	MOVAB	PRESETS,R6
+20$:	MOVZBL	(R6),R7
+	BNEQ	25$
+	MOVAB	E_TIMBRE,R0
+	BRW	SYNTAX
+25$:	CMPL	R7,TOKLEN
+	BNEQ	30$
+	CMPC3	R7,TOKBUF,1(R6)
+	BEQL	40$
+30$:	MOVAB	1+P_SIZE(R6)[R7],R6
+	BRB	20$
+40$:	MOVAB	1(R6)[R7],R6
+	MOVC3	#P_SIZE,(R6),(R11)	; start from the preset
+;
+; Parameters.
+;
+50$:	JSB	GETTOKEN
+	TSTL	R0
+	BEQL	90$
+	MOVAB	PARAMS,R6
+60$:	MOVZBL	(R6),R7
+	BNEQ	65$
+	MOVAB	E_PARAM,R0
+	BRW	SYNTAX
+65$:	CMPL	R7,TOKLEN
+	BNEQ	70$
+	CMPC3	R7,TOKBUF,1(R6)
+	BEQL	80$
+70$:	MOVAB	9(R6)[R7],R6
+	BRB	60$
+80$:	MOVAB	1(R6)[R7],R6
+	JSB	GETNUM
+	CMPL	4(R6),#1		; kind 1 is fixed point
+
+	BEQL	85$
+	ASHL	#-16,R0,R0
+85$:	ADDL3	(R6),R11,R1
+	MOVL	R0,(R1)
+	BRB	50$
+90$:	JSB	FINISH_VOICE
+	RSB
+
+;
+; FINISH_VOICE -- derive the working values of voice R11 from its
+; parameters.
+;
+FINISH_VOICE:
+	MULL3	#256,V_PLEVEL(R11),R0
+	DIVL3	#100,R0,V_LEVEL(R11)
+	MULL3	#256,V_PPAN(R11),R0
+	DIVL3	#100,R0,V_PAN(R11)
+	MULL3	#FULL/100,V_S_PCT(R11),V_SUSTAIN(R11)
+	MOVL	V_A_MS(R11),R0		; attack
+	JSB	MS_TO_SAMPLES
+	DIVL3	R0,#FULL,V_ATTACK(R11)
+	MOVL	V_D_MS(R11),R0		; decay
+	JSB	MS_TO_SAMPLES
+	SUBL3	V_SUSTAIN(R11),#FULL,R1
+	DIVL3	R0,R1,V_DECAY(R11)
+	BNEQ	10$
+	MOVL	#1,V_DECAY(R11)
+10$:	MOVL	V_R_MS(R11),R0		; release
+	JSB	MS_TO_SAMPLES
+	DIVL3	R0,#FULL,V_RELEASE(R11)
+	MOVL	V_PRATIO(R11),V_RATIO(R11)
+	CVTLF	V_PINDEX(R11),R0	; FM depth = index x 1303.8
+	DIVF2	FIX16,R0
+	MULF2	FMDEPTH,R0
+	CVTRFL	R0,V_DEPTH(R11)
+	CVTLF	V_PDETUNE(R11),R0	; 2**(cents/1200), by POLYF
+	DIVF2	FIX16,R0
+	POLYF	R0,#2,CENTCOEF
+	MULF2	FIX16,R0
+	CVTRFL	R0,V_DETUNE(R11)
+	MOVL	V_PGATE(R11),V_GATE(R11)
+	SUBL3	V_PDAMP(R11),#100,R0	; plucked string loss per sample
+	MULL2	#3,R0
+	SUBL3	R0,#32768,V_DAMP(R11)
+	RSB
+
+MS_TO_SAMPLES:				; R0 = ms -> samples (at least 1)
+	MULL2	#441,R0
+	DIVL2	#10,R0
+	BGTR	10$
+	MOVL	#1,R0
+10$:	RSB
+
+;
+; PART n -- following notes go to voice n.
+;
+KW_PART:
+	JSB	GETINT
+	DECL	R0
+	CMPL	R0,#MAXVOICE
+	BLSSU	10$
+	MOVAB	E_VOICE,R0
+	BRW	SYNTAX
+10$:	MULL3	#V_SIZE,R0,R11
+	MOVAB	VOICES[R11],R11
+	TSTL	V_DEFINED(R11)
+	BNEQ	20$
+	MOVAB	E_UNDEF,R0
+	BRW	SYNTAX
+20$:	MOVL	R11,CURVOICE
+	JSB	GETTOKEN		; notes may follow on the same line
+	TSTL	R0
+	BEQL	30$
+	JSB	NOTES
+30$:	RSB
+
+;
+; NOTES -- the token in TOKBUF and the rest of the line are notes.
+;
+NOTES:
+	MOVL	CURVOICE,R11
+10$:	JSB	NOTE
+	JSB	GETTOKEN
+	TSTL	R0
+	BNEQ	10$
+	RSB
+
+;
+; NOTE -- one token: a note, a rest, a dynamic or a repeat sign.
+;
+NOTE:
+	MOVAB	TOKBUF,R2
+	ADDL3	TOKLEN,R2,R3
+	CMPB	(R2),#^A/|/		; |:
+	BNEQ	10$
+	BRW	REPEAT_START
+10$:	CMPB	(R2),#^A/:/		; :|n
+	BNEQ	20$
+	BRW	REPEAT_END
+;
+; A dynamic?
+;
+20$:	MOVAB	DYNAMICS,R6
+25$:	MOVZBL	(R6),R7
+	BEQL	40$
+	CMPL	R7,TOKLEN
+	BNEQ	30$
+	PUSHR	#^M<R2,R3>
+	CMPC3	R7,TOKBUF,1(R6)
+	POPR	#^M<R2,R3>
+	BNEQ	30$
+	MOVAB	1(R6)[R7],R0
+	MOVL	(R0),V_VEL(R11)
+	RSB
+30$:	MOVAB	5(R6)[R7],R6
+	BRB	25$
+;
+; A rest?
+;
+40$:	CMPB	(R2),#^A/R/
+	BNEQ	50$
+	INCL	R2
+	CLRL	R8			; increment 0
+	BRW	DURATION
+;
+; A note: letter, accidental, octave.
+;
+50$:	MOVZBL	(R2)+,R0
+	SUBL2	#^A/A/,R0
+	CMPL	R0,#6
+	BLEQU	55$
+	MOVAB	E_NOTE,R0
+	BRW	SYNTAX
+55$:	MOVZBL	LETTERS[R0],R4		; semitone
+	CMPL	R2,R3
+	BGEQU	70$
+	CMPB	(R2),#^A/#/
+	BNEQ	60$
+	INCL	R4
+	INCL	R2
+	BRB	65$
+60$:	CMPB	(R2),#^A/B/
+	BNEQ	65$
+	DECL	R4
+	INCL	R2
+65$:	CMPL	R2,R3
+	BGEQU	70$
+	MOVZBL	(R2)+,R0
+	SUBL2	#^A/0/,R0
+	CMPL	R0,#9
+	BLEQU	75$
+70$:	MOVAB	E_NOTE,R0
+	BRW	SYNTAX
+75$:	INCL	R0			; MIDI note = 12 (octave + 1) + semitone
+	MULL2	#12,R0
+	ADDL2	R4,R0
+	ADDL2	V_TRANS(R11),R0
+	CMPL	R0,#127
+	BLEQU	80$
+	MOVAB	E_RANGE,R0
+	BRW	SYNTAX
+80$:	MOVL	PITCH[R0],R8
+;
+; Duration: /n with . or T, then ~.  R8 = increment.
+;
+DURATION:
+	CLRL	R9			; flags
+	CMPL	R2,R3
+	BLSSU	10209$
+	BRW	50$
+10209$:
+	CMPB	(R2),#^A"/"
+	BNEQ	40$
+	INCL	R2
+	CLRL	R0			; the note value
+10$:	CMPL	R2,R3
+	BGEQU	20$
+	MOVZBL	(R2),R1
+	SUBL2	#^A/0/,R1
+	CMPL	R1,#9
+	BGTRU	20$
+	MULL2	#10,R0
+	ADDL2	R1,R0
+	INCL	R2
+	BRB	10$
+20$:	TSTL	R0
+	BNEQ	10225$
+	BRW	90$
+10225$:
+	DIVL3	R0,#TICKS,R1		; ticks for 1/n
+	MULL3	R0,R1,R4
+	CMPL	R4,#TICKS
+	BEQL	10229$
+	BRW	90$
+10229$:
+	MOVL	R1,V_DUR(R11)
+30$:	CMPL	R2,R3
+	BGEQU	50$
+	CMPB	(R2),#^A/./		; dotted
+	BNEQ	35$
+	MULL3	#3,V_DUR(R11),R0
+	DIVL3	#2,R0,V_DUR(R11)
+	INCL	R2
+	BRB	30$
+35$:	CMPB	(R2),#^A/T/		; triplet
+	BNEQ	40$
+	MULL3	#2,V_DUR(R11),R0
+	DIVL3	#3,R0,V_DUR(R11)
+	INCL	R2
+	BRB	30$
+40$:	CMPB	(R2),#^A/~/		; tie
+	BNEQ	45$
+	BISL2	#1,R9
+	INCL	R2
+	BRB	50$
+45$:	BRB	90$
+50$:	CMPL	R2,R3
+	BLSSU	90$
+;
+; Append the event.
+;
+	MOVL	V_EVEND(R11),R1
+	SUBL3	V_EVBASE(R11),R1,R0
+	CMPL	R0,#<MAXEV-1>*EV_SIZE
+	BLSS	60$
+	MOVAB	E_FULL,R0
+	BRW	SYNTAX
+60$:	MOVL	R8,EV_INC(R1)
+	MOVL	V_DUR(R11),EV_TICKS(R1)
+	MOVW	V_VEL(R11),EV_VEL(R1)
+	MOVW	R9,EV_FLAGS(R1)
+	ADDL2	#EV_SIZE,V_EVEND(R11)
+	ADDL2	V_DUR(R11),V_TOTAL(R11)
+	INCL	NEVENTS
+	RSB
+90$:	MOVAB	E_DURATION,R0
+	BRW	SYNTAX
+
+;
+; |:  -- remember where the repeat starts.
+;
+REPEAT_START:
+	MOVL	V_RDEPTH(R11),R0
+	CMPL	R0,#4
+	BLSS	10$
+	MOVAB	E_REPEAT,R0
+	BRW	SYNTAX
+10$:	MOVL	V_EVEND(R11),V_RSTACK(R11)[R0]
+	INCL	V_RDEPTH(R11)
+	RSB
+
+;
+; :|n -- play the passage n times in all (twice if n is omitted).
+;
+REPEAT_END:
+	MOVL	#2,R6			; times
+	CMPL	TOKLEN,#2
+	BLEQ	10$
+	CLRL	R6
+	MOVAB	TOKBUF+2,R1
+	ADDL3	#TOKBUF,TOKLEN,R2
+5$:	MOVZBL	(R1)+,R0
+	SUBL2	#^A/0/,R0
+	CMPL	R0,#9
+	BLEQU	7$
+	MOVAB	E_NOTE,R0
+	BRW	SYNTAX
+7$:	MULL2	#10,R6
+	ADDL2	R0,R6
+	CMPL	R1,R2
+	BLSSU	5$
+10$:	MOVL	V_EVBASE(R11),R7	; start: the matching |: or the beginning
+	MOVL	V_RDEPTH(R11),R0
+	BEQL	20$
+	DECL	R0
+	MOVL	R0,V_RDEPTH(R11)
+	MOVL	V_RSTACK(R11)[R0],R7
+20$:	SUBL3	R7,V_EVEND(R11),R8	; bytes in the passage
+	BEQL	50$
+	CLRL	R9			; ticks in the passage
+	MOVL	R7,R0
+25$:	ADDL2	EV_TICKS(R0),R9
+	ADDL2	#EV_SIZE,R0
+	CMPL	R0,V_EVEND(R11)
+	BLSSU	25$
+30$:	SOBGTR	R6,40$
+	BRB	50$
+40$:	MOVL	V_EVEND(R11),R0		; room for another copy?
+	SUBL2	V_EVBASE(R11),R0
+	ADDL2	R8,R0
+	CMPL	R0,#<MAXEV-1>*EV_SIZE
+	BLSS	45$
+	MOVAB	E_FULL,R0
+	BRW	SYNTAX
+45$:	MOVL	V_EVEND(R11),R10
+	MOVC3	R8,(R7),(R10)
+	ADDL2	R8,V_EVEND(R11)
+	ADDL2	R9,V_TOTAL(R11)
+	DIVL3	#EV_SIZE,R8,R0
+	ADDL2	R0,NEVENTS
+	BRB	30$
+50$:	RSB
+
+;
+; ----------------------------------------------------------------------
+; PREPARE -- timing, and the summary.
+; ----------------------------------------------------------------------
+;
+PREPARE:
+	TSTL	NVOICES
+	BNEQ	5$
+	SAY	M_NOVOICE
+	$EXIT_S	#^X10000004
+5$:	DIVL3	TEMPO,#4*60*RATE,WHOLE	; samples per whole note
+	CLRL	R6			; longest part, ticks
+	MOVAB	VOICES,R11
+	MOVL	#MAXVOICE,R10
+10$:	TSTL	V_DEFINED(R11)
+	BEQL	20$
+	MOVL	V_EVBASE(R11),V_EVPTR(R11)
+	CMPL	V_TOTAL(R11),R6
+	BLEQ	20$
+	MOVL	V_TOTAL(R11),R6
+20$:	ADDL2	#V_SIZE,R11
+	SOBGTR	R10,10$
+	EMUL	R6,WHOLE,#0,R0		; frames of music
+	EDIV	#TICKS,R0,R0,R1
+	MULL3	TAIL,#RATE,R1
+	ADDL2	R1,R0
+	MOVL	R0,TOTALFRAMES
+	ADDL2	#FRAMES-1,R0
+	DIVL3	#FRAMES,R0,NSECTORS
+	SAY	M_TITLE,TITLELEN,#TITLE,NVOICES,NEVENTS,TEMPO
+	DIVL3	#RATE,TOTALFRAMES,R0	; seconds
+	MULL3	#RATE,R0,R4		; and hundredths
+	SUBL3	R4,TOTALFRAMES,R4
+	MULL2	#100,R4
+	DIVL2	#RATE,R4
+	DIVL3	#60,R0,R1		; minutes
+	MULL3	#60,R1,R2
+	SUBL2	R2,R0
+	MULL3	NSECTORS,#SECTOR,R3
+	SAY	M_LENGTH,R1,R0,R4,NSECTORS,R3
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; RENDER -- compute the music one CD sector at a time.
+; ----------------------------------------------------------------------
+;
+RENDER:
+	MOVAB	OUTNAME,OUTFAB+FAB$L_FNA
+	MOVB	OUTLEN,OUTFAB+FAB$B_FNS
+	$CREATE	FAB=OUTFAB
+	BLBS	R0,5$
+	PUSHL	R0
+	MOVZWL	OUTLEN,R1
+	SAY	M_NOOUT,R1,#OUTNAME
+	$EXIT_S	(SP)+
+5$:	$CONNECT RAB=OUTRAB
+	CLRL	SECTORNO
+10$:	CMPL	SECTORNO,NSECTORS
+	BLSS	20$
+	BRW	80$
+20$:	MOVC5	#0,(SP),#0,#FRAMES*8,MIX
+	MOVAB	VOICES,R11
+30$:	TSTL	V_DEFINED(R11)
+	BEQL	40$
+	MOVL	#FRAMES,R10
+	MOVAL	MIX,R9
+	MOVL	V_TYPE(R11),R0
+	MOVL	RENDERERS[R0],R0
+	PUSHL	R11
+	JSB	(R0)
+	MOVL	(SP)+,R11
+40$:	ADDL2	#V_SIZE,R11
+	CMPL	R11,#VOICES+<MAXVOICE*V_SIZE>
+	BLSSU	30$
+	JSB	REVERB_OUT
+	$WRITE	RAB=OUTRAB
+	BLBS	R0,50$
+	$EXIT_S	R0
+50$:	INCL	SECTORNO
+;
+; Progress every 15 seconds of music, as CD time (minutes:seconds:frames).
+;
+	CLRL	R1
+	MOVL	SECTORNO,R0
+	EDIV	#75*15,R0,R2,R1
+	TSTL	R1
+	BEQL	10413$
+	BRW	10$
+10413$:
+	CLRL	R1
+	EDIV	#75,R0,R2,R3		; R2 seconds, R3 frames
+	DIVL3	#60,R2,R4
+	MULL3	#60,R4,R5
+	SUBL2	R5,R2
+	SAY	M_PROGRESS,R4,R2,R3,SECTORNO
+	BRW	10$
+;
+; Done.
+;
+80$:	$CLOSE	FAB=OUTFAB
+	CLRL	R1
+	MOVL	NSECTORS,R0
+	EDIV	#75,R0,R2,R3
+	DIVL3	#60,R2,R4
+	MULL3	#60,R4,R5
+	SUBL2	R5,R2
+	MOVZWL	OUTLEN,R6
+	SAY	M_WRITTEN,NSECTORS,R4,R2,R3,R6,#OUTNAME
+	MULL3	#100,PEAK,R0
+	DIVL2	#32767,R0
+	SAY	M_PEAK,R0,CLIPS
+	TSTL	CLIPS
+	BEQL	90$
+	SAY	M_CLIPPED
+90$:	RSB
+
+;
+; ----------------------------------------------------------------------
+; NEXT_EVENT -- start the next event of voice R11.
+; Keeps R0-R4, R6, R9-R11; sets R5 (increment), R7/R8 (envelope).
+; ----------------------------------------------------------------------
+;
+NEXT_EVENT:
+	PUSHR	#^M<R0,R1,R2,R3,R4>
+	MOVL	V_EVPTR(R11),R2
+	CMPL	R2,V_EVEND(R11)
+	BLSSU	10$
+	MOVL	#^X3FFFFFFF,V_LEFT(R11)	; the part has ended
+	MOVL	#^X3FFFFFFF,V_GATELEFT(R11)
+	TSTL	R7
+	BEQL	5$
+	MOVL	#4,R7
+5$:	BRW	90$
+10$:	ADDL3	#EV_SIZE,R2,V_EVPTR(R11)
+	ADDL2	EV_TICKS(R2),V_TICK(R11)
+	EMUL	V_TICK(R11),WHOLE,#0,R0	; the sample at which it ends
+	EDIV	#TICKS,R0,R0,R1
+	SUBL3	V_SPOS(R11),R0,R3
+	MOVL	R0,V_SPOS(R11)
+	MOVL	R3,V_LEFT(R11)
+	MOVL	EV_INC(R2),R0
+	BNEQ	20$
+	MOVL	#^X3FFFFFFF,V_GATELEFT(R11)	; a rest
+	TSTL	R7
+	BEQL	15$
+	MOVL	#4,R7
+15$:	CLRL	V_TIED(R11)
+	BRW	90$
+20$:	MULL3	V_GATE(R11),R3,R1	; how long the key is held
+	DIVL2	#100,R1
+	INCL	R1			; (counted down from this sample on, so a
+	MOVL	R1,V_GATELEFT(R11)	;  full gate outlasts the event)
+	MOVL	R0,R5
+	MOVL	R0,V_INC(R11)
+	MOVZWL	EV_VEL(R2),R1		; gains = level x pan x velocity
+	MULL2	V_LEVEL(R11),R1
+	SUBL3	V_PAN(R11),#256,R4
+	MULL3	R1,R4,R0
+	ASHL	#-8,R0,V_GAINL(R11)
+	MULL3	R1,V_PAN(R11),R0
+	ASHL	#-8,R0,V_GAINR(R11)
+	BLBS	V_TIED(R11),30$		; tied from the last note?
+	MOVL	#1,R7			; attack, from the present level
+	MOVL	#1,V_NOTEON(R11)
+30$:	MOVZWL	EV_FLAGS(R2),V_TIED(R11)
+	CASEL	V_TYPE(R11),#0,#T_NOISE
+40$:	.WORD	90$-40$, 90$-40$, 50$-40$, 60$-40$, 70$-40$, 80$-40$
+	BRW	90$
+;
+; PAD and FM: the second oscillator.
+;
+50$:	EMUL	R5,V_DETUNE(R11),#0,R0
+	BRB	65$
+60$:	EMUL	R5,V_RATIO(R11),#0,R0
+65$:	ASHQ	#-16,R0,R0
+	MOVL	R0,V_INC2(R11)
+	BRW	90$
+;
+; PLUCK: fill the delay line with noise, one period long.  The loop
+; delays by N samples plus half a sample in the averaging filter; the
+; remaining fraction of the period is made up by a first-order all-pass
+; filter (Jaffe and Smith, Computer Music Journal, 1983).
+;
+70$:	BLBS	V_NOTEON(R11),10529$
+	BRW	79$
+10529$:
+	CLRL	R0			; period in 16.16: 2**48 / increment
+	MOVL	#^X10000,R1
+	EDIV	R5,R0,R3,R4
+	SUBL3	#39322,R3,R0		; N = floor(period - 0.6)
+	ASHL	#-16,R0,R0
+	CMPL	R0,#DLINE-1
+	BLEQ	71$
+	MOVL	#DLINE-1,R0
+71$:	CMPL	R0,#2
+	BGEQ	72$
+	MOVL	#2,R0
+72$:	MOVL	R0,V_DLEN(R11)
+	ASHL	#16,R0,R1		; d = period - N - 0.5   (16.16)
+	SUBL3	R1,R3,R1
+	SUBL2	#32768,R1
+	SUBL3	R1,#65536,R3		; C = (1 - d) / (1 + d)   (Q15)
+	ASHL	#15,R3,R3
+	ADDL2	#65536,R1
+	DIVL3	R1,R3,V_APC(R11)
+	CLRL	V_PX(R11)
+	CLRL	V_PAVG(R11)
+	CLRL	V_APY(R11)
+	MOVL	R0,R3
+	MOVZWL	EV_VEL(R2),R4		; amplitude
+	MULL2	#128,R4
+	MOVL	V_DLINE(R11),R1
+75$:	MULL2	#69069,SEED		; the VAX random number generator
+	INCL	SEED
+	ASHL	#-16,SEED,R0
+	MULL2	R4,R0
+	ASHL	#-15,R0,R0
+	MOVW	R0,(R1)+
+	SOBGTR	R3,75$
+79$:	BRW	90$
+;
+; NOISE: filter coefficient and loudness from the pitch.
+;
+80$:	ASHL	#-14,R5,R0
+	CMPL	R0,#32767
+	BLEQ	82$
+	MOVL	#32767,R0
+82$:	CMPL	R0,#32
+	BGEQ	84$
+	MOVL	#32,R0
+84$:	MOVL	R0,V_COEF(R11)
+	CVTLF	R0,R1			; makeup = sqrt(K / coefficient)
+	DIVF3	R1,NOISEK,R0
+	JSB	FSQRT
+	MULF2	#256.0,R0
+	CVTRFL	R0,V_MAKEUP(R11)
+90$:	POPR	#^M<R0,R1,R2,R3,R4>
+	RSB
+
+;
+; FSQRT -- R0 = square root of R0 (F_floating), by Newton's method.
+;
+FSQRT:
+	PUSHR	#^M<R1,R2,R3>
+	MOVF	R0,R1			; x
+	MOVF	R0,R2			; guess
+	TSTF	R0
+	BLEQ	90$
+	MOVL	#12,R3
+10$:	DIVF3	R2,R1,R0		; x / y
+	ADDF2	R0,R2
+	MULF2	#0.5,R2
+	SOBGTR	R3,10$
+	MOVF	R2,R0
+90$:	POPR	#^M<R1,R2,R3>
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; The voices.  Each renders R10 samples of voice R11 into the mixing
+; buffer at R9.  R8 = envelope, R7 = envelope stage, R5 = increment.
+; ----------------------------------------------------------------------
+;
+RENDER_SINE:
+	MOVL	V_ENV(R11),R8
+	MOVL	V_STAGE(R11),R7
+	MOVL	V_PHASE(R11),R6
+	MOVL	V_INC(R11),R5
+10$:	TICK
+	ENVELOPE
+	TSTL	R8
+	BNEQ	20$
+	ADDL2	#8,R9			; silent
+	BRW	30$
+20$:	ADDL2	R5,R6
+	EXTZV	#20,#12,R6,R0
+	CVTWL	SINE[R0],R0
+	APPLYENV
+	MIXIN
+30$:	NEXTSAMPLE 10$
+	MOVL	R8,V_ENV(R11)
+	MOVL	R7,V_STAGE(R11)
+	MOVL	R6,V_PHASE(R11)
+	MOVL	R5,V_INC(R11)
+	RSB
+
+RENDER_PAD:
+	MOVL	V_ENV(R11),R8
+	MOVL	V_STAGE(R11),R7
+	MOVL	V_PHASE(R11),R6
+	MOVL	V_INC(R11),R5
+	MOVL	V_PHASE2(R11),R4
+	MOVL	V_INC2(R11),R3
+10$:	TICK	RELOAD=RELOAD_INC2
+	ENVELOPE
+	TSTL	R8
+	BNEQ	20$
+	ADDL2	#8,R9
+	BRW	30$
+20$:	ADDL2	R5,R6
+	EXTZV	#20,#12,R6,R0
+	CVTWL	SINE[R0],R0
+	ADDL2	R3,R4			; the detuned partner
+	EXTZV	#20,#12,R4,R1
+	CVTWL	SINE[R1],R1
+	ADDL2	R1,R0
+	ASHL	#-1,R0,R0
+	APPLYENV
+	MIXIN
+30$:	NEXTSAMPLE 10$
+	MOVL	R8,V_ENV(R11)
+	MOVL	R7,V_STAGE(R11)
+	MOVL	R6,V_PHASE(R11)
+	MOVL	R5,V_INC(R11)
+	MOVL	R4,V_PHASE2(R11)
+	RSB
+
+RELOAD_INC2:
+	MOVL	V_INC2(R11),R3
+	RSB
+
+;
+; FM: carrier R6/R5, modulator R4/R3.  The modulation index follows the
+; envelope, so notes brighten as they swell and mellow as they fade.
+;
+RENDER_FM:
+	MOVL	V_ENV(R11),R8
+	MOVL	V_STAGE(R11),R7
+	MOVL	V_PHASE(R11),R6
+	MOVL	V_INC(R11),R5
+	MOVL	V_PHASE2(R11),R4
+	MOVL	V_INC2(R11),R3
+10$:	TICK	RELOAD=RELOAD_INC2
+	ENVELOPE
+	TSTL	R8
+	BNEQ	20$
+	ADDL2	#8,R9
+	BRW	30$
+20$:	ADDL2	R3,R4			; modulator
+	EXTZV	#20,#12,R4,R0
+	CVTWL	SINE[R0],R0
+	ASHL	#-8,R8,R1		; index x envelope
+	MULL2	V_DEPTH(R11),R1
+	ASHL	#-16,R1,R1
+	MULL2	R1,R0
+	ASHL	#4,R0,R0		; phase deviation
+	ADDL2	R5,R6			; carrier
+	ADDL2	R6,R0
+	EXTZV	#20,#12,R0,R0
+	CVTWL	SINE[R0],R0
+	APPLYENV
+	MIXIN
+30$:	NEXTSAMPLE 10$
+	MOVL	R8,V_ENV(R11)
+	MOVL	R7,V_STAGE(R11)
+	MOVL	R6,V_PHASE(R11)
+	MOVL	R5,V_INC(R11)
+	MOVL	R4,V_PHASE2(R11)
+	RSB
+
+;
+; PLUCK: Karplus-Strong.  R6 = delay line, R5 = its length, R4 =
+; position, R3 = loss factor.
+;
+RENDER_PLUCK:
+	MOVL	V_ENV(R11),R8
+	MOVL	V_STAGE(R11),R7
+	MOVL	V_DLINE(R11),R6
+	MOVL	V_DLEN(R11),R5
+	MOVL	V_DPOS(R11),R4
+	MOVL	V_DAMP(R11),R3
+10$:	TICK	RELOAD=RELOAD_PLUCK
+	ENVELOPE
+	TSTL	R8
+	BNEQ	20$
+	ADDL2	#8,R9
+	BRW	30$
+20$:	CVTWL	(R6)[R4],R0		; out of the delay line
+	ADDL3	R0,V_PX(R11),R2		; average with the previous output,
+	MOVL	R0,V_PX(R11)
+	MULL2	R3,R2			; losing a little energy
+	ASHL	#-16,R2,R2
+	SUBL3	V_APY(R11),R2,R1	; fine tuning: all-pass
+	MULL2	V_APC(R11),R1
+	ASHL	#-15,R1,R1
+	ADDL2	V_PAVG(R11),R1
+	MOVL	R2,V_PAVG(R11)
+	MOVL	R1,V_APY(R11)
+	CVTLW	R1,(R6)[R4]		; and back into the string
+	INCL	R4
+	CMPL	R4,R5
+	BLSS	25$
+	CLRL	R4
+25$:	APPLYENV
+	MIXIN
+30$:	NEXTSAMPLE 10$
+	MOVL	R8,V_ENV(R11)
+	MOVL	R7,V_STAGE(R11)
+	MOVL	R4,V_DPOS(R11)
+	RSB
+
+RELOAD_PLUCK:
+	MOVL	V_DLEN(R11),R5
+	BLBC	V_NOTEON(R11),10$
+	CLRL	V_NOTEON(R11)
+	CLRL	R4			; a new string: start at the top
+10$:	RSB
+
+;
+; NOISE: white noise through two one-pole low-pass filters.
+; R6, R4 = filter states, R3 = coefficient.
+;
+RENDER_NOISE:
+	MOVL	V_ENV(R11),R8
+	MOVL	V_STAGE(R11),R7
+	MOVL	V_NZ1(R11),R6
+	MOVL	V_NZ2(R11),R4
+	MOVL	V_COEF(R11),R3
+10$:	TICK	RELOAD=RELOAD_NOISE
+	ENVELOPE
+	TSTL	R8
+	BNEQ	20$
+	ADDL2	#8,R9
+	BRW	30$
+20$:	MULL2	#69069,SEED
+	INCL	SEED
+	ASHL	#-16,SEED,R0		; white
+	SUBL2	R6,R0
+	MULL2	R3,R0
+	ASHL	#-15,R0,R0
+	ADDL2	R0,R6			; first pole
+	SUBL3	R4,R6,R0
+	MULL2	R3,R0
+	ASHL	#-15,R0,R0
+	ADDL2	R0,R4			; second pole
+	MULL3	V_MAKEUP(R11),R4,R0
+	ASHL	#-8,R0,R0
+	CMPL	R0,#32767
+	BLEQ	22$
+	MOVL	#32767,R0
+22$:	CMPL	R0,#-32767
+	BGEQ	24$
+	MNEGL	#32767,R0
+24$:	APPLYENV
+	MIXIN
+30$:	NEXTSAMPLE 10$
+	MOVL	R8,V_ENV(R11)
+	MOVL	R7,V_STAGE(R11)
+	MOVL	R6,V_NZ1(R11)
+	MOVL	R4,V_NZ2(R11)
+	RSB
+
+RELOAD_NOISE:
+	MOVL	V_COEF(R11),R3
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; REVERB_OUT -- master level, reverberation, and conversion of the
+; mixing buffer to one CD sector of 16-bit samples.
+; ----------------------------------------------------------------------
+;
+REVERB_OUT:
+	MOVAL	MIX,R9
+	MOVAW	OUTBUF,R8
+	MOVL	#FRAMES,R10
+10$:	MOVL	(R9)+,R6		; left
+	MOVL	(R9)+,R7		; right
+	MULL2	MASTER,R6
+	ASHL	#-8,R6,R6
+	MULL2	MASTER,R7
+	ASHL	#-8,R7,R7
+	TSTL	REVSEND
+	BNEQ	20$
+	BRW	50$
+20$:	ADDL3	R6,R7,R0		; send, mono
+	MULL2	REVSEND,R0		; (kept large: the tail must not
+	ASHL	#-6,R0,R0		;  drown in rounding error)
+	CLRL	R11
+	COMB	1
+	COMB	2
+	COMB	3
+	COMB	4
+	MOVL	R11,R0			; left: two all-passes
+	ALLPASS	1
+	ALLPASS	2
+	ASHL	#-5,R0,R0
+	ADDL2	R0,R6
+	MOVL	R11,R0			; right: two others
+	ALLPASS	3
+	ALLPASS	4
+	ASHL	#-5,R0,R0
+	ADDL2	R0,R7
+50$:	CLIP	R6
+	CLIP	R7
+	CVTLW	R6,(R8)+
+	CVTLW	R7,(R8)+
+	DECL	R10
+	BLEQ	90$
+	BRW	10$
+90$:	RSB
+
+	.END	CDGEN

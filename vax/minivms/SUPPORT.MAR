@@ -1,0 +1,691 @@
+	.TITLE	SUPPORT	MiniVMS formatted output ($FAO) and timekeeping
+	.IDENT	/V1.0/
+;
+; EXE$FAO is the formatted ASCII output engine behind SYS$FAO, SYS$FAOL
+; and the executive's own messages.  It implements the commonly used FAO
+; directives:
+;
+;	!AS !AC !AD !AZ		strings (descriptor, counted, length+address, ASCIZ)
+;	!UB !UW !UL		unsigned decimal
+;	!SB !SW !SL		signed decimal
+;	!XB !XW !XL		hexadecimal
+;	!ZB !ZW !ZL		zero-filled decimal
+;	!OB !OW !OL		octal
+;	!%T !%D			time / date and time (parameter: address of a
+;				quadword time, 0 = now)
+;	!/ !_ !^ !!		CR/LF, tab, form feed, exclamation mark
+;	!n*c			character c repeated n times
+;	!-  !+			reuse / skip a parameter
+;
+; A decimal field width may precede any directive (!8UL, !20AS); '#' takes
+; the width from the parameter list.  Numbers that do not fit are shown as
+; asterisks, as VMS does.
+;
+	.PSECT	$DATA
+FAO$DIGITS:	.ASCII	/0123456789ABCDEF/
+FAO$NUMBUF:	.BLKB	40
+	.ALIGN	LONG
+EXE$PRINTBUF:	.BLKB	512
+EXE$PRINTDSC:	.LONG	512
+		.ADDRESS EXE$PRINTBUF
+
+	.PSECT	$CODE
+;
+; EXE$PRINT -- format a message and write it to the console with CR/LF.
+;	CALLS #n,EXE$PRINT  with arguments: ASCID control string, params...
+;
+	.ENTRY	EXE$PRINT,^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11>
+	MOVL	4(AP),R0
+	MOVAL	8(AP),R1
+	MOVAB	EXE$PRINTBUF,R2
+	MOVL	#512,R3
+	JSB	EXE$FAO
+	MOVL	R1,R0
+	MOVAB	EXE$PRINTBUF,R1
+	JSB	CON$PUTS
+	JSB	CON$CRLF
+	MOVL	#SS$_NORMAL,R0
+	RET
+
+;
+; EXE$FAO
+;	R0 = address of control string descriptor
+;	R1 = address of the parameter list (longwords)
+;	R2 = output buffer address, R3 = output buffer size
+; Returns R0 = status, R1 = length of output.
+;
+; Register use:	R6 control pointer, R7 control end, R8 parameter pointer,
+;		R9 output pointer, R10 output end, R11 field width (-1 none).
+;
+EXE$FAO::
+	PUSHR	#^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11>
+	MOVZWL	DSC$W_LENGTH(R0),R7
+	MOVL	DSC$A_POINTER(R0),R6
+	ADDL2	R6,R7
+	MOVL	R1,R8
+	MOVL	R2,R9
+	ADDL3	R2,R3,R10
+	PUSHL	R2			; remember start of output
+FAO$RESUME:
+	CMPL	R6,R7
+	BLSSU	20$
+	BRW	FAO$DONE
+20$:	MOVZBL	(R6)+,R0
+	CMPB	R0,#^A/!/
+	BEQL	30$
+	JSB	FAO$PUT
+	BRB	FAO$RESUME
+;
+; Directive.  Optional width.
+;
+30$:	MNEGL	#1,R11
+	CMPL	R6,R7
+	BGEQU	FAO$RESUME
+	CMPB	(R6),#^A/#/
+	BNEQ	35$
+	INCL	R6
+	MOVL	(R8)+,R11
+	BRB	40$
+35$:	CMPB	(R6),#^A/0/
+	BLSSU	40$
+	CMPB	(R6),#^A/9/
+	BGTRU	40$
+	CLRL	R11
+37$:	CMPL	R6,R7
+	BGEQU	40$
+	MOVZBL	(R6),R0
+	SUBL2	#^A/0/,R0
+	CMPL	R0,#9
+	BGTRU	40$
+	MULL2	#10,R11
+	ADDL2	R0,R11
+	INCL	R6
+	BRB	37$
+40$:	CMPL	R6,R7
+	BGEQU	FAO$RESUME
+	MOVZBL	(R6)+,R0		; directive letter
+	BICB2	#^X20,R0		; upper case
+	CMPB	R0,#^A/A/
+	BNEQ	41$
+	BRW	FAO$STRING
+41$:	CMPB	R0,#^A/U/
+	BNEQ	42$
+	CLRL	R5			; unsigned decimal
+	BRW	FAO$NUMBER
+42$:	CMPB	R0,#^A/S/
+	BNEQ	43$
+	MOVL	#1,R5			; signed decimal
+	BRW	FAO$NUMBER
+43$:	CMPB	R0,#^A/X/
+	BNEQ	44$
+	MOVL	#2,R5			; hex
+	BRW	FAO$NUMBER
+44$:	CMPB	R0,#^A/Z/
+	BNEQ	45$
+	MOVL	#3,R5			; zero filled decimal
+	BRW	FAO$NUMBER
+45$:	CMPB	R0,#^A/O/
+	BNEQ	46$
+	MOVL	#4,R5			; octal
+	BRW	FAO$NUMBER
+46$:	MOVZBL	-1(R6),R0
+	CMPB	R0,#^A"/"
+	BNEQ	47$
+	MOVL	#CR,R0
+	JSB	FAO$PUT
+	MOVL	#LF,R0
+	JSB	FAO$PUT
+	BRW	FAO$RESUME
+47$:	CMPB	R0,#^A/_/
+	BNEQ	48$
+	MOVL	#TAB,R0
+	JSB	FAO$PUT
+	BRW	FAO$RESUME
+48$:	CMPB	R0,#^A/^/
+	BNEQ	49$
+	MOVL	#12,R0
+	JSB	FAO$PUT
+	BRW	FAO$RESUME
+49$:	CMPB	R0,#^A/!/
+	BNEQ	50$
+	JSB	FAO$PUT
+	BRW	FAO$RESUME
+50$:	CMPB	R0,#^A/*/
+	BNEQ	52$
+	CMPL	R6,R7
+	BGEQU	51$
+	MOVZBL	(R6)+,R0
+	TSTL	R11
+	BLEQ	51$
+505$:	JSB	FAO$PUT
+	SOBGTR	R11,505$
+51$:	BRW	FAO$RESUME
+52$:	CMPB	R0,#^A/-/
+	BNEQ	53$
+	SUBL2	#4,R8
+	BRW	FAO$RESUME
+53$:	CMPB	R0,#^A/+/
+	BNEQ	54$
+	ADDL2	#4,R8
+	BRW	FAO$RESUME
+54$:	CMPB	R0,#^A/%/
+	BNEQ	55$
+	BRW	FAO$TIME
+55$:	BRW	FAO$RESUME			; unknown: ignore
+
+FAO$DONE:
+	SUBL3	(SP)+,R9,R1		; output length
+	MOVL	#SS$_NORMAL,R0
+	CMPL	R9,R10
+	BLSSU	10$
+	MOVL	#SS$_BUFFEROVF,R0
+10$:	POPR	#^M<R2,R3,R4,R5,R6,R7,R8,R9,R10,R11>
+	RSB
+
+;
+; FAO$PUT -- store R0 in the output buffer if there is room.
+;
+FAO$PUT:
+	CMPL	R9,R10
+	BGEQU	10$
+	MOVB	R0,(R9)+
+10$:	RSB
+
+;
+; String directives.  R2 = length, R3 = address.
+;
+FAO$STRING:
+	CMPL	R6,R7
+	BLSSU	5$
+	BRW	10$
+5$:	MOVZBL	(R6)+,R0
+	BICB2	#^X20,R0
+	CMPB	R0,#^A/S/
+	BNEQ	20$
+	MOVL	(R8)+,R1		; !AS -- descriptor
+	MOVZWL	DSC$W_LENGTH(R1),R2
+	MOVL	DSC$A_POINTER(R1),R3
+	BRB	60$
+20$:	CMPB	R0,#^A/C/
+	BNEQ	30$
+	MOVL	(R8)+,R3		; !AC -- counted string
+	MOVZBL	(R3)+,R2
+	BRB	60$
+30$:	CMPB	R0,#^A/D/
+	BNEQ	40$
+	MOVL	(R8)+,R2		; !AD -- length, address
+	MOVL	(R8)+,R3
+	BRB	60$
+40$:	CMPB	R0,#^A/Z/
+	BNEQ	10$
+	MOVL	(R8)+,R3		; !AZ -- ASCIZ
+	MOVL	R3,R1
+45$:	TSTB	(R1)+
+	BNEQ	45$
+	SUBL3	R3,R1,R2
+	DECL	R2
+60$:	TSTL	R11			; field width?
+	BLSS	70$
+	CMPL	R2,R11
+	BLEQ	70$
+	MOVL	R11,R2			; truncate
+70$:	SUBL3	R2,R11,R4		; padding
+	TSTL	R2
+	BEQL	80$
+75$:	MOVZBL	(R3)+,R0
+	JSB	FAO$PUT
+	SOBGTR	R2,75$
+80$:	TSTL	R11
+	BLSS	10$
+	TSTL	R4
+	BLEQ	10$
+85$:	MOVL	#^A/ /,R0
+	JSB	FAO$PUT
+	SOBGTR	R4,85$
+10$:	BRW	FAO$RESUME
+
+;
+; Numeric directives.  R5 = kind (0 U, 1 S, 2 X, 3 Z, 4 O).
+;
+FAO$NUMBER:
+	CMPL	R6,R7
+	BLSSU	5$
+	BRW	FAO$NEXT
+5$:	MOVZBL	(R6)+,R0
+	BICB2	#^X20,R0
+	MOVL	(R8)+,R1		; value
+	CMPB	R0,#^A/B/
+	BNEQ	10$
+	MOVL	#1,R4			; size in bytes
+	CVTBL	R1,R2
+	MOVZBL	R1,R1
+	BRB	30$
+10$:	CMPB	R0,#^A/W/
+	BNEQ	20$
+	MOVL	#2,R4
+	CVTWL	R1,R2
+	MOVZWL	R1,R1
+	BRB	30$
+20$:	MOVL	#4,R4
+	MOVL	R1,R2
+30$:	CMPL	R5,#1			; signed?
+	BNEQ	35$
+	MOVL	R2,R1
+35$:	JSB	FAO$CVTNUM		; digits -> FAO$NUMBUF, R2 = count
+	MOVAB	FAO$NUMBUF,R3
+;
+; Hex and octal default to the natural width of the datum, zero filled.
+;
+	CMPL	R5,#2
+	BNEQ	36$
+	TSTL	R11
+	BGEQ	36$
+	ASHL	#1,R4,R11		; 2 hex digits per byte
+	BRB	40$
+36$:	CMPL	R5,#4
+	BNEQ	40$
+	TSTL	R11
+	BGEQ	40$
+	MULL3	#3,R4,R11
+	BRB	40$
+;
+; R2 = digit count, R3 = digits.  Apply the field width in R11.
+;
+40$:	TSTL	R11
+	BLSS	70$			; no width: just the digits
+	CMPL	R2,R11
+	BLEQ	50$
+	MOVL	R11,R2			; overflow: asterisks
+45$:	MOVL	#^A/*/,R0
+	JSB	FAO$PUT
+	SOBGTR	R2,45$
+	BRB	FAO$NEXT
+50$:	SUBL3	R2,R11,R4		; padding
+	BEQL	70$
+	MOVL	#^A/ /,R0
+	CMPL	R5,#1
+	BLEQ	55$
+	MOVL	#^A/0/,R0		; X, Z and O are zero filled
+55$:	JSB	FAO$PUT
+	SOBGTR	R4,55$
+70$:	MOVZBL	(R3)+,R0
+	JSB	FAO$PUT
+	SOBGTR	R2,70$
+FAO$NEXT:
+	BRW	FAO$RESUME
+
+;
+; FAO$CVTNUM -- convert R1 to text in FAO$NUMBUF.
+;	R5 = kind (0 U, 1 S, 2 X, 3 Z, 4 O).  Returns R2 = character count.
+;
+FAO$CVTNUM:
+	PUSHR	#^M<R3,R4,R5,R6,R7>
+	MOVL	#10,R6
+	CMPL	R5,#2
+	BNEQ	5$
+	MOVL	#16,R6
+5$:	CMPL	R5,#4
+	BNEQ	6$
+	MOVL	#8,R6
+6$:	CLRL	R7			; sign flag
+	CMPL	R5,#1
+	BNEQ	10$
+	TSTL	R1
+	BGEQ	10$
+	MNEGL	R1,R1
+	MOVL	#1,R7
+10$:	MOVAB	FAO$NUMBUF+40,R3	; build backwards
+20$:	CLRL	R5
+	MOVL	R1,R4			; unsigned 32-bit dividend in R4:R5
+	EDIV	R6,R4,R1,R0		; R1 = quotient, R0 = remainder
+	MOVB	FAO$DIGITS[R0],-(R3)
+	TSTL	R1
+	BNEQ	20$
+	TSTL	R7
+	BEQL	30$
+	MOVB	#^A/-/,-(R3)
+30$:	MOVAB	FAO$NUMBUF+40,R2
+	SUBL2	R3,R2
+	MOVC3	R2,(R3),FAO$NUMBUF	; move to the start of the buffer
+	MOVAB	FAO$NUMBUF,R0
+	SUBL3	R0,R3,R2		; R3 = end after MOVC3
+	POPR	#^M<R3,R4,R5,R6,R7>
+	RSB
+
+;
+; !%T and !%D -- time and date-time.  Parameter: address of a quadword
+; VMS time, or 0 for the current time.
+;
+FAO$TIME:
+	CMPL	R6,R7
+	BGEQU	90$
+	MOVZBL	(R6)+,R5
+	BICB2	#^X20,R5
+	CMPB	R5,#^A/S/		; !%S: plural of the last number
+	BNEQ	5$
+	CMPL	-4(R8),#1
+	BEQL	90$
+	MOVL	#^A/s/,R0
+	JSB	FAO$PUT
+	BRB	90$
+5$:	MOVL	(R8)+,R1
+	BNEQ	10$
+	JSB	TIM$NOW			; R0 = day number, R1 = centiseconds
+	BRB	20$
+10$:	MOVQ	(R1),R0
+	JSB	TIM$FROMQUAD
+20$:	PUSHL	R1
+	CMPB	R5,#^A/D/
+	BNEQ	30$
+	JSB	TIM$DATESTR		; "dd-MMM-yyyy " into FAO$NUMBUF
+	MOVL	#12,R2
+	MOVAB	FAO$NUMBUF,R3
+25$:	MOVZBL	(R3)+,R0
+	JSB	FAO$PUT
+	SOBGTR	R2,25$
+30$:	MOVL	(SP)+,R1
+	JSB	TIM$TIMESTR		; "hh:mm:ss.cc" into FAO$NUMBUF
+	MOVL	#11,R2
+	MOVAB	FAO$NUMBUF,R3
+35$:	MOVZBL	(R3)+,R0
+	JSB	FAO$PUT
+	SOBGTR	R2,35$
+90$:	BRW	FAO$RESUME
+
+;
+; ======================================================================
+; Timekeeping.  Internally a time is a day number (days since
+; 17-NOV-1858, the VMS base date -- i.e. the Modified Julian Day) plus
+; centiseconds since midnight.  The interval clock counts ticks since
+; boot; the boot time comes from the time-of-year chip, whose year is
+; kept on the system disk, as on a real MicroVAX.
+; ======================================================================
+;
+	.PSECT	$DATA
+TIM$GL_BOOTDAY::	.LONG	0
+TIM$GL_BOOTCS::		.LONG	0
+TIM$GL_YEAR::		.LONG	1986
+TIM$GL_MONTH:		.LONG	1
+TIM$GL_DAY:		.LONG	1
+TIM$GL_TOYCS:		.LONG	0
+EXE$GL_TICKS::		.LONG	0
+EXE$GL_CPUTICKS::	.LONG	0
+TIM$MONTHS:	.ASCII	/JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC/
+
+	.PSECT	$CODE
+;
+; TIM$INIT -- read month, day and time of day from the watch chip.
+;
+TIM$INIT::
+	MOVL	#IO$K_NVR_VA,R2
+10$:	MOVZBL	20(R2),R0		; CSR A: wait for update to finish
+	BBS	#7,R0,10$
+	MOVZBL	0(R2),R3		; seconds
+	MOVZBL	4(R2),R4		; minutes
+	MOVZBL	8(R2),R5		; hours
+	MOVZBL	14(R2),TIM$GL_DAY
+	MOVZBL	16(R2),TIM$GL_MONTH
+	MULL3	#60,R5,R0
+	ADDL2	R4,R0
+	MULL2	#60,R0
+	ADDL2	R3,R0
+	MULL3	#100,R0,TIM$GL_TOYCS
+	MOVL	EXE$GL_TICKS,R0
+	SUBL2	R0,TIM$GL_TOYCS		; time at tick zero
+	BRB	TIM$SETYEAR
+
+;
+; TIM$SETYEAR -- (re)compute the boot time from TIM$GL_YEAR.
+;
+TIM$SETYEAR::
+	MOVL	TIM$GL_YEAR,R0
+	MOVL	TIM$GL_MONTH,R1
+	MOVL	TIM$GL_DAY,R2
+	JSB	TIM$DAYNUM
+	MOVL	TIM$GL_TOYCS,R1
+10$:	TSTL	R1
+	BGEQ	20$
+	ADDL2	#8640000,R1
+	DECL	R0
+	BRB	10$
+20$:	MOVL	R0,TIM$GL_BOOTDAY
+	MOVL	R1,TIM$GL_BOOTCS
+	RSB
+
+;
+; TIM$NOW -- current time: R0 = day number, R1 = centiseconds of day.
+;
+TIM$NOW::
+	ADDL3	EXE$GL_TICKS,TIM$GL_BOOTCS,R1
+	MOVL	TIM$GL_BOOTDAY,R0
+10$:	CMPL	R1,#8640000
+	BLSSU	20$
+	SUBL2	#8640000,R1
+	INCL	R0
+	BRB	10$
+20$:	RSB
+
+;
+; TIM$DAYNUM -- R0 = year, R1 = month, R2 = day -> R0 = day number (MJD).
+; (Days-from-civil algorithm; valid for all Gregorian dates after 1600.)
+;
+TIM$DAYNUM::
+	PUSHR	#^M<R2,R3,R4,R5>
+	CMPL	R1,#2
+	BGTR	10$
+	DECL	R0			; Jan, Feb count with previous year
+	ADDL2	#9,R1
+	BRB	20$
+10$:	SUBL2	#3,R1
+20$:	MULL2	#153,R1			; doy = (153*m' + 2)/5 + d - 1
+	ADDL2	#2,R1
+	DIVL2	#5,R1
+	ADDL2	R2,R1
+	DECL	R1
+	DIVL3	#400,R0,R3		; era
+	MULL3	#400,R3,R4
+	SUBL3	R4,R0,R4		; yoe
+	MULL3	#365,R4,R5		; doe = 365*yoe + yoe/4 - yoe/100 + doy
+	DIVL3	#4,R4,R2
+	ADDL2	R2,R5
+	DIVL3	#100,R4,R2
+	SUBL2	R2,R5
+	ADDL2	R1,R5
+	MULL3	#146097,R3,R0
+	ADDL2	R5,R0
+	SUBL2	#719468,R0		; days since 1-JAN-1970
+	ADDL2	#40587,R0		; + MJD of 1-JAN-1970
+	POPR	#^M<R2,R3,R4,R5>
+	RSB
+
+;
+; TIM$CIVIL -- R0 = day number -> R0 = year, R1 = month, R2 = day.
+;
+TIM$CIVIL::
+	PUSHR	#^M<R3,R4,R5,R6>
+	SUBL2	#40587,R0
+	ADDL2	#719468,R0		; z
+	DIVL3	#146097,R0,R3		; era
+	MULL3	#146097,R3,R4
+	SUBL3	R4,R0,R4		; doe
+	DIVL3	#1460,R4,R0		; yoe = (doe - doe/1460 + doe/36524
+	SUBL3	R0,R4,R5		;        - doe/146096) / 365
+	DIVL3	#36524,R4,R0
+	ADDL2	R0,R5
+	DIVL3	#146096,R4,R0
+	SUBL2	R0,R5
+	DIVL2	#365,R5			; R5 = yoe
+	MULL3	#400,R3,R6
+	ADDL2	R5,R6			; y
+	MULL3	#365,R5,R0		; doy = doe - (365*yoe + yoe/4 - yoe/100)
+	DIVL3	#4,R5,R1
+	ADDL2	R1,R0
+	DIVL3	#100,R5,R1
+	SUBL2	R1,R0
+	SUBL3	R0,R4,R4		; R4 = doy
+	MULL3	#5,R4,R0		; mp = (5*doy + 2)/153
+	ADDL2	#2,R0
+	DIVL2	#153,R0
+	MULL3	#153,R0,R2		; d = doy - (153*mp + 2)/5 + 1
+	ADDL2	#2,R2
+	DIVL2	#5,R2
+	SUBL3	R2,R4,R2
+	INCL	R2
+	CMPL	R0,#10			; m = mp < 10 ? mp+3 : mp-9
+	BGEQ	10$
+	ADDL3	#3,R0,R1
+	BRB	20$
+10$:	SUBL3	#9,R0,R1
+20$:	CMPL	R1,#2
+	BGTR	30$
+	INCL	R6
+30$:	MOVL	R6,R0
+	POPR	#^M<R3,R4,R5,R6>
+	RSB
+
+;
+; TIM$DATESTR -- R0 = day number -> "dd-MMM-yyyy " in FAO$NUMBUF.
+;
+TIM$DATESTR::
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>
+	JSB	TIM$CIVIL		; R0 year, R1 month, R2 day
+	MOVAB	FAO$NUMBUF,R3
+	MOVL	R0,R4
+	MOVL	R1,R5
+	MOVL	R2,R0
+	MOVL	#2,R1
+	JSB	TIM$DIGITS
+	MOVB	#^A/-/,(R3)+
+	MULL3	#3,R5,R0
+	MOVAB	TIM$MONTHS-3[R0],R0
+	MOVB	(R0)+,(R3)+
+	MOVB	(R0)+,(R3)+
+	MOVB	(R0)+,(R3)+
+	MOVB	#^A/-/,(R3)+
+	MOVL	R4,R0
+	MOVL	#4,R1
+	JSB	TIM$DIGITS
+	MOVB	#^A/ /,(R3)+
+	CMPB	FAO$NUMBUF,#^A/0/	; VMS shows " 5-JUL-1986"
+	BNEQ	10$
+	MOVB	#^A/ /,FAO$NUMBUF
+10$:	POPR	#^M<R0,R1,R2,R3,R4,R5>
+	RSB
+
+;
+; TIM$TIMESTR -- R1 = centiseconds -> "hh:mm:ss.cc" in FAO$NUMBUF.
+;
+TIM$TIMESTR::
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>
+	MOVAB	FAO$NUMBUF,R3
+	CLRL	R5
+	MOVL	R1,R4
+	EDIV	#360000,R4,R0,R4	; hours, remainder
+	MOVL	#2,R1
+	JSB	TIM$DIGITS
+	MOVB	#^A/:/,(R3)+
+	CLRL	R5
+	EDIV	#6000,R4,R0,R4		; minutes
+	MOVL	#2,R1
+	JSB	TIM$DIGITS
+	MOVB	#^A/:/,(R3)+
+	CLRL	R5
+	EDIV	#100,R4,R0,R4		; seconds
+	MOVL	#2,R1
+	JSB	TIM$DIGITS
+	MOVB	#^A/./,(R3)+
+	MOVL	R4,R0			; centiseconds
+	MOVL	#2,R1
+	JSB	TIM$DIGITS
+	POPR	#^M<R0,R1,R2,R3,R4,R5>
+	RSB
+
+;
+; TIM$DIGITS -- store R0 as R1 decimal digits at (R3)+.
+;
+TIM$DIGITS::
+	PUSHR	#^M<R2,R4,R5>
+	ADDL2	R1,R3
+	MOVL	R3,R2
+10$:	CLRL	R5
+	MOVL	R0,R4
+	EDIV	#10,R4,R0,R4
+	ADDB3	#^A/0/,R4,-(R2)
+	SOBGTR	R1,10$
+	POPR	#^M<R2,R4,R5>
+	RSB
+
+;
+; TIM$TOQUAD -- R0 = day, R1 = centiseconds -> R0/R1 = VMS quadword time
+; (100 ns units since 17-NOV-1858).
+;
+TIM$TOQUAD::
+	PUSHR	#^M<R2,R3>
+	MOVL	R1,R2			; centiseconds
+	EMUL	R0,#8640000,R2,R0	; total centiseconds (R0 lo, R1 hi)
+	MOVL	#1000,R2
+	JSB	EXE$QMUL
+	MOVL	#100,R2
+	JSB	EXE$QMUL		; x 100000
+	POPR	#^M<R2,R3>
+	RSB
+
+;
+; TIM$FROMQUAD -- R0/R1 = VMS time -> R0 = day, R1 = centiseconds.
+;
+TIM$FROMQUAD::
+	PUSHR	#^M<R2>
+	MOVL	#100000,R2
+	JSB	EXE$QDIV		; centiseconds
+	MOVL	#8640000,R2
+	JSB	EXE$QDIV		; R0 = days, R2 = centiseconds of day
+	MOVL	R2,R1
+	POPR	#^M<R2>
+	RSB
+
+;
+; EXE$QMUL -- unsigned quadword R0/R1 times R2 (< 32768) -> R0/R1.
+;
+EXE$QMUL::
+	PUSHR	#^M<R3,R4,R5>
+	MULL2	R2,R1			; high longword
+	MOVZWL	R0,R3			; low 16 bits
+	MULL2	R2,R3
+	EXTZV	#16,#16,R0,R4		; next 16 bits
+	MULL2	R2,R4
+	EXTZV	#16,#16,R4,R5		; carry into the high longword
+	ADDL2	R5,R1
+	ASHL	#16,R4,R4
+	ADDL3	R4,R3,R0
+	ADWC	#0,R1
+	POPR	#^M<R3,R4,R5>
+	RSB
+
+;
+; EXE$QDIV -- unsigned quadword R0/R1 divided by R2 (unsigned longword).
+; Returns quotient in R0/R1, remainder in R2.  The dividend is shifted
+; left one bit at a time into the remainder (R3) while quotient bits are
+; shifted in from the right.
+;
+EXE$QDIV::
+	PUSHR	#^M<R3,R4,R5>
+	CLRL	R3
+	MOVL	#64,R4
+10$:	EXTZV	#31,#1,R1,R5		; bit leaving the dividend
+	ASHQ	#1,R0,R0
+	BBS	#31,R3,20$
+	ASHL	#1,R3,R3
+	BISL2	R5,R3
+	CMPL	R3,R2
+	BLSSU	30$
+	SUBL2	R2,R3
+	BISL2	#1,R0
+	BRB	30$
+20$:	ASHL	#1,R3,R3		; remainder >= 2**32: always subtract
+	BISL2	R5,R3
+	SUBL2	R2,R3
+	BISL2	#1,R0
+30$:	SOBGTR	R4,10$
+	MOVL	R3,R2
+	POPR	#^M<R3,R4,R5>
+	RSB

@@ -1,0 +1,979 @@
+	.TITLE	FILES	MiniVMS file system (MFS-1) and record management
+	.IDENT	/V1.0/
+;
+; The MiniVMS volume structure, "MFS-1", is a deliberately simple cousin
+; of Files-11: a home block, a single directory of 128 entries, and files
+; that each occupy one contiguous run of blocks.  A file being written
+; grows at the end of the used part of the volume, so only one file may be
+; open for writing at a time -- quite enough for one person and one
+; VAXstation.
+;
+; File names are "NAME.TYPE;version", up to 32 characters before the ';'.
+; Creating a file that already exists makes a new, higher version.
+;
+; On top of this sits a subset of RMS: $OPEN $CREATE $CLOSE $ERASE
+; $CONNECT $DISCONNECT $GET $PUT $READ $WRITE $REWIND, working on FABs and
+; RABs laid out as in STARLET.MAR.  Text files are stored as STREAM_LF.
+;
+	.PSECT	$ZZBSS
+	.ALIGN	PAGE
+HOM$BUFFER::	.BLKB	512
+DIR$BUFFER::	.BLKB	DIR$K_BLOCKS*512
+FCB$BUFFERS:	.BLKB	FCB$K_COUNT*FCB$K_BUFSIZE
+
+	.PSECT	$DATA
+	.ALIGN	LONG
+FCB$TABLE::	.BLKB	FCB$K_COUNT*FCB$K_LENGTH
+FIL$GL_WRITER::	.LONG	0		; directory entry being written, or 0
+FIL$PNAME::	.BLKB	DIR$K_NAMELEN	; result of FIL$PARSE
+FIL$GW_PVER::	.WORD	0		; version: 0 latest, -1 all
+FIL$GL_WILD::	.LONG	0		; parsed name contains wildcards
+FIL$DEFTYPE:	.BLKB	40		; default file type (ASCIC)
+HOM$VOLNAME::	.BLKB	13		; volume label (ASCIC)
+HOM$OWNER::	.BLKB	13		; owner / directory name (ASCIC)
+HOM$K_MAGIC	= 16
+HOM$MAGIC:	.ASCII	/MINIVMS-MFS1    /
+HOM$W_YEAR	= 60			; offset in home block: current year
+
+	.PSECT	$CODE
+;
+; FIL$MOUNT -- read the home block and directory.  Returns R0 status.
+;
+FIL$MOUNT::
+	PUSHR	#^M<R1,R2,R3,R4,R5>
+	MOVL	#HOM$K_LBN,R0
+	MOVL	#1,R1
+	MOVAB	HOM$BUFFER,R2
+	JSB	DU$READ
+	BLBC	R0,90$
+	CMPC3	#HOM$K_MAGIC,HOM$BUFFER,HOM$MAGIC
+	BEQL	10$
+	MOVL	#SS$_BADPARAM,R0	; not an MFS-1 volume
+	BRB	90$
+10$:	MOVL	#DIR$K_LBN,R0
+	MOVL	#DIR$K_BLOCKS,R1
+	MOVAB	DIR$BUFFER,R2
+	JSB	DU$READ
+	BLBC	R0,90$
+	MOVAB	HOM$BUFFER+HOM$T_VOLNAME,R1
+	MOVAB	HOM$VOLNAME,R2
+	JSB	FIL$TRIM12
+	MOVAB	HOM$BUFFER+HOM$T_OWNER,R1
+	MOVAB	HOM$OWNER,R2
+	JSB	FIL$TRIM12
+	MOVZWL	HOM$BUFFER+HOM$W_YEAR,R0
+	BEQL	20$
+	MOVL	R0,TIM$GL_YEAR
+20$:	CLRL	FIL$GL_WRITER
+	MOVC5	#0,(SP),#0,#FCB$K_COUNT*FCB$K_LENGTH,FCB$TABLE
+	MOVL	#SS$_NORMAL,R0
+90$:	POPR	#^M<R1,R2,R3,R4,R5>
+	RSB
+
+;
+; FIL$TRIM12 -- 12 blank-padded characters at (R1) -> counted string at (R2).
+;
+FIL$TRIM12:
+	MOVL	#12,R0
+10$:	CMPB	-1(R1)[R0],#^A/ /
+	BEQL	15$
+	TSTB	-1(R1)[R0]
+	BNEQ	20$
+15$:	SOBGTR	R0,10$
+20$:	MOVB	R0,(R2)+
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>
+	MOVC3	R0,(R1),(R2)
+	POPR	#^M<R0,R1,R2,R3,R4,R5>
+	RSB
+
+;
+; FIL$WRHOME -- write the home block back.
+; FIL$WRDIR  -- write the directory block containing entry R1 back.
+;
+FIL$WRHOME::
+	PUSHR	#^M<R1,R2>
+	MOVL	#HOM$K_LBN,R0
+	MOVL	#1,R1
+	MOVAB	HOM$BUFFER,R2
+	JSB	DU$WRITE
+	POPR	#^M<R1,R2>
+	RSB
+FIL$WRDIR::
+	PUSHR	#^M<R1,R2>
+	MOVAB	DIR$BUFFER,R2
+	SUBL3	R2,R1,R0
+	BICL2	#511,R0			; byte offset of the block
+	ADDL2	R0,R2
+	ASHL	#-9,R0,R0
+	ADDL2	#DIR$K_LBN,R0
+	MOVL	#1,R1
+	JSB	DU$WRITE
+	POPR	#^M<R1,R2>
+	RSB
+
+;
+; FIL$PARSE -- parse a file specification.
+;	R0 = length, R1 = address, R2 = default type (ASCIC, ".EXE") or 0
+; Device and directory parts ("DUA0:[ALAN]") are accepted and ignored.
+; Result in FIL$PNAME (blank padded "NAME.TYPE"), FIL$GW_PVER.
+; Returns R0 status (RMS$_SYN on a bad specification).
+;
+FIL$PARSE::
+	PUSHR	#^M<R1,R2,R3,R4,R5,R6,R7,R8>
+	MOVL	R1,R3			; scan pointer
+	ADDL3	R0,R1,R4		; end
+	MOVL	R2,R8			; default type
+	CLRL	FIL$GL_WILD
+	CLRW	FIL$GW_PVER
+	PUSHR	#^M<R2,R3,R4,R5>
+	MOVC5	#0,(SP),#^A/ /,#DIR$K_NAMELEN,FIL$PNAME
+	POPR	#^M<R2,R3,R4,R5>
+;
+; Skip spaces and any device or directory prefix.
+;
+5$:	CMPL	R3,R4
+	BGEQU	8$
+	CMPB	(R3),#^A/ /
+	BNEQ	8$
+	INCL	R3
+	BRB	5$
+8$:	MOVL	R3,R5
+10$:	CMPL	R5,R4			; find the last ':' or ']'
+	BGEQU	20$
+	CMPB	(R5),#^A/:/
+	BEQL	15$
+	CMPB	(R5),#^A/]/
+	BEQL	15$
+	CMPB	(R5),#^A/>/
+	BNEQ	18$
+15$:	ADDL3	#1,R5,R3
+18$:	INCL	R5
+	BRB	10$
+;
+; Copy NAME, upper-cased, validating characters.
+;
+20$:	MOVAB	FIL$PNAME,R6		; output pointer
+	CLRL	R7			; output count
+	CLRL	R2			; name length
+30$:	CMPL	R3,R4
+	BGEQU	50$
+	MOVZBL	(R3),R0
+	CMPB	R0,#^A/./
+	BEQL	50$
+	CMPB	R0,#^A/;/
+	BEQL	50$
+	CMPB	R0,#^A/ /
+	BEQL	50$
+	JSB	FIL$VALIDCH
+	BLBC	R1,95$
+	JSB	FIL$OUTCH
+	BLBC	R1,95$
+	INCL	R2
+	INCL	R3
+	BRB	30$
+50$:	TSTL	R2
+	BEQL	95$			; empty name
+;
+; TYPE: either given or from the default.
+;
+	MOVL	#^A/./,R0
+	JSB	FIL$OUTCH
+	BLBC	R1,95$
+	CMPL	R3,R4
+	BGEQU	60$
+	CMPB	(R3),#^A/./
+	BNEQ	60$
+	INCL	R3			; explicit type
+55$:	CMPL	R3,R4
+	BGEQU	70$
+	MOVZBL	(R3),R0
+	CMPB	R0,#^A/;/
+	BEQL	70$
+	CMPB	R0,#^A/./		; NAME.TYPE.version (VMS allows it)
+	BEQL	70$
+	CMPB	R0,#^A/ /
+	BEQL	70$
+	JSB	FIL$VALIDCH
+	BLBC	R1,95$
+	JSB	FIL$OUTCH
+	BLBC	R1,95$
+	INCL	R3
+	BRB	55$
+95$:	MOVL	#RMS$_SYN,R0
+	BRB	99$
+60$:	TSTL	R8			; default type
+	BEQL	70$
+	MOVZBL	(R8),R5
+	DECL	R5			; (skip its '.')
+	ADDL3	#2,R8,R2
+	TSTL	R5
+	BLEQ	70$
+65$:	MOVZBL	(R2)+,R0
+	JSB	FIL$OUTCH
+	BLBC	R1,95$
+	SOBGTR	R5,65$
+;
+; Version.
+;
+70$:	CMPL	R3,R4
+	BGEQU	90$
+	CMPB	(R3),#^A/ /
+	BEQL	90$
+	INCL	R3			; skip ';' or '.'
+	CMPL	R3,R4
+	BGEQU	90$
+	CMPB	(R3),#^A/*/
+	BNEQ	75$
+	MNEGW	#1,FIL$GW_PVER
+	MOVL	#1,FIL$GL_WILD
+	BRB	90$
+75$:	CLRL	R5
+80$:	CMPL	R3,R4
+	BGEQU	85$
+	MOVZBL	(R3)+,R0
+	CMPB	R0,#^A/ /
+	BEQL	85$
+	SUBL2	#^A/0/,R0
+	CMPL	R0,#9
+	BGTRU	95$
+	MULL2	#10,R5
+	ADDL2	R0,R5
+	CMPL	R5,#32767
+	BGTR	95$
+	BRB	80$
+85$:	MOVW	R5,FIL$GW_PVER
+90$:	MOVL	#RMS$_NORMAL,R0
+99$:	POPR	#^M<R1,R2,R3,R4,R5,R6,R7,R8>
+	RSB
+
+FIL$VALIDCH:				; R0 = char, upper-cased in place
+	MOVL	#1,R1
+	CMPB	R0,#^A/a/
+	BLSSU	10$
+	CMPB	R0,#^A/z/
+	BGTRU	10$
+	BICB2	#^X20,R0
+10$:	CMPB	R0,#^A/A/
+	BLSSU	20$
+	CMPB	R0,#^A/Z/
+	BLEQU	90$
+20$:	CMPB	R0,#^A/0/
+	BLSSU	30$
+	CMPB	R0,#^A/9/
+	BLEQU	90$
+30$:	CMPB	R0,#^A/$/
+	BEQL	90$
+	CMPB	R0,#^A/_/
+	BEQL	90$
+	CMPB	R0,#^A/-/
+	BEQL	90$
+	CMPB	R0,#^A/*/
+	BEQL	80$
+	CMPB	R0,#^A/%/
+	BEQL	80$
+	CLRL	R1
+	RSB
+80$:	MOVL	#1,FIL$GL_WILD
+90$:	RSB
+
+FIL$OUTCH:				; append R0 to FIL$PNAME
+	MOVL	#1,R1
+	CMPL	R7,#DIR$K_NAMELEN
+	BGEQ	10$
+	MOVB	R0,(R6)+
+	INCL	R7
+	RSB
+10$:	CLRL	R1
+	RSB
+
+;
+; FIL$MATCH -- does directory entry R1 match FIL$PNAME (with wildcards
+; '*' and '%')?  Returns R0 low bit.  Preserves R1-R11.
+;
+FIL$MATCH::
+	PUSHR	#^M<R1,R2,R3,R4,R5,R6>
+	MOVAB	FIL$PNAME,R2		; pattern
+	MOVAB	DIR$K_NAMELEN(R2),R3	; pattern end
+	MOVL	R1,R4			; name
+	MOVAB	DIR$K_NAMELEN(R1),R5	; name end
+	JSB	FIL$WILDCMP
+	POPR	#^M<R1,R2,R3,R4,R5,R6>
+	RSB
+
+;
+; Recursive wildcard compare of pattern R2..R3 against name R4..R5
+; (trailing blanks end both strings).  R0 = 1 on a match.
+;
+FIL$WILDCMP:
+10$:	CMPL	R2,R3
+	BGEQU	20$
+	CMPB	(R2),#^A/ /
+	BNEQ	30$
+20$:	CMPL	R4,R5			; pattern finished: name must be too
+	BGEQU	25$
+	CMPB	(R4),#^A/ /
+	BEQL	25$
+	CLRL	R0
+	RSB
+25$:	MOVL	#1,R0
+	RSB
+30$:	CMPB	(R2),#^A/*/
+	BEQL	50$
+	CMPL	R4,R5
+	BGEQU	40$
+	CMPB	(R4),#^A/ /
+	BEQL	40$
+	CMPB	(R2),#^A/%/
+	BEQL	35$
+	CMPB	(R2),(R4)
+	BNEQ	40$
+35$:	INCL	R2
+	INCL	R4
+	BRB	10$
+40$:	CLRL	R0
+	RSB
+50$:	INCL	R2			; '*': try every possible tail
+55$:	PUSHR	#^M<R2,R3,R4,R5>
+	JSB	FIL$WILDCMP
+	POPR	#^M<R2,R3,R4,R5>
+	BLBS	R0,60$
+	CMPL	R4,R5
+	BGEQU	40$
+	CMPB	(R4),#^A/ /
+	BEQL	40$
+	INCL	R4
+	BRB	55$
+60$:	RSB
+
+;
+; FIL$LOOKUP -- find FIL$PNAME;FIL$GW_PVER (0 = highest version).
+; Returns R0 status, R1 = directory entry.
+;
+FIL$LOOKUP::
+	PUSHR	#^M<R2,R3,R4>
+	MOVAB	DIR$BUFFER,R2
+	MOVL	#DIR$K_ENTRIES,R3
+	CLRL	R1			; best so far
+	CLRL	R4			; its version
+10$:	BLBC	DIR$B_FLAGS(R2),30$
+	PUSHR	#^M<R1,R2,R3>
+	CMPC3	#DIR$K_NAMELEN,(R2),FIL$PNAME
+	POPR	#^M<R1,R2,R3>		; (condition codes unaffected)
+	BNEQ	30$
+	MOVZWL	DIR$W_VERSION(R2),R0
+	TSTW	FIL$GW_PVER
+	BEQL	20$
+	CMPW	R0,FIL$GW_PVER
+	BNEQ	30$
+	MOVL	R2,R1
+	BRB	80$
+20$:	CMPL	R0,R4
+	BLEQ	30$
+	MOVL	R0,R4
+	MOVL	R2,R1
+30$:	ADDL2	#DIR$K_ENTSIZE,R2
+	SOBGTR	R3,10$
+	TSTL	R1
+	BNEQ	80$
+	MOVL	#RMS$_FNF,R0
+	BRB	90$
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	POPR	#^M<R2,R3,R4>
+	RSB
+
+;
+; FIL$CREATE -- make a new directory entry for FIL$PNAME.
+;	R0 = record format, R1 = record attributes
+; Returns R0 status, R1 = entry.
+;
+FIL$CREATE::
+	PUSHR	#^M<R2,R3,R4,R5,R6,R7>
+	MOVL	R0,R6
+	MOVL	R1,R7
+	TSTL	FIL$GL_WRITER
+	BEQL	5$
+	MOVL	#RMS$_ACT,R0		; another file is being written
+	BRW	90$
+5$:	MOVAB	DIR$BUFFER,R2		; find highest version and a free slot
+	MOVL	#DIR$K_ENTRIES,R3
+	CLRL	R4			; highest version
+	CLRL	R5			; free entry
+10$:	BLBS	DIR$B_FLAGS(R2),20$
+	TSTL	R5
+	BNEQ	30$
+	MOVL	R2,R5
+	BRB	30$
+20$:	PUSHR	#^M<R2,R3,R4,R5>
+	CMPC3	#DIR$K_NAMELEN,(R2),FIL$PNAME
+	POPR	#^M<R2,R3,R4,R5>
+	BNEQ	30$
+	CMPW	DIR$W_VERSION(R2),R4
+	BLEQU	30$
+	MOVZWL	DIR$W_VERSION(R2),R4
+30$:	ADDL2	#DIR$K_ENTSIZE,R2
+	SOBGTR	R3,10$
+	TSTL	R5
+	BNEQ	40$
+	MOVL	#RMS$_FUL,R0		; directory full
+	BRB	90$
+40$:	PUSHR	#^M<R4,R5>
+	MOVC3	#DIR$K_NAMELEN,FIL$PNAME,(R5)
+	POPR	#^M<R4,R5>
+	INCL	R4
+	MOVW	R4,DIR$W_VERSION(R5)
+	MOVB	#DIR$M_INUSE,DIR$B_FLAGS(R5)
+	MOVB	R6,DIR$B_RFM(R5)
+	MOVL	HOM$BUFFER+HOM$L_FREELBN,DIR$L_LBN(R5)
+	CLRL	DIR$L_ALLOC(R5)
+	CLRL	DIR$L_SIZE(R5)
+	JSB	TIM$NOW
+	MOVQ	R0,DIR$Q_CDT(R5)
+	MOVL	R7,DIR$L_ATTR(R5)
+	MOVL	R5,FIL$GL_WRITER
+	MOVL	R5,R1
+	MOVL	#RMS$_NORMAL,R0
+90$:	POPR	#^M<R2,R3,R4,R5,R6,R7>
+	RSB
+
+;
+; FIL$DELETE -- remove directory entry R1.  If it is the last file on the
+; volume its blocks are returned too.
+;
+FIL$DELETE::
+	PUSHR	#^M<R1,R2>
+	CLRB	DIR$B_FLAGS(R1)
+	ADDL3	DIR$L_LBN(R1),DIR$L_ALLOC(R1),R2
+	CMPL	R2,HOM$BUFFER+HOM$L_FREELBN
+	BNEQ	10$
+	MOVL	DIR$L_LBN(R1),HOM$BUFFER+HOM$L_FREELBN
+	JSB	FIL$WRHOME
+10$:	JSB	FIL$WRDIR
+	MOVL	#SS$_NORMAL,R0
+	POPR	#^M<R1,R2>
+	RSB
+
+;
+; ----------------------------------------------------------------------
+; File control blocks.  Callers hold the FCB address in R6.
+; ----------------------------------------------------------------------
+;
+; FIL$ALLOCFCB -- R1 = directory entry, R0 = mode.  Returns R0 status,
+; R6 = FCB, R1 = IFI (1-based index).
+;
+FIL$ALLOCFCB::
+	PUSHR	#^M<R2,R3>
+	MOVL	R0,R3
+	MOVAB	FCB$TABLE,R6
+	CLRL	R2
+10$:	TSTB	FCB$B_INUSE(R6)
+	BEQL	20$
+	ADDL2	#FCB$K_LENGTH,R6
+	AOBLSS	#FCB$K_COUNT,R2,10$
+	MOVL	#RMS$_DME,R0
+	BRB	90$
+20$:	MOVB	#1,FCB$B_INUSE(R6)
+	MOVB	R3,FCB$B_MODE(R6)
+	MOVB	DIR$B_RFM(R1),FCB$B_RFM(R6)
+	MOVB	DIR$L_ATTR(R1),FCB$B_RAT(R6)
+	MOVL	R1,FCB$L_DIRENT(R6)
+	MOVL	DIR$L_LBN(R1),FCB$L_LBN(R6)
+	MOVL	DIR$L_ALLOC(R1),FCB$L_ALLOC(R6)
+	MOVL	DIR$L_SIZE(R1),FCB$L_SIZE(R6)
+	CLRL	FCB$L_POS(R6)
+	MNEGL	#1,FCB$L_BUFVBN(R6)
+	CLRL	FCB$L_BUFCNT(R6)
+	MULL3	#FCB$K_BUFSIZE,R2,R0
+	MOVAB	FCB$BUFFERS[R0],FCB$L_BUFFER(R6)
+	ADDL3	#1,R2,R1
+	MOVL	#RMS$_NORMAL,R0
+90$:	POPR	#^M<R2,R3>
+	RSB
+
+;
+; FIL$GETFCB -- R0 = IFI -> R6 = FCB.  Returns R0 status.
+;
+FIL$GETFCB::
+	DECL	R0
+	CMPL	R0,#FCB$K_COUNT
+	BGEQU	10$
+	MULL3	#FCB$K_LENGTH,R0,R6
+	MOVAB	FCB$TABLE[R6],R6
+	TSTB	FCB$B_INUSE(R6)
+	BEQL	10$
+	MOVL	#RMS$_NORMAL,R0
+	RSB
+10$:	MOVL	#RMS$_IFI,R0
+	RSB
+
+;
+; FIL$READBYTES -- copy up to R8 bytes from file R6 to (R7).
+; Returns R0 status, R1 = bytes copied (0 at end of file).  R7 advances.
+;
+FIL$READBYTES::
+	PUSHR	#^M<R2,R3,R4,R5,R8,R9>
+	CLRL	R9			; bytes copied
+10$:	TSTL	R8
+	BLEQ	80$
+	SUBL3	FCB$L_POS(R6),FCB$L_SIZE(R6),R0
+	BLEQ	80$			; end of file
+	JSB	FIL$FILLBUF
+	BLBC	R0,90$
+	MULL3	#512,FCB$L_BUFVBN(R6),R1
+	SUBL3	R1,FCB$L_POS(R6),R1	; offset in buffer
+	SUBL3	R1,FCB$L_BUFCNT(R6),R2	; bytes available in buffer
+	SUBL3	FCB$L_POS(R6),FCB$L_SIZE(R6),R0
+	CMPL	R2,R0
+	BLEQ	20$
+	MOVL	R0,R2
+20$:	CMPL	R2,R8
+	BLEQ	30$
+	MOVL	R8,R2
+30$:	ADDL2	R2,FCB$L_POS(R6)
+	ADDL2	R2,R9
+	SUBL2	R2,R8
+	ADDL2	FCB$L_BUFFER(R6),R1
+	MOVC3	R2,(R1),(R7)
+	MOVL	R3,R7
+	BRB	10$
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	MOVL	R9,R1
+	POPR	#^M<R2,R3,R4,R5,R8,R9>
+	RSB
+
+;
+; FIL$FILLBUF -- make sure the buffer holds the block at FCB$L_POS.
+;
+FIL$FILLBUF:
+	PUSHR	#^M<R1,R2,R3>
+	DIVL3	#FCB$K_BUFSIZE,FCB$L_POS(R6),R3
+	MULL2	#FCB$K_BUFBLKS,R3	; first VBN of the chunk
+	CMPL	R3,FCB$L_BUFVBN(R6)
+	BEQL	80$
+	SUBL3	R3,FCB$L_ALLOC(R6),R1	; blocks to read
+	CMPL	R1,#FCB$K_BUFBLKS
+	BLEQ	10$
+	MOVL	#FCB$K_BUFBLKS,R1
+10$:	ADDL3	R3,FCB$L_LBN(R6),R0
+	MOVL	FCB$L_BUFFER(R6),R2
+	JSB	DU$READ
+	BLBC	R0,90$
+	MOVL	R3,FCB$L_BUFVBN(R6)
+	ASHL	#9,R1,FCB$L_BUFCNT(R6)
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	POPR	#^M<R1,R2,R3>
+	RSB
+
+;
+; FIL$GETLINE -- read a text line from file R6 into (R7), at most R8
+; bytes.  The LF (and a CR before it) are removed.
+; Returns R0 status (RMS$_EOF at end, RMS$_RTB if truncated), R1 = length.
+;
+FIL$GETLINE::
+	PUSHR	#^M<R2,R3,R4,R5,R7,R9,R10>
+	CLRL	R9			; length
+	CLRL	R10			; any bytes read at all?
+10$:	CMPL	FCB$L_POS(R6),FCB$L_SIZE(R6)
+	BGEQU	70$
+	JSB	FIL$FILLBUF
+	BLBC	R0,90$
+	MULL3	#512,FCB$L_BUFVBN(R6),R1
+	SUBL3	R1,FCB$L_POS(R6),R1
+	ADDL2	FCB$L_BUFFER(R6),R1
+	MOVZBL	(R1),R0
+	INCL	FCB$L_POS(R6)
+	MOVL	#1,R10
+	CMPB	R0,#LF
+	BEQL	60$
+	CMPL	R9,R8
+	BGEQ	10$			; (truncate the record)
+	MOVB	R0,(R7)[R9]
+	INCL	R9
+	BRB	10$
+60$:	TSTL	R9			; drop a CR before the LF
+	BEQL	80$
+	DECL	R9
+	CMPB	(R7)[R9],#CR
+	BEQL	80$
+	INCL	R9
+	BRB	80$
+70$:	TSTL	R10
+	BNEQ	80$
+	MOVL	#RMS$_EOF,R0
+	BRB	90$
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	MOVL	R9,R1
+	POPR	#^M<R2,R3,R4,R5,R7,R9,R10>
+	RSB
+
+;
+; FIL$WRITEBYTES -- append R8 bytes at (R7) to file R6.  Returns R0 status.
+;
+FIL$WRITEBYTES::
+	PUSHR	#^M<R1,R2,R3,R4,R5,R7,R8>
+10$:	TSTL	R8
+	BLEQ	80$
+	SUBL3	FCB$L_BUFCNT(R6),#FCB$K_BUFSIZE,R2	; room in buffer
+	BGTR	20$
+	JSB	FIL$FLUSH
+	BLBC	R0,90$
+	BRB	10$
+20$:	CMPL	R2,R8
+	BLEQ	30$
+	MOVL	R8,R2
+30$:	ADDL3	FCB$L_BUFFER(R6),FCB$L_BUFCNT(R6),R3
+	ADDL2	R2,FCB$L_BUFCNT(R6)
+	ADDL2	R2,FCB$L_POS(R6)
+	SUBL2	R2,R8
+	MOVC3	R2,(R7),(R3)
+	MOVL	R1,R7
+	BRB	10$
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	POPR	#^M<R1,R2,R3,R4,R5,R7,R8>
+	RSB
+
+;
+; FIL$FLUSH -- write the buffered data of file R6 to the end of its
+; extent.  A partly filled last block is padded with zeros.
+;
+FIL$FLUSH::
+	PUSHR	#^M<R1,R2,R3,R4,R5>
+	MOVL	FCB$L_BUFCNT(R6),R3
+	BEQL	80$
+	ADDL3	#511,R3,R1
+	ASHL	#-9,R1,R1		; blocks
+	ASHL	#9,R1,R4
+	SUBL2	R3,R4			; padding
+	BEQL	10$
+	ADDL3	FCB$L_BUFFER(R6),R3,R5
+	PUSHL	R1
+	MOVC5	#0,(SP),#0,R4,(R5)
+	MOVL	(SP)+,R1
+10$:	ADDL3	FCB$L_LBN(R6),FCB$L_ALLOC(R6),R0
+	ADDL3	R0,R1,R2
+	CMPL	R2,HOM$BUFFER+HOM$L_MAXBLK
+	BLEQU	20$
+	MOVL	#RMS$_FUL,R0		; device full
+	BRB	90$
+20$:	MOVL	FCB$L_BUFFER(R6),R2
+	JSB	DU$WRITE
+	BLBC	R0,90$
+	ADDL2	R1,FCB$L_ALLOC(R6)
+	CLRL	FCB$L_BUFCNT(R6)
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	POPR	#^M<R1,R2,R3,R4,R5>
+	RSB
+
+;
+; FIL$CLOSE -- close file R6 (flushing and recording the size of a file
+; being written).  Returns R0 status.
+;
+FIL$CLOSE::
+	PUSHR	#^M<R1,R2>
+	MOVL	#RMS$_NORMAL,R2
+	CMPB	FCB$B_MODE(R6),#FCB$K_MODE_WRITE
+	BNEQ	50$
+	JSB	FIL$FLUSH
+	MOVL	R0,R2
+	MOVL	FCB$L_DIRENT(R6),R1
+	MOVL	FCB$L_ALLOC(R6),DIR$L_ALLOC(R1)
+	MOVL	FCB$L_POS(R6),DIR$L_SIZE(R1)
+	ADDL3	DIR$L_LBN(R1),DIR$L_ALLOC(R1),HOM$BUFFER+HOM$L_FREELBN
+	JSB	FIL$WRDIR
+	JSB	FIL$WRHOME
+	CLRL	FIL$GL_WRITER
+50$:	CLRB	FCB$B_INUSE(R6)
+	MOVL	R2,R0
+	POPR	#^M<R1,R2>
+	RSB
+
+;
+; FIL$CLOSEALL -- close every open file (image rundown).
+;
+FIL$CLOSEALL::
+	PUSHR	#^M<R0,R1,R6>
+	MOVAB	FCB$TABLE,R6
+	CLRL	R1
+10$:	TSTB	FCB$B_INUSE(R6)
+	BEQL	20$
+	JSB	FIL$CLOSE
+20$:	ADDL2	#FCB$K_LENGTH,R6
+	AOBLSS	#FCB$K_COUNT,R1,10$
+	POPR	#^M<R0,R1,R6>
+	RSB
+
+;
+; FIL$OPENNAME -- open an existing file for reading.
+;	R0 = length, R1 = address of name, R2 = default type (ASCIC) or 0
+; Returns R0 status, R6 = FCB, R1 = IFI.
+;
+FIL$OPENNAME::
+	JSB	FIL$PARSE
+	BLBC	R0,90$
+	TSTL	FIL$GL_WILD
+	BEQL	10$
+	MOVL	#RMS$_SYN,R0		; no wildcards here
+	RSB
+10$:	JSB	FIL$LOOKUP
+	BLBC	R0,90$
+	MOVL	#FCB$K_MODE_READ,R0
+	JSB	FIL$ALLOCFCB
+90$:	RSB
+
+;
+; ======================================================================
+; RMS services.  Entered from the CHMK dispatcher with AP pointing at the
+; caller's argument list; 4(AP) is the FAB or RAB.  R0 returns the status,
+; which is also stored in the block's STS field.
+; ======================================================================
+;
+; Fetch the file name from a FAB (R11) and parse it, using the type of
+; the default name (DNA/DNS) if one is given.
+;
+RMS$PARSEFAB:
+	CLRL	R2
+	MOVZBL	FAB$B_DNS(R11),R3
+	BEQL	30$
+	MOVL	FAB$L_DNA(R11),R4	; find the '.' in the default name
+10$:	CMPB	(R4),#^A/./
+	BEQL	20$
+	INCL	R4
+	SOBGTR	R3,10$
+	BRB	30$
+20$:	CMPL	R3,#39
+	BLEQ	25$
+	MOVL	#39,R3
+25$:	MOVB	R3,FIL$DEFTYPE
+	MOVC3	R3,(R4),FIL$DEFTYPE+1
+	MOVAB	FIL$DEFTYPE,R2
+30$:	MOVZBL	FAB$B_FNS(R11),R0
+	MOVL	FAB$L_FNA(R11),R1
+	JSB	FIL$PARSE
+	BLBC	R0,90$
+	TSTL	FIL$GL_WILD
+	BEQL	90$
+	MOVL	#RMS$_SYN,R0
+90$:	RSB
+
+RMS$SETSTS:				; store R0 in the block (R11) and return
+	MOVL	R0,FAB$L_STS(R11)	; (same offset in FAB and RAB)
+	RSB
+
+RMS$OPEN::
+	MOVL	4(AP),R11
+	CMPB	FAB$B_BID(R11),#FAB$C_BID
+	BEQL	10$
+	MOVL	#RMS$_FAB,R0
+	RSB
+10$:	BITB	#FAB$M_PUT!FAB$M_UPD!FAB$M_DEL!FAB$M_TRN,FAB$B_FAC(R11)
+	BEQL	15$
+	MOVL	#RMS$_FAC,R0		; only read access to existing files
+	BRB	90$
+15$:	JSB	RMS$PARSEFAB
+	BLBC	R0,90$
+	JSB	FIL$LOOKUP
+	BLBC	R0,90$
+	MOVL	#FCB$K_MODE_READ,R0
+	JSB	FIL$ALLOCFCB
+	BLBC	R0,90$
+	MOVW	R1,FAB$W_IFI(R11)
+	MOVL	FCB$L_ALLOC(R6),FAB$L_ALQ(R11)
+	MOVB	FCB$B_RFM(R6),FAB$B_RFM(R11)
+	MOVB	FCB$B_RAT(R6),FAB$B_RAT(R11)
+	MOVL	FCB$L_SIZE(R6),R0
+	ASHL	#-9,R0,R1
+	INCL	R1
+	MOVL	R1,FAB$L_EBK(R11)
+	BICL3	#^C511,R0,R1
+	MOVW	R1,FAB$W_FFB(R11)
+	MOVL	#RMS$_NORMAL,R0
+90$:	BRW	RMS$SETSTS
+
+RMS$CREATE::
+	MOVL	4(AP),R11
+	CMPB	FAB$B_BID(R11),#FAB$C_BID
+	BEQL	10$
+	MOVL	#RMS$_FAB,R0
+	RSB
+10$:	JSB	RMS$PARSEFAB
+	BLBC	R0,90$
+	MOVZBL	FAB$B_RFM(R11),R0
+	MOVZBL	FAB$B_RAT(R11),R1
+	JSB	FIL$CREATE
+	BLBC	R0,90$
+	MOVL	#FCB$K_MODE_WRITE,R0
+	JSB	FIL$ALLOCFCB
+	BLBC	R0,80$
+	MOVW	R1,FAB$W_IFI(R11)
+	MOVL	#RMS$_NORMAL,R0
+	BRB	90$
+80$:	PUSHL	R0			; no FCB: undo the directory entry
+	MOVL	FIL$GL_WRITER,R1
+	CLRB	DIR$B_FLAGS(R1)
+	CLRL	FIL$GL_WRITER
+	MOVL	(SP)+,R0
+90$:	BRW	RMS$SETSTS
+
+RMS$CLOSE::
+	MOVL	4(AP),R11
+	CMPB	FAB$B_BID(R11),#FAB$C_BID
+	BEQL	10$
+	MOVL	#RMS$_FAB,R0
+	RSB
+10$:	MOVZWL	FAB$W_IFI(R11),R0
+	JSB	FIL$GETFCB
+	BLBC	R0,90$
+	JSB	FIL$CLOSE
+	CLRW	FAB$W_IFI(R11)
+90$:	BRW	RMS$SETSTS
+
+RMS$ERASE::
+	MOVL	4(AP),R11
+	CMPB	FAB$B_BID(R11),#FAB$C_BID
+	BEQL	10$
+	MOVL	#RMS$_FAB,R0
+	RSB
+10$:	JSB	RMS$PARSEFAB
+	BLBC	R0,90$
+	JSB	FIL$LOOKUP
+	BLBC	R0,90$
+	JSB	FIL$DELETE
+	MOVL	#RMS$_NORMAL,R0
+90$:	BRW	RMS$SETSTS
+
+;
+; RAB services: R11 = RAB, R6 = FCB.
+;
+RMS$GETRAB:
+	MOVL	4(AP),R11
+	CMPB	RAB$B_BID(R11),#RAB$C_BID
+	BEQL	10$
+	MOVL	#RMS$_RAB,R0
+	RSB
+10$:	MOVZWL	RAB$W_ISI(R11),R0
+	BNEQ	20$
+	MOVL	#RMS$_ISI,R0
+	RSB
+20$:	JSB	FIL$GETFCB
+	BLBS	R0,30$
+	MOVL	#RMS$_ISI,R0
+30$:	RSB
+
+RMS$CONNECT::
+	MOVL	4(AP),R11
+	CMPB	RAB$B_BID(R11),#RAB$C_BID
+	BEQL	10$
+	MOVL	#RMS$_RAB,R0
+	RSB
+10$:	MOVL	RAB$L_FAB(R11),R1
+	MOVZWL	FAB$W_IFI(R1),R0
+	PUSHL	R0
+	JSB	FIL$GETFCB
+	MOVL	(SP)+,R1
+	BLBC	R0,90$
+	MOVW	R1,RAB$W_ISI(R11)
+	CLRL	FCB$L_POS(R6)
+	MOVL	#RMS$_NORMAL,R0
+90$:	BRW	RMS$SETSTS
+
+RMS$DISCONNECT::
+	JSB	RMS$GETRAB
+	BLBC	R0,90$
+	CLRW	RAB$W_ISI(R11)
+90$:	BRW	RMS$SETSTS
+
+RMS$REWIND::
+	JSB	RMS$GETRAB
+	BLBC	R0,90$
+	CMPB	FCB$B_MODE(R6),#FCB$K_MODE_READ
+	BNEQ	80$
+	CLRL	FCB$L_POS(R6)
+80$:	MOVL	#RMS$_NORMAL,R0
+90$:	BRW	RMS$SETSTS
+
+;
+; $GET -- next record.  Text files (VAR, STM, STMLF, STMCR) deliver one
+; line; others deliver the next USZ bytes.
+;
+RMS$GET::
+	JSB	RMS$GETRAB
+	BLBC	R0,90$
+	CMPB	FCB$B_MODE(R6),#FCB$K_MODE_READ
+	BEQL	10$
+	MOVL	#RMS$_FAC,R0
+	BRB	90$
+10$:	MOVL	RAB$L_UBF(R11),R7
+	MOVZWL	RAB$W_USZ(R11),R8
+	MOVL	R7,RAB$L_RBF(R11)
+	CMPB	FCB$B_RFM(R6),#FAB$C_FIX
+	BLEQU	20$
+	JSB	FIL$GETLINE
+	BRB	30$
+20$:	JSB	FIL$READBYTES
+	BLBC	R0,30$
+	TSTL	R1
+	BNEQ	30$
+	MOVL	#RMS$_EOF,R0
+30$:	MOVW	R1,RAB$W_RSZ(R11)
+90$:	BRW	RMS$SETSTS
+
+;
+; $READ -- block input: USZ bytes starting at block BKT (0 = next).
+;
+RMS$READ::
+	JSB	RMS$GETRAB
+	BLBC	R0,90$
+	CMPB	FCB$B_MODE(R6),#FCB$K_MODE_READ
+	BEQL	10$
+	MOVL	#RMS$_FAC,R0
+	BRB	90$
+10$:	MOVL	RAB$L_BKT(R11),R0
+	BEQL	20$
+	DECL	R0
+	ASHL	#9,R0,FCB$L_POS(R6)
+20$:	MOVL	RAB$L_UBF(R11),R7
+	MOVZWL	RAB$W_USZ(R11),R8
+	MOVL	R7,RAB$L_RBF(R11)
+	JSB	FIL$READBYTES
+	MOVW	R1,RAB$W_RSZ(R11)
+	BLBC	R0,90$
+	TSTL	R1
+	BNEQ	90$
+	MOVL	#RMS$_EOF,R0
+90$:	BRW	RMS$SETSTS
+
+;
+; $PUT -- write a record (a line, for text files).
+; $WRITE -- block output: RSZ bytes appended.
+;
+RMS$PUT::
+	JSB	RMS$GETRAB
+	BLBC	R0,90$
+	CMPB	FCB$B_MODE(R6),#FCB$K_MODE_WRITE
+	BEQL	10$
+	MOVL	#RMS$_FAC,R0
+	BRB	90$
+10$:	MOVL	RAB$L_RBF(R11),R7
+	MOVZWL	RAB$W_RSZ(R11),R8
+	JSB	FIL$WRITEBYTES
+	BLBC	R0,90$
+	CMPB	FCB$B_RFM(R6),#FAB$C_FIX
+	BLEQU	90$
+	MOVAB	RMS$LF,R7		; text: end the line
+	MOVL	#1,R8
+	JSB	FIL$WRITEBYTES
+90$:	BRW	RMS$SETSTS
+
+RMS$WRITE::
+	JSB	RMS$GETRAB
+	BLBC	R0,90$
+	CMPB	FCB$B_MODE(R6),#FCB$K_MODE_WRITE
+	BEQL	10$
+	MOVL	#RMS$_FAC,R0
+	BRB	90$
+10$:	MOVL	RAB$L_RBF(R11),R7
+	MOVZWL	RAB$W_RSZ(R11),R8
+	JSB	FIL$WRITEBYTES
+90$:	BRW	RMS$SETSTS
+
+	.PSECT	$DATA
+RMS$LF:	.BYTE	LF

@@ -1,0 +1,381 @@
+	.TITLE	BOOT	MiniVMS bootstrap, memory management and exceptions
+	.IDENT	/V1.0/
+;
+; The executive image is loaded by the console at physical address 0 and
+; entered there with memory management off, on the interrupt stack at
+; IPL 31.  It is linked at S0 address ^X80000000: all code that runs before
+; memory management is enabled uses only PC-relative addressing, so it works
+; at either address.
+;
+; Program sections, in memory order:
+;
+	.PSECT	$$BOOT,PAGE		; bootstrap (must be first)
+	.PSECT	$$SCB,PAGE		; system control block
+	.PSECT	$$VECTOR,PAGE		; system service vectors (user readable)
+	.PSECT	$CODE,LONG		; executive code
+	.PSECT	$DATA,QUAD		; executive data
+	.PSECT	$MSGTEXT,BYTE		; message text
+	.PSECT	$ZZBSS,PAGE		; zero-filled at boot (must be last)
+
+	.PSECT	$ZZBSS
+BSS$START::
+	.ALIGN	PAGE
+MMG$SPT::				; system page table
+	.BLKL	MEM$K_PAGES+32
+	.ALIGN	PAGE
+MMG$P0PT::				; user P0 page table
+	.BLKL	USR$K_MAXPAGES+1
+	.ALIGN	PAGE
+MMG$P1PT::				; user P1 (stack) page table
+	.BLKL	USR$K_STKPAGES
+	.ALIGN	PAGE
+EXE$ISTACK:	.BLKB	4096		; interrupt stack
+EXE$ISTACK_TOP::
+EXE$KSTACK:	.BLKB	16384		; kernel stack
+EXE$KSTACK_TOP::
+
+;
+; S0 addresses of the I/O pages we map after physical memory
+;
+IO$K_QBUS_VA	== S0$K_BASE+MEM$K_SIZE			; Q-bus I/O page (16 pages)
+IO$K_NVR_VA	== IO$K_QBUS_VA+^X2000			; TOY clock / NVR page
+DU$K_IP_VA	== IO$K_QBUS_VA+<DU$K_IP-^X20000000>
+DU$K_SA_VA	== IO$K_QBUS_VA+<DU$K_SA-^X20000000>
+KA$K_IPCR_VA	== IO$K_QBUS_VA+<KA$K_IPCR-^X20000000>
+SPT$K_LENGTH	= MEM$K_PAGES+17
+
+	.PSECT	$$BOOT
+	.ENABLE	LSB
+BOOT$START::
+	MTPR	#31,#PR$_IPL
+	MOVAB	EXE$ISTACK_TOP,SP	; physical address (PC relative)
+;
+; Clear the uninitialised data area (including the page tables).
+;
+	MOVAB	BSS$START,R6
+	MOVAB	BSS$END,R7
+10$:	SUBL3	R6,R7,R8
+	BLEQ	20$
+	CMPL	R8,#32768
+	BLEQ	15$
+	MOVL	#32768,R8
+15$:	MOVC5	#0,(R6),#0,R8,(R6)
+	MOVL	R3,R6
+	BRB	10$
+;
+; Build the system page table: S0 page n -> physical page n, kernel write.
+;
+20$:	MOVAL	MMG$SPT,R6
+	CLRL	R7
+30$:	BISL3	#PTE$K_KW,R7,(R6)+
+	AOBLSS	#MEM$K_PAGES,R7,30$
+;
+; Then the Q-bus I/O page (8 KB = 16 pages) and the TOY clock page.
+;
+	MOVL	#^X20000000@-9,R7
+	CLRL	R8
+40$:	BISL3	#PTE$K_KW,R7,(R6)+
+	INCL	R7
+	AOBLSS	#16,R8,40$
+	BISL3	#PTE$K_KW,#NVR$K_PA@-9,(R6)+
+;
+; The system service vector pages are readable from user mode.
+;
+	MOVAL	MMG$SPT,R6
+	MOVAB	VEC$START,R0
+	ASHL	#-9,R0,R0
+	MOVAB	VEC$END-1,R1
+	ASHL	#-9,R1,R1
+50$:	BISL3	#PTE$K_URKW,R0,(R6)[R0]
+	ACBL	R1,#1,R0,50$
+;
+; Q22 bus map: Q-bus page n -> physical page n for the first 4 MB, so
+; the disk controller can DMA directly into executive buffers.
+;
+	MOVL	#KA$K_QMAP,R6
+	CLRL	R7
+60$:	BISL3	#QMAP$M_VALID,R7,(R6)+
+	AOBLSS	#KA$K_QMAPREGS,R7,60$
+	MOVW	#KA$M_LMEAE,@#KA$K_IPCR
+;
+; Identity-map the executive in P0 space so that the instruction after
+; MTPR #1,#PR$_MAPEN can be fetched.
+;
+	MOVAL	MMG$P0PT,R6
+	CLRL	R7
+70$:	BISL3	#PTE$K_KW,R7,(R6)+
+	AOBLSS	#BOOT$K_KPAGES,R7,70$
+;
+; Load the memory management registers and turn it on.
+;
+	MTPR	#MMG$SPT-S0$K_BASE,#PR$_SBR
+	MTPR	#SPT$K_LENGTH,#PR$_SLR
+	MTPR	#MMG$P0PT,#PR$_P0BR
+	MTPR	#BOOT$K_KPAGES,#PR$_P0LR
+	MTPR	#MMG$P1PT-<USR$K_P1LR*4>,#PR$_P1BR
+	MTPR	#^X200000,#PR$_P1LR
+	MTPR	#EXE$SCB-S0$K_BASE,#PR$_SCBB
+	MTPR	#4,#PR$_ASTLVL		; no ASTs pending
+	MTPR	#0,#PR$_TBIA
+	MTPR	#1,#PR$_MAPEN
+	JMP	@#BOOT$MAPPED		; continue in S0 space
+	.DISABLE LSB
+
+BOOT$K_KPAGES	= <BSS$END-S0$K_BASE+511>/512
+NVR$K_PA	= ^X200B8000
+
+	.PSECT	$CODE
+BOOT$MAPPED:
+	MOVAB	EXE$ISTACK_TOP,SP
+	MTPR	#0,#PR$_P0LR		; drop the identity map
+	MTPR	#0,#PR$_TBIA
+	MTPR	#EXE$KSTACK_TOP,#PR$_KSP
+	PUSHL	#PSL$K_KERNEL		; kernel mode, IPL 0, kernel stack
+	PUSHAB	EXE$INIT
+	REI
+
+;
+; Executive initialisation, now in kernel mode on the kernel stack.
+;
+EXE$INIT:
+	MTPR	#^X40,#PR$_ICCS		; start the 100 Hz interval clock
+	JSB	CON$INIT
+	PUSHAB	BOOT$BANNER
+	CALLS	#1,EXE$PRINT
+	JSB	TIM$INIT		; read the time-of-year clock
+	JSB	DU$INIT			; bring the RQDX3 on line
+	BLBS	R0,10$
+	PUSHL	R0
+	PUSHAB	BOOT$NODISK
+	CALLS	#2,EXE$PRINT
+	HALT
+10$:	JSB	FIL$MOUNT		; mount the system disk
+	BLBS	R0,20$
+	PUSHL	R0
+	PUSHAB	BOOT$NOMOUNT
+	CALLS	#2,EXE$PRINT
+	HALT
+20$:	JSB	TIM$SETYEAR		; the year is kept on the system disk
+	PUSHL	DU$GL_UNITSIZE
+	PUSHAB	HOM$VOLNAME
+	PUSHAB	BOOT$MOUNTED
+	CALLS	#3,EXE$PRINT
+	JMP	DCL$START
+
+	.PSECT	$DATA
+BOOT$BANNER:	.ASCID	"!/  MiniVMS V1.0  on KA630 (MicroVAX II / VAXstation II)!/"
+BOOT$NODISK:	.ASCID	/%SYSINIT-F-NODISK, cannot initialise DUA0:, status !XL/
+BOOT$NOMOUNT:	.ASCID	/%SYSINIT-F-MOUNTERR, cannot mount DUA0:, status !XL/
+BOOT$MOUNTED:	.ASCID	"%MOUNT-I-MOUNTED, !AC mounted on _DUA0: (!UL blocks)"
+
+;
+; ----------------------------------------------------------------------
+; System control block.  Bit 0 of a vector selects the interrupt stack.
+; ----------------------------------------------------------------------
+;
+	.PSECT	$$SCB
+EXE$SCB::
+	.LONG	EXC$UNEXPECTED+1	; 00 passive release
+	.LONG	EXC$MCHECK+1		; 04 machine check
+	.LONG	EXC$KSNV+1		; 08 kernel stack not valid
+	.LONG	EXC$UNEXPECTED+1	; 0C power fail
+	.LONG	EXC$OPCDEC		; 10 reserved/privileged instruction
+	.LONG	EXC$OPCCUS		; 14 customer reserved instruction
+	.LONG	EXC$ROPRAND		; 18 reserved operand
+	.LONG	EXC$RADRMOD		; 1C reserved addressing mode
+	.LONG	EXC$ACCVIO		; 20 access control violation
+	.LONG	EXC$TNV			; 24 translation not valid
+	.LONG	EXC$TRACE		; 28 trace pending
+	.LONG	EXC$BREAK		; 2C breakpoint
+	.LONG	EXC$UNEXPECTED+1	; 30 compatibility mode
+	.LONG	EXC$ARITH		; 34 arithmetic
+	.LONG	EXC$UNEXPECTED+1	; 38
+	.LONG	EXC$UNEXPECTED+1	; 3C
+	.LONG	EXE$CHMK		; 40 CHMK
+	.LONG	EXC$CHMX		; 44 CHME
+	.LONG	EXC$CHMX		; 48 CHMS
+	.LONG	EXC$CHMX		; 4C CHMU
+	.REPT	<^XC0-^X50>/4
+	.LONG	EXC$UNEXPECTED+1	; 50-BC
+	.ENDR
+	.LONG	EXE$CLOCK+1		; C0 interval timer
+	.REPT	<^X200-^XC4>/4
+	.LONG	EXC$UNEXPECTED+1	; C4-1FC
+	.ENDR
+
+;
+; ----------------------------------------------------------------------
+; Interval clock: 100 ticks per second.  Also the place where a CTRL/Y
+; typed while a user program is computing gets noticed.
+; ----------------------------------------------------------------------
+;
+	.PSECT	$CODE
+	.ALIGN	LONG
+EXE$CLOCK::
+	PUSHR	#^M<R0,R1>
+	INCL	EXE$GL_TICKS
+	CMPZV	#PSL$V_CURMOD,#2,12(SP),#PSL$C_USER
+	BNEQ	90$
+	INCL	EXE$GL_CPUTICKS		; charge the tick to the image
+	JSB	CON$POLL		; CTRL/Y or CTRL/C typed?
+	BLBC	R0,90$
+	MOVAB	IMG$CTRLY,8(SP)		; make the REI go to the exit stub
+90$:	POPR	#^M<R0,R1>
+	REI
+
+;
+; ----------------------------------------------------------------------
+; Exceptions.  A fault in a user program (or in a system service working
+; for one) prints the VMS-style message and forces the image to exit.
+; Anything else is an executive bug: report it and halt.
+; ----------------------------------------------------------------------
+;
+; Common frame handling: R2 = message ASCID, R3 = number of parameter
+; longwords on the stack above PC/PSL, R4 = exit status.
+;
+	.ALIGN	LONG
+EXC$ACCVIO::
+EXC$TNV::
+	MOVAB	EXC$M_ACCVIO,R2
+	MOVL	#2,R3
+	MOVL	#SS$_ACCVIO,R4
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$OPCDEC::
+	MOVAB	EXC$M_OPCDEC,R2
+	CLRL	R3
+	MOVL	#^X43C,R4		; SS$_OPCDEC
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$OPCCUS::
+	MOVAB	EXC$M_OPCCUS,R2
+	CLRL	R3
+	MOVL	#^X434,R4		; SS$_OPCCUS
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$ROPRAND::
+	MOVAB	EXC$M_ROPRAND,R2
+	CLRL	R3
+	MOVL	#^X454,R4		; SS$_ROPRAND
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$RADRMOD::
+	MOVAB	EXC$M_RADRMOD,R2
+	CLRL	R3
+	MOVL	#^X44C,R4		; SS$_RADRMOD
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$BREAK::
+EXC$TRACE::
+	MOVAB	EXC$M_BREAK,R2
+	CLRL	R3
+	MOVL	#^X414,R4		; SS$_BREAK
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$CHMX::
+	MOVAB	EXC$M_ILLSER,R2
+	MOVL	#1,R3
+	MOVL	#SS$_ILLSER,R4
+	BRW	EXC$COMMON
+	.ALIGN	LONG
+EXC$ARITH::
+	MOVL	(SP),R4			; arithmetic type code 1..10
+	CMPL	R4,#10
+	BLEQU	10$
+	CLRL	R4
+10$:	MOVL	EXC$ARITH_MSG[R4],R2
+	MOVL	EXC$ARITH_STS[R4],R4
+	MOVL	#1,R3
+	BRW	EXC$COMMON
+
+;
+; R2 = message, R3 = parameter count, R4 = status.
+; Stack: params (R3 longwords), PC, PSL.
+;
+EXC$COMMON:
+	MOVL	(SP)[R3],R5		; PC
+	ADDL3	#1,R3,R0
+	MOVL	(SP)[R0],R6		; PSL
+	MOVL	(SP),R7			; first parameter (reason mask)
+	MOVL	4(SP),R8		; second parameter (virtual address)
+	CMPZV	#PSL$V_CURMOD,#2,R6,#PSL$C_USER
+	BEQL	10$
+	TSTL	EXE$GL_INSERVICE	; fault in a service for the user?
+	BNEQ	10$
+	BRW	EXC$BUGCHECK
+10$:	MTPR	#0,#PR$_IPL
+	PUSHL	R6
+	PUSHL	R5
+	CMPL	R3,#2
+	BNEQ	20$
+	PUSHL	R8
+	PUSHL	R7
+	PUSHL	R2
+	CALLS	#5,EXE$PRINT
+	BRB	30$
+20$:	PUSHL	R2
+	CALLS	#3,EXE$PRINT
+30$:	BISL3	#^X10000000,R4,R0	; STS$M_INHIB_MSG
+	JMP	EXE$IMGEXIT
+
+EXC$BUGCHECK:
+	MTPR	#31,#PR$_IPL
+	PUSHL	R6
+	PUSHL	R5
+	PUSHL	R4
+	PUSHAB	EXC$M_BUGCHECK
+	CALLS	#4,EXE$PRINT
+	HALT
+	BRB	EXC$BUGCHECK
+
+	.ALIGN	LONG
+EXC$MCHECK::
+	MOVL	(SP),R0			; byte count of machine-check frame
+	ADDL2	#4,R0
+	ADDL2	R0,SP			; discard it
+	MOVL	(SP),R5
+	MOVL	4(SP),R6
+	MOVL	#^X454,R4
+	MOVAB	EXC$M_MCHECK,R2
+	BRW	EXC$BUGCHECK
+	.ALIGN	LONG
+EXC$KSNV::
+	MOVL	(SP),R5
+	MOVL	4(SP),R6
+	MOVL	#4,R4
+	BRW	EXC$BUGCHECK
+	.ALIGN	LONG
+EXC$UNEXPECTED::
+	MOVL	(SP),R5
+	MOVL	4(SP),R6
+	MOVL	#^X8000,R4
+	BRW	EXC$BUGCHECK
+
+	.PSECT	$DATA
+EXC$M_ACCVIO:	.ASCID	/%SYSTEM-F-ACCVIO, access violation, reason mask=!XB, virtual address=!XL, PC=!XL, PSL=!XL/
+EXC$M_OPCDEC:	.ASCID	/%SYSTEM-F-OPCDEC, opcode reserved to Digital fault at PC=!XL, PSL=!XL/
+EXC$M_OPCCUS:	.ASCID	/%SYSTEM-F-OPCCUS, opcode reserved to customer fault at PC=!XL, PSL=!XL/
+EXC$M_ROPRAND:	.ASCID	/%SYSTEM-F-ROPRAND, reserved operand fault at PC=!XL, PSL=!XL/
+EXC$M_RADRMOD:	.ASCID	/%SYSTEM-F-RADRMOD, reserved addressing fault at PC=!XL, PSL=!XL/
+EXC$M_BREAK:	.ASCID	/%SYSTEM-F-BREAK, breakpoint fault at PC=!XL, PSL=!XL/
+EXC$M_ILLSER:	.ASCID	/%SYSTEM-F-ILLSER, illegal system service at PC=!XL, PSL=!XL/
+EXC$M_BUGCHECK:	.ASCID	"!/**** FATAL BUG CHECK, status=!XL, PC=!XL, PSL=!XL!/**** MiniVMS halted"
+EXC$M_MCHECK:	.ASCID	/machine check/
+EXC$M_INTOVF:	.ASCID	/%SYSTEM-F-INTOVF, arithmetic trap, integer overflow at PC=!XL, PSL=!XL/
+EXC$M_INTDIV:	.ASCID	/%SYSTEM-F-INTDIV, arithmetic trap, integer divide by zero at PC=!XL, PSL=!XL/
+EXC$M_FLTOVF:	.ASCID	/%SYSTEM-F-FLTOVF, arithmetic trap, floating overflow at PC=!XL, PSL=!XL/
+EXC$M_FLTDIV:	.ASCID	"%SYSTEM-F-FLTDIV, arithmetic trap, floating/decimal divide by zero at PC=!XL, PSL=!XL"
+EXC$M_FLTUND:	.ASCID	/%SYSTEM-F-FLTUND, arithmetic trap, floating underflow at PC=!XL, PSL=!XL/
+EXC$M_DECOVF:	.ASCID	/%SYSTEM-F-DECOVF, arithmetic trap, decimal overflow at PC=!XL, PSL=!XL/
+EXC$M_SUBRNG:	.ASCID	/%SYSTEM-F-SUBRNG, arithmetic trap, subscript out of range at PC=!XL, PSL=!XL/
+EXC$M_FLTOVF_F:	.ASCID	/%SYSTEM-F-FLTOVF_F, arithmetic fault, floating overflow at PC=!XL, PSL=!XL/
+EXC$M_FLTDIV_F:	.ASCID	/%SYSTEM-F-FLTDIV_F, arithmetic fault, floating divide by zero at PC=!XL, PSL=!XL/
+EXC$M_FLTUND_F:	.ASCID	/%SYSTEM-F-FLTUND_F, arithmetic fault, floating underflow at PC=!XL, PSL=!XL/
+	.ALIGN	LONG
+EXC$ARITH_MSG:
+	.ADDRESS EXC$M_INTOVF, EXC$M_INTOVF, EXC$M_INTDIV, EXC$M_FLTOVF
+	.ADDRESS EXC$M_FLTDIV, EXC$M_FLTUND, EXC$M_FLTDIV, EXC$M_SUBRNG
+	.ADDRESS EXC$M_FLTOVF_F, EXC$M_FLTDIV_F, EXC$M_FLTUND_F
+EXC$ARITH_STS:
+	.LONG	^X47C, ^X47C, ^X484, ^X48C, ^X494, ^X49C, ^X494, ^X4A4
+	.LONG	^X4C4, ^X4CC, ^X4D4

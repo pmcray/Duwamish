@@ -1,0 +1,170 @@
+	.TITLE	DUDRIVER  MiniVMS MSCP disk driver (DUA0:)
+	.IDENT	/V1.0/
+;
+; Polled driver for the RQDX3 MSCP controller found in the MicroVAX II and
+; VAXstation II.  The host talks to the controller through the UQSSP port:
+; a four-step initialisation handshake through the SA register, then
+; command and response "rings" (here one slot each) in host memory.
+; Packets and buffers are in executive memory below 4 MB, which the Q22
+; bus map translates one-to-one.
+;
+	.PSECT	$DATA
+	.ALIGN	QUAD
+DU$COMM:	.WORD	0, 0		; command / response interrupt words
+DU$RSPRING:	.LONG	0		; response descriptor (ring base)
+DU$CMDRING:	.LONG	0		; command descriptor
+	.ALIGN	QUAD
+DU$CMDHDR:	.WORD	0, 0		; envelope: length, credits/type/connection
+DU$CMDPKT:	.BLKB	64
+DU$RSPHDR:	.WORD	0, 0
+DU$RSPPKT:	.BLKB	64
+DU$GL_CRF:	.LONG	0		; command reference number
+DU$GL_UNITSIZE:: .LONG	0		; unit size in blocks
+DU$GL_DIRIO::	.LONG	0		; count of disk transfers
+DU$K_TIMEOUT	= 20000000
+
+	.PSECT	$CODE
+;
+; DU$WAITSA -- wait for SA to show the step bit in R1.  Returns R0 status.
+;
+DU$WAITSA:
+	MOVL	#DU$K_TIMEOUT,R2
+10$:	MOVZWL	@#DU$K_SA_VA,R0
+	BBS	#15,R0,80$		; SA<ER>: fatal controller error
+	BITL	R1,R0
+	BNEQ	70$
+	SOBGTR	R2,10$
+	MOVL	#SS$_OPINCOMPL,R0	; timed out
+	RSB
+70$:	MOVL	#SS$_NORMAL,R0
+	RSB
+80$:	BISL2	#^X8000000,R0		; error code in low bits
+	RSB
+
+;
+; DU$INIT -- initialise the port, set controller characteristics and
+; bring unit 0 on line.  Returns R0 status.
+;
+DU$INIT::
+	PUSHR	#^M<R1,R2,R3>
+	CLRW	@#DU$K_IP_VA		; writing IP starts the initialisation
+	MOVL	#SA$M_S1,R1
+	JSB	DU$WAITSA
+	BLBC	R0,90$
+	MOVW	#^X8000,@#DU$K_SA_VA	; step 1: valid, 1-slot rings, no interrupts
+	MOVL	#SA$M_S2,R1
+	JSB	DU$WAITSA
+	BLBC	R0,90$
+	MOVAB	DU$RSPRING,R3
+	SUBL2	#S0$K_BASE,R3		; Q-bus address of the ring base
+	MOVW	R3,@#DU$K_SA_VA		; step 2: ring base, low word
+	MOVL	#SA$M_S3,R1
+	JSB	DU$WAITSA
+	BLBC	R0,90$
+	ASHL	#-16,R3,R3
+	MOVW	R3,@#DU$K_SA_VA		; step 3: ring base, high bits
+	MOVL	#SA$M_S4,R1
+	JSB	DU$WAITSA
+	BLBC	R0,90$
+	MOVW	#1,@#DU$K_SA_VA		; step 4: GO
+;
+; SET CONTROLLER CHARACTERISTICS: MSCP version 0, no host timeout.
+;
+	JSB	DU$CLEARPKT
+	MOVB	#MSCP$K_STCON,DU$CMDPKT+MSCP$B_OPCODE
+	JSB	DU$DOCMD
+	BLBC	R0,90$
+;
+; ONLINE unit 0.
+;
+	JSB	DU$CLEARPKT
+	MOVB	#MSCP$K_ONLIN,DU$CMDPKT+MSCP$B_OPCODE
+	JSB	DU$DOCMD
+	BLBC	R0,90$
+	MOVL	DU$RSPPKT+MSCP$L_UNT_SIZE,DU$GL_UNITSIZE
+90$:	POPR	#^M<R1,R2,R3>
+	RSB
+
+DU$CLEARPKT:
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>
+	MOVC5	#0,(SP),#0,#64,DU$CMDPKT
+	POPR	#^M<R0,R1,R2,R3,R4,R5>
+	RSB
+
+;
+; DU$DOCMD -- send the command in DU$CMDPKT and wait for its end packet.
+; Returns R0 = SS$_NORMAL, or the MSCP status with bit 27 set.
+;
+DU$DOCMD:
+	PUSHR	#^M<R1,R2>
+	MOVW	#MSCP$K_LEN,DU$CMDHDR	; command length
+	CLRW	DU$CMDHDR+2		; sequential message, MSCP connection
+	MOVW	#64,DU$RSPHDR		; room for the response
+	CLRW	DU$RSPHDR+2
+	INCL	DU$GL_CRF
+	MOVL	DU$GL_CRF,DU$CMDPKT+MSCP$L_CRF
+	MOVAB	DU$RSPPKT,R1
+	SUBL2	#S0$K_BASE,R1
+	BISL3	#UQ$M_OWN,R1,DU$RSPRING	; give the controller both slots
+	MOVAB	DU$CMDPKT,R1
+	SUBL2	#S0$K_BASE,R1
+	BISL3	#UQ$M_OWN,R1,DU$CMDRING
+	MOVW	@#DU$K_IP_VA,R1		; reading IP makes the port poll
+	MOVL	#DU$K_TIMEOUT,R2
+10$:	TSTL	DU$RSPRING		; response arrived when OWN clears
+	BGEQ	20$
+	MOVZWL	@#DU$K_SA_VA,R0
+	BBS	#15,R0,80$
+	SOBGTR	R2,10$
+	MOVL	#SS$_OPINCOMPL,R0
+	BRB	90$
+20$:	INCL	DU$GL_DIRIO
+	MOVZWL	DU$RSPPKT+MSCP$W_STATUS,R0
+	BICL2	#^C<MSCP$M_ST_MASK>,R0
+	BNEQ	80$
+	MOVL	#SS$_NORMAL,R0
+	BRB	90$
+80$:	BISL2	#^X8000000,R0
+90$:	POPR	#^M<R1,R2>
+	RSB
+
+;
+; DU$READ / DU$WRITE
+;	R0 = starting LBN, R1 = block count, R2 = buffer (executive S0 address)
+; Returns R0 status.  Preserves R1-R11.
+;
+DU$READ::
+	PUSHL	#MSCP$K_READ
+	BRB	DU$XFER
+DU$WRITE::
+	PUSHL	#MSCP$K_WRITE
+DU$XFER:
+	PUSHR	#^M<R1,R2,R3,R4,R5,R6>
+	MOVL	24(SP),R6		; opcode
+	MOVL	R0,R3			; LBN
+	MOVL	R1,R4			; blocks left
+	MOVL	R2,R5			; buffer
+10$:	TSTL	R4
+	BLEQ	80$
+	MOVL	R4,R2
+	CMPL	R2,#DU$K_MAXBLKS
+	BLEQ	20$
+	MOVL	#DU$K_MAXBLKS,R2
+20$:	JSB	DU$CLEARPKT
+	MOVB	R6,DU$CMDPKT+MSCP$B_OPCODE
+	ASHL	#9,R2,DU$CMDPKT+MSCP$L_BYTE_CNT
+	SUBL3	#S0$K_BASE,R5,DU$CMDPKT+MSCP$L_BUFFER
+	MOVL	R3,DU$CMDPKT+MSCP$L_LBN
+	PUSHL	R2
+	JSB	DU$DOCMD
+	MOVL	(SP)+,R2
+	BLBC	R0,90$
+	ADDL2	R2,R3
+	SUBL2	R2,R4
+	ASHL	#9,R2,R2
+	ADDL2	R2,R5
+	BRB	10$
+80$:	MOVL	#SS$_NORMAL,R0
+90$:	POPR	#^M<R1,R2,R3,R4,R5,R6>
+	ADDL2	#4,SP
+	RSB

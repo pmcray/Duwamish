@@ -1,0 +1,9 @@
+	.TITLE	ENDMARK	End of the MiniVMS executive
+	.IDENT	/V1.0/
+;
+; Assembled last: marks the end of the zero-filled data area.
+;
+	.PSECT	$ZZBSS
+	.ALIGN	PAGE
+BSS$END::
+	.END	BOOT$START
