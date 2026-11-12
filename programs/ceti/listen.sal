@@ -1,0 +1,268 @@
+-- =====================================================================
+--  BYURAKAN, 1971: is the signal artificial?
+--
+--  In 1965 Sholomitskii in Moscow found the radio source CTA-102 varying
+--  with a period of about a hundred days, and Kardashev proposed that it
+--  was a beacon; it was a quasar.  In 1967 Bell and Hewish at Cambridge
+--  found pulses arriving every 1.337 seconds and called the source
+--  LGM-1, for "little green men"; it was a rotating neutron star.  The
+--  Soviet-American conference at Byurakan in 1971 asked what a signal
+--  would have to be before it must be taken for a message.
+--
+--  Good's answer is the weight of evidence.  A source is heard as runs
+--  of pulses, and three hypotheses are put to it:
+--
+--    N  noise      each run ends by chance: the lengths are geometric,
+--                  with the mean fitted to the source
+--    C  clockwork  something turns: each run is the length of the first
+--    A  artifice   somebody counts: the runs follow a sequence a
+--                  mathematician would send -- the counting numbers, the
+--                  primes, the squares, the powers of two or the
+--                  Fibonacci numbers, begun at the first run
+--
+--  Clockwork and artifice each allow one run in a hundred to be spoilt.
+--  Artifice is credited only with its best sequence, and charged the
+--  choice among five.  The prior odds are a million to one against
+--  artifice, -60 db; the verdict is Wald's, at +20 or -20 db.
+--
+--  The transmission is read from the cards; the other three sources are
+--  made here.
+-- =====================================================================
+
+const MAXR = 40, NSEQ = 5
+const PRIOR = -6000, THRESH = 2000     -- hundredths of a deciban
+const S = 100000
+
+global runs[MAXR], nruns
+global seq[200]                         -- NSEQ sequences of MAXR terms
+global card[200]
+global seed := 1971
+global lp, lq                           -- noise: log of stopping, of going on
+global w_ok, w_bad
+
+proc random(n)
+begin
+  seed := (seed * 7919 + 13) mod 1000003
+  return seed mod n
+end
+
+-- log2(num/den), scaled by S, by the square-and-halve method
+proc log2fix(num, den)
+begin
+  var k := 0, y, frac := 0, bit := S
+  for i := 1 to 20 do if den > 1000000 then begin num := num / 10; den := den / 10 end
+  for i := 1 to 60 do if num >= 2 * den then begin den := den * 2; k := k + 1 end
+  for i := 1 to 60 do if num < den then begin num := num * 2; k := k - 1 end
+  y := num * S / den
+  for i := 1 to 17 do begin
+    y := y * y / S
+    bit := bit / 2
+    if y >= 2 * S then begin y := y / 2; frac := frac + bit end
+  end
+  return k * S + frac
+end
+
+-- ten times log10(num/den), in hundredths of a deciban
+proc cdb(num, den) = log2fix(num, den) * 30103 / 10000000
+
+proc printdb(c, w)
+begin
+  var a := abs(c), n := 4, t
+  t := a / 100
+  while t >= 10 do begin t := t / 10; n := n + 1 end
+  spaces(w - n - 1)
+  putc(c < 0 -> '-', '+')
+  printfix(a, 2)
+end
+
+proc isprime(n)
+begin
+  var d := 2
+  if n < 2 then return false
+  while d * d <= n do begin
+    if n mod d = 0 then return false
+    d := d + 1
+  end
+  return true
+end
+
+proc seqname(h)
+begin
+  if h = 0 then prints("counting numbers")
+  else if h = 1 then prints("primes")
+  else if h = 2 then prints("squares")
+  else if h = 3 then prints("powers of two")
+  else prints("Fibonacci numbers")
+end
+
+-- is n a term of sequence h?  if so, the term after it; if not, 0
+proc after(h, n)
+begin
+  var a, b, t
+  if h = 0 then return n + 1
+  if h = 1 then begin
+    if not isprime(n) then return 0
+    t := n + 1
+    while not isprime(t) do t := t + 1
+    return t
+  end
+  if h = 2 then begin
+    a := 1
+    while a * a < n do a := a + 1
+    return a * a = n -> (a + 1) * (a + 1), 0
+  end
+  if h = 3 then begin
+    a := 1
+    while a < n do a := a * 2
+    return a = n -> 2 * n, 0
+  end
+  a := 1; b := 2
+  while a < n do begin t := a + b; a := b; b := t end
+  return a = n -> b, 0
+end
+
+-- each sequence, begun at the first run
+proc lay_sequences()
+begin
+  var t
+  for h := 0 to NSEQ - 1 do begin
+    t := runs[0]
+    for i := 0 to MAXR - 1 do begin
+      seq[h * MAXR + i] := t
+      if t > 0 then t := after(h, t)
+    end
+  end
+end
+
+-- the noise's geometric distribution, fitted to the runs
+proc fit_noise()
+begin
+  var sum := 0
+  for i := 0 to nruns - 1 do sum := sum + runs[i]
+  lp := cdb(nruns, sum + 1)
+  lq := cdb(sum + 1 - nruns, sum + 1)
+end
+
+proc noise(r) = lp + (r - 1) * lq
+
+-- the log likelihood of run i, if it was expected to be e
+proc expect(i, e) = runs[i] = e -> w_ok, w_bad + noise(runs[i])
+
+global ln, lc, la[NSEQ], best
+
+-- take the runs one at a time; show the path if asked
+proc weigh(show)
+begin
+  var r, nat, art, w, decided := 0
+  fit_noise()
+  lay_sequences()
+  ln := 0; lc := 0
+  for h := 0 to NSEQ - 1 do la[h] := cdb(1, NSEQ)
+  if show then
+    prints("   run  length     noise  clockwork  artifice   W(A : natural)  posterior\n")
+  for i := 0 to nruns - 1 do begin
+    r := runs[i]
+    ln := ln + noise(r)
+    lc := lc + (i = 0 -> noise(r), expect(i, runs[0]))
+    best := 0
+    for h := 0 to NSEQ - 1 do begin
+      la[h] := la[h] + (i = 0 -> noise(r), expect(i, seq[h * MAXR + i]))
+      if la[h] > la[best] then best := h
+    end
+    nat := max(ln, lc)
+    art := la[best]
+    w := art - nat
+    if show then begin
+      printw(i + 1, 6); printw(r, 8)
+      printdb(ln, 10); printdb(lc, 11); printdb(art, 10)
+      printdb(w, 14); prints(" db"); printdb(PRIOR + w, 8); prints(" db")
+      if decided = 0 and PRIOR + w >= THRESH then begin
+        decided := 1
+        prints("   <- 100 to 1 on")
+      end
+      newline()
+    end
+  end
+  return art - nat
+end
+
+proc report(name, show)
+begin
+  var w, post
+  prints(name); newline()
+  prints("   runs:")
+  for i := 0 to min(nruns, 14) - 1 do begin space(); print(runs[i]) end
+  if nruns > 14 then prints(" ...")
+  newline()
+  w := weigh(show)
+  post := PRIOR + w
+  prints("   clockwork against noise:"); printdb(lc - ln, 10); prints(" db\n")
+  prints("   artifice against the better natural account:"); printdb(w, 10)
+  prints(" db")
+  if w > 0 then begin prints("   (the "); seqname(best); prints(")") end
+  newline()
+  prints("   with the prior of -60 db:"); printdb(post, 10); prints(" db   ")
+  sign post - THRESH of
+    - : sign post + THRESH of
+          - : prints("NATURAL")
+          0 : prints("NATURAL")
+          + : prints("UNKNOWN: keep listening")
+        end
+    0 : prints("ARTIFICIAL")
+    + : prints("ARTIFICIAL")
+  end
+  prints("\n\n")
+end
+
+-- the first section of the transmission: runs of +, up to the first -
+proc read_transmission()
+begin
+  var c, run := 0, done := false
+  nruns := 0
+  while readline(card, 199) do
+    for i := 1 to card[0] do begin
+      c := card[i]
+      if done > 0 then c := ' '
+      if c = '+' then run := run + 1
+      else if c = '0' or c = '-' then begin
+        if run > 0 and nruns < MAXR then begin
+          runs[nruns] := run; nruns := nruns + 1
+        end
+        run := 0
+        if c = '-' then done := true
+      end
+    end
+end
+
+proc main()
+begin
+  var on
+  w_ok := cdb(99, 100)
+  w_bad := cdb(1, 100)
+  prints("BYURAKAN 1971 -- is the signal artificial?  Good's weight of evidence\n\n")
+
+  -- noise: a pulse or a silence, by the toss of a coin
+  nruns := 0; on := 0
+  while nruns < 14 do
+    if random(2) = 1 then on := on + 1
+    else if on > 0 then begin runs[nruns] := on; nruns := nruns + 1; on := 0 end
+  report("1. Receiver noise", false)
+
+  -- CTA-102: bright for about fifty days, then faint, never the same twice
+  nruns := 10
+  for i := 0 to nruns - 1 do runs[i] := 44 + random(13)
+  report("2. CTA-102 (Sholomitskii, 1965): a flux that rises and falls in about a hundred days", false)
+
+  -- the pulsar: every pulse four samples wide
+  nruns := 14
+  for i := 0 to nruns - 1 do runs[i] := 4
+  report("3. CP 1919, \"LGM-1\" (Bell and Hewish, 1967): a pulse every 1.337 seconds", false)
+
+  read_transmission()
+  report("4. The transmission on the cards", true)
+
+  prints("Regularity is strong evidence against noise, and none for artifice:\n")
+  prints("a clock explains the pulsar as well as a mind does.  What tells is a\n")
+  prints("pattern that the natural accounts must pay for run by run, and that\n")
+  prints("somebody counting gets for nothing.\n")
+end

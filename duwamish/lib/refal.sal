@@ -755,6 +755,12 @@ begin
     nextch(); tstr[0] := 0
     while isletter(ch) do begin tstr[0] := tstr[0] + 1; tstr[tstr[0]] := ch; nextch() end
     if streq(tstr, "ENTRY") then begin tk := T_ENTRY; return 0 end
+    -- $END ends the program: the cards after it are data, for <Card>
+    if streq(tstr, "END") then begin
+      while ch <> 10 and ch >= 0 do ch := getc()
+      tk := T_EOF
+      return 0
+    end
     -- $EXTERN and the like are accepted and ignored, to the semicolon
     while ch <> ';' and ch >= 0 do nextch()
     nextch()

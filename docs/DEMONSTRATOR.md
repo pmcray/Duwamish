@@ -29,6 +29,7 @@ python -m duwamish run jobs/knuth.job --model 90       # Kleene Life, sorting, t
 python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanced, read backward, polyphase (half a minute)
 python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
 python -m duwamish run jobs/mix.job --model 90         # mixed computation in Refal: an interpreter becomes a compiler (twenty seconds)
+python -m duwamish run jobs/byurakan.job --model 90    # Byurakan 1971: is the signal artificial? and a message that builds its receiver (fifteen seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA and the DOCTOR (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi (twenty seconds)
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -1138,6 +1139,122 @@ first made it work in the mid-1980s. Nor is this Turchin's
 supercompiler, which drives Refal itself and finds the residual
 program's loops by generalising configurations, not by the binding
 times fixed in advance that `Mix` uses.
+
+## A message between the stars
+
+### 33. Byurakan, 1971 — `programs/ceti/listen.sal`, `programs/ceti/receive.ref` (the `byurakan` job)
+
+In September 1971 Soviet and American scientists met at the Byurakan
+observatory in Armenia to ask how a message from another civilisation
+would be known and read. The proceedings (Sagan, ed., *Communication with
+Extraterrestrial Intelligence*, 1973) are in the bibliography of *Gödel,
+Escher, Bach*. The demonstration has two halves. The first is Good's:
+when must a signal be taken for a message? The second is Hofstadter's:
+where is its meaning?
+
+**Is it artificial?** (`listen.sal`, in SALISH.) Two false alarms were
+fresh in 1971. In 1965 Sholomitskii found the source CTA-102 varying over
+about a hundred days, and it was announced as a possible beacon; it was a
+quasar. In 1967 Bell and Hewish found pulses every 1.337 seconds and
+called the source LGM-1, "little green men"; it was a pulsar. The program
+hears four sources as runs of pulses, and weighs three accounts of each
+in decibans:
+
+* **noise**: each run ends by chance, so the lengths are geometric, with
+  the mean fitted to the source;
+* **clockwork**: something turns, so each run is as long as the first;
+* **artifice**: somebody counts, so the runs follow the counting numbers,
+  the primes, the squares, the powers of two or the Fibonacci numbers.
+
+The sequences are fixed before listening, and artifice is charged for the
+choice among five. Its prior odds are a million to one against, −60 db.
+The verdict is Wald's: artificial at +20 db, natural at −20, and
+otherwise *unknown: keep listening*, the third value of a trit.
+
+| source | clockwork against noise | artifice against the better natural account | verdict |
+|---|---:|---:|---|
+| receiver noise | −207.9 db | −267.0 db | natural |
+| CTA-102 | −180.0 db | −187.0 db | natural |
+| the pulsar | +126.2 db | −393.2 db | natural |
+| the transmission | −200.0 db | +153.5 db | artificial |
+
+The pulsar is the instructive one. Its regularity is 126 db of evidence
+against noise, and none at all for artifice, because a clock explains it
+as well as a mind does. Evidence favours a hypothesis only over a rival
+that explains the same thing worse. For the transmission the program
+prints the path. Each prime costs the natural accounts 12 to 21 db and
+costs somebody counting nothing. After 2, 3, 5 the primes and the
+Fibonacci numbers are level; 7 parts them. The posterior passes +20 db at
+the eighth prime, 19.
+
+**Where is the meaning?** (`receive.ref`, in Refal.) In chapter VI of
+GEB, Hofstadter finds three messages in any message. The *frame message*
+says "I am a message". The *outer message* says how to read the rest. The
+*inner message* is what the sender meant. Between the stars the outer
+message cannot be written in a language, because there is none in common.
+The transmission is a string of trits, a pulse, a pulse of the other
+polarisation and silence, in three sections:
+
+1. the frame, the primes from 2 to 31 as runs of pulses;
+2. the outer message, a **machine**: rewriting rules, of the kind Markov
+   studied in Moscow and Lindenmayer used in 1968 for the growth of
+   plants;
+3. the inner message, a **seed**.
+
+The receiver builds the machine from the rules and gives it the seed.
+The first transmission's rules are 1 → 1 2 and 2 → 1, Lindenmayer's alga:
+
+```
+   0  #
+   1  #.
+   2  #.#
+   3  #.##.
+   4  #.##.#.#
+   5  #.##.#.##.##.
+
+   lengths: 1 2 3 5 8 13 21 34 55
+   each is the sum of the two before
+```
+
+The second transmission is read by the same receiver. Its two rules each
+write nine things, so the receiver takes them for squares of 3 by 3, and
+the seed grows on a plane into a square of 27 by 27 in three generations:
+
+```
+   ##################
+   ##  ####  ####  ##
+   ##################
+   ######      ######
+   ##  ##      ##  ##
+   ######      ######
+   ##################
+   ##  ####  ####  ##
+   ##################
+
+   things of the first kind: 1 8 64 512
+   each is 8 times the one before
+```
+
+In both, the receiver is not told what law to expect. It looks for one in
+the sizes of the generations and reports what it finds. That is how a
+decoding confirms itself: a wrong reading would not grow Fibonacci
+numbers or powers of eight. The figure the second machine grows is one a
+ternary machine knows well. A cell is empty exactly when its row and its
+column, written in base 3, have a 1 in the same place; the tests check
+all 729 cells that way.
+
+**What it does not show.** The receiver prints its own confession: it
+brought four conventions to the message, and the frame taught only one of
+them (a run of pulses is a number). That silence parts numbers, that the
+first number of a rule is what the rest replaces, and that nine things
+are a square, it "guessed", which is to say its programmer knew. This is
+Hofstadter's point about the jukebox: a record carries its music only to
+something that already knows how records are played. The message can
+shrink the receiver's share, and cannot abolish it. Nor is the weighing
+of evidence free of its hypotheses. A sender who counted in some sixth
+sequence would be heard as noise, and the prior of −60 db is a number
+chosen, not measured. The sources themselves are made in the program, not
+recorded: only their histories are real.
 
 ---
 

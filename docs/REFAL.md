@@ -24,6 +24,15 @@ function.
 python -m duwamish run --model 90 jobs/refal.job      # the tour
 ```
 
+A program may read data with `<Card>`. A card beginning `$END` ends the
+program, and the cards after it are the data:
+
+```
+//EXEC REFAL
+//DATA FROM=program.ref          (its last card is $END)
+//DATA FROM=data.txt
+```
+
 ## The language
 
 This Refal follows Refal-5, the version Turchin described in his *Refal-5
@@ -147,6 +156,10 @@ caught a programmer treating 0 as false.
 
 `programs/refal/mix.ref` (the `mix` job, about twenty seconds) is mixed
 computation, below.
+
+`programs/ceti/receive.ref` (the `byurakan` job) reads a transmission of
+trits from the cards, builds the rewriting machine it describes and grows
+its seed; see DEMONSTRATOR.md §33.
 
 ## Mixed computation
 

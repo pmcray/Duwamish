@@ -58,6 +58,7 @@ python -m duwamish run jobs/polyphase.job --model 90   # sorting on tape: balanc
 python -m duwamish run jobs/atlas.job --model 90       # the one-level store: Atlas's learning pager v. FIFO, LRU, random (40 seconds)
 python -m duwamish run jobs/refal.job --model 90       # Turchin's Refal: patterns, a sieve, a three-way quicksort (ten seconds)
 python -m duwamish run jobs/mix.job --model 90         # mixed computation in Refal: an interpreter specialised into a compiler (twenty seconds)
+python -m duwamish run jobs/byurakan.job --model 90    # Byurakan 1971: is the signal artificial? and a message that builds its receiver (fifteen seconds)
 python -m duwamish run jobs/eliza.job --model 90       # ELIZA, the DOCTOR script (ten seconds)
 python -m duwamish run jobs/gps.job --model 90         # GPS on the Tower of Hanoi
 python -m duwamish run jobs/strips.job --model 90      # STRIPS plans for Shakey (about a minute)
@@ -275,6 +276,20 @@ shows, and what it does not.
   the program compiled (Futamura's first projection). The compiled
   program gives the same answers in an eighth of the steps.
 
+**A message between the stars**
+* `ceti/listen.sal`: the question of the Byurakan conference of 1971.
+  Four sources are weighed in decibans between noise, clockwork and
+  artifice, from a prior of a million to one against. Noise, the quasar
+  CTA-102 and the pulsar "LGM-1" are natural: the pulsar's regularity is
+  126 db against noise and nothing for artifice. A transmission that
+  counts the primes is artificial by the eighth of them.
+* `ceti/receive.ref`: Hofstadter's frame, outer and inner messages. The
+  transmission is a frame of primes, a machine (rewriting rules) and a
+  seed, all in trits. A receiver in Refal builds the machine and grows
+  the seed: Lindenmayer's alga, with Fibonacci lengths, and then a square
+  of 27 by 27 cells. It finds each law for itself, and lists what it had
+  to know beforehand.
+
 **The AI of the period, in TRILISP** (`programs/ai/`)
 * `eliza.lsp`: ELIZA and the DOCTOR script. It reproduces the
   conversation in Weizenbaum's 1966 paper word for word.
@@ -353,10 +368,11 @@ duwamish/lib/        runtime.sal, disasm.sal, trilisp.sal, tfloat.sal,
 docs/images/         the Section's mark and signature (ue-mark.svg, ue-logo.svg)
 programs/            SALISH, TRILISP, TRI-TRAN (.ftn) and WHALE (.whl)
                      programs (good/, hofstadter/, ashby/, pask/, knuth/,
-                     atlas/, ai/, whale/, refal/, trilisp/,
+                     atlas/, ai/, whale/, refal/, ceti/, trilisp/,
                      selfhost/: the compiler in SALISH)
 jobs/                card decks
-data/                Genesis 1 (KJV), for Good-Turing
+data/                Genesis 1 (KJV), for Good-Turing; the two Byurakan
+                     transmissions (written by tools/make_message.py)
 tests/               unittest suite
 tools/               make_quine.py (how the quine was built),
                      make_notebook.py (how the notebook is generated)

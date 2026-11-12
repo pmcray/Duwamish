@@ -100,6 +100,14 @@ Loop { 0 s.A = s.A; s.N s.A = <Loop <Sub s.N 1> <Add s.A 1>>; }
         out = refal("$ENTRY Go { = <F e.1>; }")
         self.assertIn("SYNTAX ERROR", out)
 
+    def test_end_card_leaves_the_data(self):
+        self.assertEqual(value("""
+$ENTRY Go { = <Prout <Card>> <Prout <Card>> <Prout '(' <Card> ')'> <Prout <Card>>; }
+$END
+first card
+second
+"""), ["first card", "second", "()", "0"])      # the deck ends in a blank card
+
     def test_tour(self):
         with open(os.path.join(ROOT, "jobs", "refal.job")) as f:
             deck = f.read().replace("../", ROOT + "/")
