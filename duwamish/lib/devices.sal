@@ -1,0 +1,64 @@
+-- =====================================================================
+--  Tape, drum and disc, through the data channel
+--
+--  get "devices"
+--
+--  Each procedure fills a six-word control block and makes supervisor
+--  call 6; the Executive hands the block to the channel, which moves the
+--  words between core and the device by itself while the program waits.
+--  Each returns the channel's status: a count of words (or a record
+--  number) when all is well, or one of the IO_ codes below.  The devices
+--  and their timing are described in duwamish/devices.py.
+-- =====================================================================
+
+const TAPE = 1, DRUM = 2, DISC = 3
+const IO_MARK = -1                    -- a tape mark (end of a file)
+const IO_END = -2                     -- the end of the data, of the reel or
+                                      -- of the device; or the load point
+const IO_PROTECT = -3                 -- no write ring; a protected pack
+const IO_BADADDR = -4                 -- core outside the program, or count
+const IO_NOTREADY = -5                -- nothing mounted on the unit
+
+const DRUM_WORDS = 177147             -- 243 tracks of 729 words
+const DISC_SECTOR = 81                -- words in a disc sector
+const DISC_SECTORS = 19683            -- in a pack
+
+global io_cb[6]
+
+proc io(dev, unit, op, buf, count, pos)
+begin
+  io_cb[0] := dev
+  io_cb[1] := unit
+  io_cb[2] := op
+  io_cb[3] := buf
+  io_cb[4] := count
+  io_cb[5] := pos
+  return svc(6, io_cb)
+end
+
+-- tape: unit 1 to 8
+proc tread(u, buf, max) = io(TAPE, u, 1, buf, max, 0)     -- next record
+proc twrite(u, buf, n) = io(TAPE, u, 2, buf, n, 0)        -- a record
+proc tmark(u) = io(TAPE, u, 3, 0, 0, 0)                   -- a tape mark
+proc rewind(u) = io(TAPE, u, 4, 0, 0, 0)
+proc backspace(u) = io(TAPE, u, 5, 0, 0, 0)               -- one record
+proc treadback(u, buf, max) = io(TAPE, u, 6, buf, max, 0) -- the record before
+proc tskip(u) = io(TAPE, u, 7, 0, 0, 0)                   -- over one record
+proc tpos(u) = io(TAPE, u, 0, 0, 0, 0)                    -- record number
+
+-- the drum: any word address
+proc drumread(addr, buf, n) = io(DRUM, 1, 1, buf, n, addr)
+proc drumwrite(addr, buf, n) = io(DRUM, 1, 2, buf, n, addr)
+
+-- disc: unit 1 to 4, by sector
+proc discread(u, sector, buf, n) = io(DISC, u, 1, buf, n, sector)
+proc discwrite(u, sector, buf, n) = io(DISC, u, 2, buf, n, sector)
+
+proc printio(status)
+begin
+  if status >= 0 then print(status)
+  else prints(status = IO_MARK -> "tape mark", status = IO_END -> "end",
+              status = IO_PROTECT -> "no write ring",
+              status = IO_BADADDR -> "bad address",
+              status = IO_NOTREADY -> "not ready", "?")
+end

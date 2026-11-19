@@ -1,0 +1,13 @@
+//JOB ATLAS                      -- the one-level store: one program, four policies
+//SALISH FROM=../programs/atlas/workload.sal OPT
+//STORE FRAMES=16 POLICY=ATLAS
+//EXEC
+//STORE FRAMES=16 POLICY=LRU
+//EXEC
+//STORE FRAMES=16 POLICY=FIFO
+//EXEC
+//STORE FRAMES=16 POLICY=RANDOM
+//EXEC
+//STORE FRAMES=0                 -- and all in core, for comparison
+//EXEC
+//END

@@ -1,0 +1,103 @@
+-- =====================================================================
+--  SELFREF: Goedel's diagonal lemma, executed.
+--
+--  Goedel showed how a formula can speak about its own Goedel number.
+--  Hofstadter's version: a sentence that says "my Goedel number is n",
+--  where the n it quotes really is its own number.  Such a sentence
+--  cannot be written by guessing -- changing n changes the number.  It
+--  has to be *solved for*: the diagonal lemma guarantees a fixed point.
+--
+--  This program's "sentence" is its own machine code.  Its Goedel number
+--  G is the code read as a number in base 3^27, reduced mod a prime P.
+--  The procedure claimed() holds a constant -- the program's claim about
+--  its own G.  The program
+--    1. reads its own code and computes G;
+--    2. sees that its claim (0) is false;
+--    3. solves  v = G(v)  for the one claim that is true of itself;
+--    4. writes v into its own code, and checks, by reading itself anew.
+-- =====================================================================
+get "disasm"
+
+const P = 1000003           -- a prime
+
+proc claimed() = 0          -- "the Goedel number of this program is ..."
+
+proc mulmod(a, b) = a * b mod P
+proc norm(w) = (w mod P + P) mod P
+
+proc powmod(b, e)
+begin
+  var r := 1
+  for i := 1 to 60 do begin
+    if e > 0 then begin
+      if e mod 2 = 1 then r := mulmod(r, b)
+      b := mulmod(b, b)
+      e := e / 2
+    end
+  end
+  return r
+end
+
+global radix               -- 3^27 mod P
+
+-- G = sum of word[i] * radix^i over the code, by Horner's rule
+proc godel(lo, hi)
+begin
+  var g := 0
+  for a := hi - 1 to lo by -1 do g := (mulmod(g, radix) + norm(peek(a))) mod P
+  return g
+end
+
+-- the instruction inside claimed() that holds the claim:  LD R1, #n
+proc find_claim()
+begin
+  var a := claimed
+  for i := 0 to 10 do
+    if w_op(peek(a + i)) = OP_LD and w_r(peek(a + i)) = 1 and
+       w_m(peek(a + i)) = 1 then return a + i
+  prints("cannot find the claim\n")
+  exit(1)
+end
+
+proc say(g)
+begin
+  prints("   the sentence:  \"my Goedel number (mod "); print(P)
+  prints(") is "); print(claimed()); prints("\"\n")
+  prints("   the truth:     it is "); print(g)
+  prints(g = claimed() -> "   -- TRUE\n", "   -- false\n")
+end
+
+proc main()
+begin
+  var lo := codebase(), hi := codeend(), at, g0, c, v
+  radix := powmod(3, 27)
+  at := find_claim()
+  prints("SELFREF -- a program that states, truly, its own Goedel number\n\n")
+  prints("my code is the "); print(hi - lo); prints(" words from ")
+  print(lo); prints(" to "); print(hi - 1); prints(".  The claim lives at ")
+  print(at); prints(":  "); disasm(peek(at)); newline(); newline()
+
+  g0 := godel(lo, hi)
+  prints("1. as written:\n")
+  say(g0)
+
+  -- G(v) = G(0) + v * radix^(at - lo), so the fixed point v = G(v) is
+  -- v = G(0) / (1 - radix^(at - lo))   (mod P)
+  c := powmod(radix, at - lo)
+  v := mulmod(g0, powmod(norm(1 - c), P - 2))
+  prints("\n2. diagonalising:  G(v) = "); print(g0); prints(" + v * "); print(c)
+  prints("  (mod P)\n   has exactly one fixed point, v = "); print(v); newline()
+
+  poke(at, peek(at) + v)
+  prints("\n3. I write v into my own code:  "); print(at); prints(":  ")
+  disasm(peek(at)); newline()
+
+  prints("\n4. reading myself again:\n")
+  say(godel(lo, hi))
+  prints("\nThe program now contains a true statement about the number of the\n")
+  prints("program that contains it.  Nothing was assumed: it computed the number\n")
+  prints("by reading its own words, exactly as Goedel's formula quotes itself\n")
+  prints("through its own code number.  Swap 'my number is' for 'I am not\n")
+  prints("provable' and the same construction gives Goedel's theorem.\n")
+  return 0
+end

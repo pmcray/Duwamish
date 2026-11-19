@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Universal Entropics monogram">
+  <title>Universal Entropics monogram</title>
+  <!-- The UE monogram, Special Systems Section, 1966.  A heavy U whose
+       left arm is also the spine of an E: the E's three strokes are the
+       top bar, the middle bar and the floor of the U -- one stroke for
+       each value of a trit.  The middle stroke, zero, is the short one
+       and carries the accent colour. -->
+  <g fill="#1b1b1b">
+    <!-- the U: outer corners round, inner floor flat, one inner corner
+         rounded so the U still reads as a U -->
+    <path d="M24 20 H62 V150 H122 A16 16 0 0 0 138 134 V20 H176 V120 A60 60 0 0 1 116 180 H84 A60 60 0 0 1 24 120 Z"/>
+    <!-- the E's top stroke (+1) -->
+    <rect x="62" y="20" width="50" height="30"/>
+  </g>
+  <!-- the E's middle stroke (0), in amber -->
+  <rect x="62" y="85" width="38" height="30" fill="#e8962e"/>
+</svg>

@@ -1,0 +1,96 @@
+-- =====================================================================
+--  A WORKLOAD FOR THE ONE-LEVEL STORE
+--
+--  An ordinary program, which knows nothing of pages: jobs/atlas.job
+--  runs it again and again in the one-level store (duwamish/atlas.py),
+--  with 16 page frames of 729 words in core and the rest on the drum,
+--  under each of the pager's replacement policies.  Its own results are
+--  the same every time; only the page faults and the time differ.
+--
+--  It has three phases, each a habit of real programs:
+--
+--    1. a loop over more data than core will hold: 30 pages, swept
+--       again and again -- the case Atlas's learning program was made
+--       for, and the worst case for "least recently used"
+--    2. a working set that moves: four pages at a time used hard, then
+--       the next four
+--    3. a quicksort of 16,038 keys (22 pages), whose partitions shrink
+--       until they fit
+-- =====================================================================
+
+const PAGE = 729
+const SWEEP = 21870                   -- 30 pages
+const NSORT = 16038                   -- 22 pages
+global big[SWEEP], keys[NSORT]
+global seed := 1962
+
+proc rnd(n)
+begin
+  seed := 16807 * (seed mod 127773) - 2836 * (seed / 127773)
+  if seed <= 0 then seed := seed + 2147483647
+  return seed mod n
+end
+
+proc sweeps()
+begin
+  var s := 0
+  for i := 0 to SWEEP - 1 do big[i] := i mod 1000
+  for r := 1 to 6 do
+    for i := 0 to SWEEP - 1 do s := s + big[i]
+  return s
+end
+
+proc moving()
+begin
+  var s := 0, base
+  for phase := 0 to 6 do begin
+    base := phase * 4 * PAGE
+    for r := 1 to 2000 do
+      s := s + big[base + rnd(4 * PAGE)]
+  end
+  return s
+end
+
+proc quicksort(lo, hi)
+begin
+  var i, j, p, t
+  while hi - lo > 8 do begin
+    p := keys[(lo + hi) / 2]
+    i := lo; j := hi
+    while i <= j do begin
+      while keys[i] < p do i := i + 1
+      while keys[j] > p do j := j - 1
+      if i <= j then begin
+        t := keys[i]; keys[i] := keys[j]; keys[j] := t
+        i := i + 1; j := j - 1
+      end
+    end
+    -- the smaller part by recursion, the larger by iteration
+    if j - lo < hi - i then begin quicksort(lo, j); lo := i end
+    else begin quicksort(i, hi); hi := j end
+  end
+  for k := lo + 1 to hi do begin
+    t := keys[k]; i := k - 1
+    while i >= lo and keys[i] > t do begin keys[i + 1] := keys[i]; i := i - 1 end
+    keys[i + 1] := t
+  end
+end
+
+proc sorting()
+begin
+  var sum := 0, ok := true
+  for i := 0 to NSORT - 1 do begin keys[i] := rnd(1000000); sum := sum + keys[i] end
+  quicksort(0, NSORT - 1)
+  for i := 1 to NSORT - 1 do if keys[i - 1] > keys[i] then ok := false
+  for i := 0 to NSORT - 1 do sum := sum - keys[i]
+  return ok and sum = 0
+end
+
+proc main()
+begin
+  prints("1. sweeps over 30 pages:        "); print(sweeps()); newline()
+  prints("2. a working set that moves:    "); print(moving()); newline()
+  prints("3. quicksort of 16,038 keys:    ")
+  prints(sorting() -> "in order, none lost", "WRONG"); newline()
+  return 0
+end

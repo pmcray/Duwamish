@@ -1,0 +1,45 @@
+-- disasm: the Duwamish reading its own machine code.
+get "isakit"
+
+proc regidx(f) = f < 0 -> f + 9, f
+proc w_op(w) = xtr(w, I_OP_POS, 5)
+proc w_r(w) = regidx(xtr(w, I_R_POS, 2))
+proc w_x(w) = regidx(xtr(w, I_X_POS, 2))
+proc w_m(w) = xtr(w, I_M_POS, 2)
+proc w_addr(w) = xtr(w, 0, 16)
+
+proc printreg(i)
+begin
+  if i = 7 then prints("FP")
+  else if i = 8 then prints("SP")
+  else begin putc('R'); print(i) end
+end
+
+proc is_opcode(op) = op >= 1 and op <= I_MAXOP
+
+-- does the instruction transfer control (so must end a straight-line run)?
+proc ends_block(w)
+begin
+  var op := w_op(w)
+  if not is_opcode(op) then return true
+  return op_ends_block[op] = 1 -> true, false
+end
+
+proc disasm(w)
+begin
+  var op := w_op(w), r := w_r(w), x := w_x(w), m := w_m(w), a := w_addr(w)
+  var f
+  if op < 0 then begin prints("OP"); print(op); prints("   (invented)"); return end
+  if not is_opcode(op) then begin prints("DATA "); print(w); return end
+  f := op_forms[op]
+  printsw(op_names[op], 5)
+  if f = 1 or f = 3 or f = 4 then printreg(r)
+  if f = 1 or f = 4 then prints(", ")
+  if f = 1 or f = 2 or f = 4 then begin
+    if m = 1 then putc('#')
+    if m = -1 then putc('@')
+    print(a)
+    if x <> 0 then begin putc('('); printreg(x); putc(')') end
+  end
+  if f = 5 then print(a)
+end

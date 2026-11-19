@@ -1,0 +1,4 @@
+//JOB REFAL                      -- Turchin's Refal, running on the machine
+//EXEC REFAL
+//DATA FROM=../programs/refal/tour.ref
+//END

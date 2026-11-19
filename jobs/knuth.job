@@ -1,0 +1,14 @@
+//JOB LIFE                       -- Conway's Life, 27 cells to a word, in Kleene's logic
+//SALISH FROM=../programs/knuth/life.sal OPT
+//EXEC
+//JOB SORTING                    -- quicksort and heapsort when a comparison has three outcomes
+//SALISH FROM=../programs/knuth/sorting.sal OPT
+//EXEC
+//JOB TST                        -- a ternary search tree of the words of Genesis 1
+//SALISH FROM=../programs/knuth/tst.sal OPT
+//EXEC
+//DATA FROM=../data/genesis.txt
+//JOB FFT23                      -- radix 2 or radix 3? two FFTs measured
+//TRITRAN FROM=../programs/knuth/fft23.ftn
+//EXEC
+//END

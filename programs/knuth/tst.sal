@@ -1,0 +1,294 @@
+-- =====================================================================
+--  A TERNARY SEARCH TREE OF THE WORDS OF GENESIS 1
+--
+--  A ternary search tree (Bentley and Sedgewick, 1997) stores strings a
+--  character at a time.  Each node holds one character and three links:
+--  to the words whose next character is lower, the same, or higher.  At
+--  each node the search makes one three-way comparison -- on the
+--  Duwamish, one CMP and one J3:
+--
+--      sign c - split[n] of  - : go lo   0 : go eq   + : go hi  end
+--
+--  The same words are also put in an ordinary binary search tree, whose
+--  nodes compare whole words character by character.  Both count every
+--  comparison of two characters.  Then the ternary tree does what the
+--  binary one cannot do cheaply: list every word with a given prefix, and
+--  every word that fits a pattern with "don't care" letters.
+-- =====================================================================
+
+const MAXN = 1500, MAXW = 200, POOL = 2000
+
+global split[MAXN], lo[MAXN], eq[MAXN], hi[MAXN], cnt[MAXN]
+global nnodes := 0, root := 0
+global w[40], wlen
+global tcmp := 0, bcmp := 0
+
+-- ---------------------------------------------------------------------
+--  the ternary tree: the word in w, ended by a 0
+-- ---------------------------------------------------------------------
+proc newnode(c)
+begin
+  nnodes := nnodes + 1
+  if nnodes >= MAXN then begin prints("*** TREE FULL\n"); exit(1) end
+  split[nnodes] := c
+  lo[nnodes] := 0; eq[nnodes] := 0; hi[nnodes] := 0; cnt[nnodes] := 0
+  return nnodes
+end
+
+proc tinsert(n, k)
+begin
+  if n = 0 then n := newnode(w[k])
+  tcmp := tcmp + 1
+  sign w[k] - split[n] of
+    - : lo[n] := tinsert(lo[n], k)
+    0 : if w[k] = 0 then cnt[n] := cnt[n] + 1
+        else eq[n] := tinsert(eq[n], k + 1)
+    + : hi[n] := tinsert(hi[n], k)
+  end
+  return n
+end
+
+proc tsearch(n, k)
+begin
+  while n <> 0 do begin
+    tcmp := tcmp + 1
+    sign w[k] - split[n] of
+      - : n := lo[n]
+      0 : begin
+            if w[k] = 0 then return cnt[n]
+            n := eq[n]
+            k := k + 1
+          end
+      + : n := hi[n]
+    end
+  end
+  return 0
+end
+
+-- ---------------------------------------------------------------------
+--  the binary tree of whole words, kept in a pool of characters
+-- ---------------------------------------------------------------------
+global pool[POOL], ptop := 0
+global bword[MAXW], bleft[MAXW], bright[MAXW], bcount[MAXW], nb := 0, broot := 0
+
+-- compare w with the word at pool[p], a character at a time
+proc wordcmp(p)
+begin
+  var k := 0, d
+  repeat
+    bcmp := bcmp + 1
+    d := w[k] - pool[p + k]
+    if d <> 0 then return d
+    if w[k] = 0 then return 0
+    k := k + 1
+  until false
+end
+
+proc binsert()
+begin
+  var n := broot, parent := 0, d := 0
+  while n <> 0 do begin
+    d := wordcmp(bword[n])
+    if d = 0 then begin bcount[n] := bcount[n] + 1; return end
+    parent := n
+    n := d < 0 -> bleft[n], bright[n]
+  end
+  nb := nb + 1
+  bword[nb] := ptop
+  for k := 0 to wlen do begin pool[ptop] := w[k]; ptop := ptop + 1 end
+  bleft[nb] := 0; bright[nb] := 0; bcount[nb] := 1
+  if parent = 0 then broot := nb
+  else if d < 0 then bleft[parent] := nb
+  else bright[parent] := nb
+end
+
+proc bsearch()
+begin
+  var n := broot, d
+  while n <> 0 do begin
+    d := wordcmp(bword[n])
+    if d = 0 then return bcount[n]
+    n := d < 0 -> bleft[n], bright[n]
+  end
+  return 0
+end
+
+-- ---------------------------------------------------------------------
+--  reading the text, a word at a time
+-- ---------------------------------------------------------------------
+global text[5000], tlen := 0, tpos := 0
+
+proc lower(c) = c >= 'A' and c <= 'Z' -> c + 32, c
+proc isletter(c) = c >= 'a' and c <= 'z'
+
+-- the next word into w; false at the end
+proc nextword()
+begin
+  var c
+  while tpos < tlen and not isletter(text[tpos]) do tpos := tpos + 1
+  if tpos >= tlen then return false
+  wlen := 0
+  while tpos < tlen and isletter(text[tpos]) do begin
+    w[wlen] := text[tpos]; wlen := wlen + 1; tpos := tpos + 1
+  end
+  w[wlen] := 0
+  return true
+end
+
+proc printw_word(width)
+begin
+  for k := 0 to wlen - 1 do putc(w[k])
+  spaces(width - wlen)
+end
+
+-- ---------------------------------------------------------------------
+--  what a ternary tree does well: prefixes and patterns
+-- ---------------------------------------------------------------------
+global found, col
+
+proc emit()
+begin
+  if col + wlen + 1 > 66 then begin newline(); spaces(5); col := 0 end
+  for k := 0 to wlen - 1 do putc(w[k])
+  putc(' ')
+  col := col + wlen + 1
+  found := found + 1
+end
+
+-- every word in the subtree n, whose characters so far are w[0..k-1]
+proc walk(n, k)
+begin
+  if n = 0 then return
+  walk(lo[n], k)
+  if split[n] = 0 then begin wlen := k; emit() end
+  else begin
+    w[k] := split[n]
+    walk(eq[n], k + 1)
+  end
+  walk(hi[n], k)
+end
+
+proc prefix(s)
+begin
+  var n := root, k := 1
+  found := 0
+  col := 0
+  prints("   words beginning ")
+  prints(s)
+  prints(":\n     ")
+  while n <> 0 and k <= s[0] do begin
+    sign s[k] - split[n] of
+      - : n := lo[n]
+      0 : begin w[k - 1] := s[k]; k := k + 1; if k <= s[0] then n := eq[n] end
+      + : n := hi[n]
+    end
+  end
+  if n <> 0 then walk(eq[n], s[0])
+  newline()
+end
+
+-- partial match: '.' in the pattern stands for any letter
+global pat[40], plen
+
+proc pmatch(n, k)
+begin
+  var c
+  if n = 0 then return
+  c := pat[k]
+  if c = '.' or c < split[n] then pmatch(lo[n], k)
+  if c = '.' and split[n] <> 0 or c = split[n] then begin
+    if split[n] = 0 then begin wlen := k; emit() end
+    else begin
+      w[k] := split[n]
+      pmatch(eq[n], k + 1)
+    end
+  end
+  if c = '.' or c > split[n] then pmatch(hi[n], k)
+end
+
+proc pattern(s)
+begin
+  for k := 1 to s[0] do pat[k - 1] := s[k]
+  pat[s[0]] := 0
+  found := 0
+  col := 0
+  prints("   words that fit ")
+  prints(s)
+  prints(":\n     ")
+  pmatch(root, 0)
+  newline()
+end
+
+
+proc depth(n)
+begin
+  var a, b, c
+  if n = 0 then return 0
+  a := depth(lo[n]); b := depth(eq[n]); c := depth(hi[n])
+  return 1 + max(a, max(b, c))
+end
+
+proc bdepth(n)
+begin
+  if n = 0 then return 0
+  return 1 + max(bdepth(bleft[n]), bdepth(bright[n]))
+end
+
+proc main()
+begin
+  var c, words := 0, t0, b0, tc, bc
+  prints("A TERNARY SEARCH TREE OF THE WORDS OF GENESIS 1 (KJV)\n\n")
+  c := getc()
+  while c >= 0 and tlen < 5000 do begin
+    text[tlen] := lower(c)
+    tlen := tlen + 1
+    c := getc()
+  end
+  -- build both trees
+  t0 := clock()
+  while nextword() do begin
+    root := tinsert(root, 0)
+    words := words + 1
+  end
+  tc := clock() - t0
+  tpos := 0
+  b0 := clock()
+  while nextword() do binsert()
+  bc := clock() - b0
+  prints("   ")
+  print(words)
+  prints(" words, ")
+  print(nb)
+  prints(" different.  The ternary tree has ")
+  print(nnodes)
+  prints(" nodes.\n\n")
+  prints("                              ternary tree     binary tree\n")
+  prints("   building: comparisons   ")
+  printw(tcmp, 15); printw(bcmp, 16); newline()
+  prints("             cycles        ")
+  printw(tc, 15); printw(bc, 16); newline()
+  -- look every word up again
+  tcmp := 0; bcmp := 0; tpos := 0
+  t0 := clock()
+  while nextword() do if tsearch(root, 0) = 0 then prints("*** LOST\n")
+  tc := clock() - t0
+  tpos := 0
+  b0 := clock()
+  while nextword() do if bsearch() = 0 then prints("*** LOST\n")
+  bc := clock() - b0
+  prints("   finding every word again:\n")
+  prints("             comparisons   ")
+  printw(tcmp, 15); printw(bcmp, 16); newline()
+  prints("             cycles        ")
+  printw(tc, 15); printw(bc, 16); newline()
+  prints("   the deepest path        ")
+  printw(depth(root), 15); printw(bdepth(broot), 16)
+  prints("   (nodes)\n\n")
+  prefix("th")
+  prefix("fi")
+  prefix("wat")
+  pattern("l.ght")
+  pattern(".a.")
+  pattern("...ed")
+  return 0
+end

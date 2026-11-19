@@ -1,0 +1,37 @@
+-- KLEENE: the truth tables of three-valued logic, as the machine does them.
+-- & and | are the tritwise MIN and MAX instructions (Kleene's strong
+-- connectives); `and` and `or` are McCarthy's sequential ones, where the
+-- left operand is looked at first and an unknown there stays unknown.
+
+global vals := table(1, 0, -1)
+
+proc name(v)
+begin
+  sign v of
+    +: prints("T")
+    0: prints("?")
+    -: prints("F")
+  end
+end
+
+proc main()
+begin
+  prints("KLEENE -- three-valued logic on a ternary machine (T true, ? unknown, F false)\n\n")
+  prints("  p q   p&q  p|q  not p   p and q  p or q   (McCarthy)\n")
+  for i := 0 to 2 do
+    for j := 0 to 2 do begin
+      var p := vals[i], q := vals[j]
+      prints("  "); name(p); space(); name(q)
+      prints("    "); name(p & q)
+      prints("    "); name(p | q)
+      prints("    "); name(not p)
+      prints("       "); name(p and q)
+      prints("       "); name(p or q)
+      newline()
+    end
+  prints("\nKleene's AND is commutative: ? & F = F & ? = F.  McCarthy's is not:\n")
+  prints("? and F = ?, because a computation whose first part never finishes\n")
+  prints("never gets to look at the second.  On the Duwamish each Kleene\n")
+  prints("connective is one instruction; a comparison is CMP then SEL with a\n")
+  prints("three-trit truth table.\n")
+end

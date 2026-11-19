@@ -1,0 +1,155 @@
+-- SALISH runtime library.  Included automatically in every program.
+-- Every procedure here is written with bounded loops only, so that
+-- BlooP programs may call them.
+
+global heap_ptr := 0
+
+proc newline() = putc('\n')
+
+proc space() = putc(' ')
+
+proc spaces(n)
+begin
+  for i := 1 to n do putc(' ')
+end
+
+-- strings are length-prefixed: s[0] is the length, s[1..] the characters
+proc prints(s)
+begin
+  for i := 1 to s[0] do putc(s[i])
+end
+
+proc printsw(s, w)
+begin
+  prints(s)
+  spaces(w - s[0])
+end
+
+proc digits(n)
+begin
+  var k := 1, m := n
+  if m < 0 then m := -m
+  for i := 1 to 13 do
+    if m >= 10 then begin m := m / 10; k := k + 1 end
+  return k
+end
+
+proc print(n)
+begin
+  var buf[14], k := 0, m := n
+  if m = 0 then begin putc('0'); return end
+  if m < 0 then begin putc('-'); m := -m end
+  for i := 1 to 14 do
+    if m > 0 then begin buf[k] := m mod 10; m := m / 10; k := k + 1 end
+  for i := k - 1 to 0 by -1 do putc('0' + buf[i])
+end
+
+-- right-justified in a field of w characters
+proc printw(n, w)
+begin
+  var d := digits(n)
+  if n < 0 then d := d + 1
+  spaces(w - d)
+  print(n)
+end
+
+-- n / 10^places, printed as a decimal fraction (fixed point)
+proc printfix(n, places)
+begin
+  var p := 1, m := n
+  for i := 1 to places do p := p * 10
+  if m < 0 then begin putc('-'); m := -m end
+  print(m / p)
+  if places > 0 then begin
+    putc('.')
+    var f := m mod p
+    for i := 1 to places do begin
+      p := p / 10
+      putc('0' + f / p)
+      f := f mod p
+    end
+  end
+end
+
+proc tritchar(d) = d < 0 -> 'T', d = 0 -> '0', '1'
+
+-- balanced ternary, without leading zeros
+proc printt(n)
+begin
+  var started := false
+  if n = 0 then begin putc('0'); return end
+  for i := 26 to 0 by -1 do begin
+    var d := trit(n, i)
+    if d <> 0 then started := true
+    if started then putc(tritchar(d))
+  end
+end
+
+-- the low w trits of n, with leading zeros
+proc printtw(n, w)
+begin
+  for i := w - 1 to 0 by -1 do putc(tritchar(trit(n, i)))
+end
+
+-- heptavintimal: nine letters per word (0, A..M = 1..13, N..Z = -13..-1)
+proc printh(n)
+begin
+  for i := 8 to 0 by -1 do begin
+    var d := xtr(n, 3 * i, 3)
+    putc(d = 0 -> '0', d > 0 -> 'A' + d - 1, 'Z' + d + 1)
+  end
+end
+
+proc truthname(v)
+begin
+  sign v of
+    -: prints("false")
+    0: prints("unknown")
+    +: prints("true")
+  end
+end
+
+proc abs(x) = x < 0 -> -x, x
+proc min(a, b) = a < b -> a, b
+proc max(a, b) = a > b -> a, b
+
+proc alloc(n)
+begin
+  var p
+  if heap_ptr = 0 then heap_ptr := heapbase()
+  p := heap_ptr
+  heap_ptr := heap_ptr + n
+  if heap_ptr > stackptr() - 2000 then begin
+    prints("*** HEAP EXHAUSTED\n")
+    exit(99)
+  end
+  return p
+end
+
+proc streq(a, b)
+begin
+  if a[0] <> b[0] then return false
+  for i := 1 to a[0] do
+    if a[i] <> b[i] then return false
+  return true
+end
+
+-- read one line from the card reader into buf (length-prefixed);
+-- returns false at end of input
+proc readline(buf, maxlen)
+begin
+  var c, n := 0
+  buf[0] := 0
+  for i := 1 to maxlen do begin
+    c := getc()
+    if c < 0 then begin
+      buf[0] := n
+      return n > 0 -> true, false
+    end
+    if c = '\n' then begin buf[0] := n; return true end
+    n := n + 1
+    buf[n] := c
+  end
+  buf[0] := n
+  return true
+end

@@ -1,0 +1,16 @@
+//JOB BOOTSTRAP                  -- the SALISH compiler compiles itself on the Duwamish
+//SALISH FROM=../programs/selfhost/salish.sal  -- generation 0, made by the satellite's compiler
+//EXEC                           -- step 1: generation 0 compiles SALISH/S, punching cards
+//DATA FROM=../programs/selfhost/salish.sal
+//DATA FROM=../duwamish/lib/runtime.sal
+//TRIAD PUNCHED                  -- generation 1: the deck step 1 punched
+//EXEC                           -- step 2: generation 1 compiles SALISH/S
+//DATA FROM=../programs/selfhost/salish.sal
+//DATA FROM=../duwamish/lib/runtime.sal
+//TRIAD PUNCHED                  -- generation 2
+//EXEC                           -- step 3: generation 2 compiles a small program
+//DATA FROM=../programs/hello.sal
+//DATA FROM=../duwamish/lib/runtime.sal
+//TRIAD PUNCHED
+//EXEC                           -- step 4: and runs it
+//END

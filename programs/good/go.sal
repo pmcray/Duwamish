@@ -1,0 +1,523 @@
+-- =====================================================================
+--  GO: a program that learns go by playing against itself.
+--
+--  I. J. Good learned go at Bletchley and did much to introduce it to
+--  the West; his article "The Mystery of Go" (New Scientist, 1965) argued
+--  that it would be far harder to program than chess.  This is the kind
+--  of program he might have tried on the Duwamish.
+--
+--  THE BOARD IS TERNARY.  Each point is one trit: black +1, empty 0,
+--  white -1.  Seen from the other player's side a position is simply its
+--  negation -- one NEG instruction, not a table lookup.
+--
+--  KNOWLEDGE is a table of patterns, and a pattern is exactly one 6-trit
+--  number (3^6 = 729 of them):
+--     4 trits   the move's four neighbours, from the mover's side
+--               (own stone +1, opponent's -1, empty or off the board 0)
+--     1 trit    where the move is: centre -1, edge 0, corner +1
+--     1 trit    what it does: captures +1, puts itself in atari -1,
+--               neither 0
+--
+--  LEARNING.  The program plays itself.  Half its moves are EXPERIMENTS,
+--  chosen at random from the legal moves; the rest are its best.  When a
+--  game ends, each experiment becomes evidence, in Good's decibans:
+--
+--   W(pattern) = 10 log10 [(chosen by winner + 1) / (chosen by loser + 1)]
+--              - 10 log10 [(passed over by winner + 1) / (by loser + 1)]
+--
+--  that is, how much more a pattern goes with winning when it is CHOSEN
+--  than when it is merely AVAILABLE.  Because the experimental moves are
+--  chosen at random -- Fisher's randomisation -- this measures what the
+--  move does, not merely where it tends to be played.  (Crediting every
+--  move with its game's result, as Michie's MENACE did, confuses the two:
+--  the loser plays desperate moves because it is losing.)  The 1s are
+--  Good's "flattening constant": no evidence, no opinion.
+--
+--  The program plays the move with the most evidence in its favour, and
+--  PASSES when every move has evidence against it.  Nobody tells it how
+--  to play well.  It is told only the rules and who won.
+-- =====================================================================
+
+const N = 5, W = N + 2, SZ = W * W
+const EDGE = 2                     -- sentinel for off-board points
+const MAXMOVES = 60
+const NPAT = 729                   -- 3^6
+const S = 100000                   -- fixed-point scale for logarithms
+const ROUNDS = 3, TRAIN = 100, TEST = 10
+const EXPERIMENT = 500             -- chance per 1000 of an experimental move
+const NOISE = 30                   -- tie-breaking noise, 1/100 deciban
+const PASS = -50                   -- pass if every move is below -0.5 db
+const FLAT = 1                     -- Good's flattening constant
+const CREDIT = 1                   -- 1: randomised experiments (as above)
+                                   -- 0: MENACE's rule, every move credited
+                                   --    with its game's result (for contrast)
+
+global bd[SZ], mark[SZ], libmark[SZ], stamp := 0, stk[SZ]
+global cls[SZ], pts[N * N]
+global ko := -1
+global seed := 1965
+
+-- evidence: how often each pattern was CHOSEN in an experiment by the
+-- eventual winner or loser, and how often it was AVAILABLE BUT PASSED OVER
+global cwin[NPAT], clos[NPAT], nwin[NPAT], nlos[NPAT], weight[NPAT]
+
+-- the experiments of the game in progress
+const MAXALT = MAXMOVES * N * N
+global exp_pat[MAXMOVES + 2], exp_col[MAXMOVES + 2], exp_alt[MAXMOVES + 3]
+global alt[MAXALT], nexp, nalt
+global cand[N * N], candpat[N * N]
+
+-- ---------------------------------------------------------------------
+-- chance and logarithms
+-- ---------------------------------------------------------------------
+proc random31()
+begin
+  var hi := seed / 44488, lo := seed mod 44488
+  seed := 48271 * lo - 3399 * hi
+  if seed <= 0 then seed := seed + 2147483647
+  return seed
+end
+
+proc random(n) = random31() mod n
+
+proc log2fix(num, den)
+begin
+  var k := 0, y, frac := 0, bit := S
+  for i := 1 to 40 do if num >= 2 * den then begin den := den * 2; k := k + 1 end
+  for i := 1 to 40 do if num < den then begin num := num * 2; k := k - 1 end
+  y := num * S / den
+  for i := 1 to 17 do begin
+    y := y * y / S
+    bit := bit / 2
+    if y >= 2 * S then begin y := y / 2; frac := frac + bit end
+  end
+  return k * S + frac
+end
+
+-- 10 log10 n, in hundredths of a deciban, remembered once computed
+const LMAX = 20000
+global ltab[LMAX + 1]
+proc logdb(n)
+begin
+  if n > LMAX then return log2fix(n, 1) * 30103 / 10000000
+  if ltab[n] = 0 and n > 1 then ltab[n] := log2fix(n, 1) * 30103 / 10000000
+  return ltab[n]
+end
+
+proc printdb(c)
+begin
+  if c >= 0 then putc('+')
+  printfix(c, 2)
+  prints(" db")
+end
+
+-- ---------------------------------------------------------------------
+-- the board
+-- ---------------------------------------------------------------------
+proc clear_board()
+begin
+  var k := 0, r, c
+  for p := 0 to SZ - 1 do begin
+    r := p / W
+    c := p mod W
+    if r = 0 or r = W - 1 or c = 0 or c = W - 1 then bd[p] := EDGE
+    else bd[p] := 0
+    cls[p] := -1
+    if r = 1 or r = N or c = 1 or c = N then cls[p] := 0
+    if (r = 1 or r = N) and (c = 1 or c = N) then cls[p] := 1
+    if bd[p] = 0 then begin pts[k] := p; k := k + 1 end
+  end
+  ko := -1
+end
+
+inline proc touches_empty(q) =
+  bd[q + 1] = 0 or bd[q - 1] = 0 or bd[q + W] = 0 or bd[q - W] = 0
+
+global lib_color, lib_sp
+proc visit(n)
+begin
+  if bd[n] = lib_color and mark[n] <> stamp then begin
+    mark[n] := stamp
+    stk[lib_sp] := n
+    lib_sp := lib_sp + 1
+  end
+end
+
+-- does the group containing p have a liberty?
+proc has_liberty(p)
+begin
+  var q
+  if touches_empty(p) then return true
+  stamp := stamp + 1
+  lib_color := bd[p]
+  stk[0] := p
+  mark[p] := stamp
+  lib_sp := 1
+  while lib_sp > 0 do begin
+    lib_sp := lib_sp - 1
+    q := stk[lib_sp]
+    if touches_empty(q) then return true
+    visit(q + 1); visit(q - 1); visit(q + W); visit(q - W)
+  end
+  return false
+end
+
+-- the liberties of the group at p, counted up to 2
+global nlibs
+proc count_lib(n)
+begin
+  if bd[n] = 0 and libmark[n] <> stamp then begin
+    libmark[n] := stamp
+    nlibs := nlibs + 1
+  end
+end
+
+inline proc isempty(q) = bd[q] = 0 -> 1, 0
+
+proc liberties2(p)
+begin
+  var q
+  -- two empty neighbours of the stone itself settle it at once
+  if isempty(p + 1) + isempty(p - 1) + isempty(p + W) + isempty(p - W) >= 2 then
+    return 2
+  stamp := stamp + 1
+  lib_color := bd[p]
+  stk[0] := p
+  mark[p] := stamp
+  lib_sp := 1
+  nlibs := 0
+  while lib_sp > 0 and nlibs < 2 do begin
+    lib_sp := lib_sp - 1
+    q := stk[lib_sp]
+    count_lib(q + 1); count_lib(q - 1); count_lib(q + W); count_lib(q - W)
+    visit(q + 1); visit(q - 1); visit(q + W); visit(q - W)
+  end
+  return nlibs
+end
+
+proc neighbour(q, k) = q + (k = 0 -> 1, k = 1 -> -1, k = 2 -> W, -W)
+
+-- remove the group containing p; return the number of stones taken
+proc remove_group(p)
+begin
+  var sp := 1, q, n, color := bd[p], count := 0
+  stk[0] := p
+  bd[p] := 0
+  while sp > 0 do begin
+    sp := sp - 1
+    q := stk[sp]
+    count := count + 1
+    for k := 0 to 3 do begin
+      n := neighbour(q, k)
+      if bd[n] = color then begin
+        bd[n] := 0
+        stk[sp] := n
+        sp := sp + 1
+      end
+    end
+  end
+  return count
+end
+
+-- would a stone of this colour at p capture something?
+proc captures(p, color)
+begin
+  var r := false
+  bd[p] := color
+  if bd[p + 1] = -color then if not has_liberty(p + 1) then r := true
+  if bd[p - 1] = -color then if not has_liberty(p - 1) then r := true
+  if bd[p + W] = -color then if not has_liberty(p + W) then r := true
+  if bd[p - W] = -color then if not has_liberty(p - W) then r := true
+  bd[p] := 0
+  return r
+end
+
+proc legal(p, color)
+begin
+  var ok
+  if bd[p] <> 0 or p = ko then return false
+  if touches_empty(p) then return true
+  -- no empty neighbour: legal only if it captures or joins a live group
+  if captures(p, color) then return true
+  bd[p] := color
+  ok := has_liberty(p)
+  bd[p] := 0
+  return ok
+end
+
+global taken, last
+proc take(n, color)
+begin
+  if bd[n] = -color then if not has_liberty(n) then begin
+    taken := taken + remove_group(n)
+    last := n
+  end
+end
+
+proc play(p, color)
+begin
+  var friends := 0, empties := 0, n
+  bd[p] := color
+  taken := 0
+  last := -1
+  take(p + 1, color); take(p - 1, color); take(p + W, color); take(p - W, color)
+  -- simple ko: a lone stone that took exactly one stone
+  for k := 0 to 3 do begin
+    n := neighbour(p, k)
+    if bd[n] = color then friends := friends + 1
+    if bd[n] = 0 then empties := empties + 1
+  end
+  ko := (taken = 1 and friends = 0 and empties = 1) -> last, -1
+end
+
+-- area scoring: stones plus empty regions touching only one colour
+proc score()
+begin
+  var total := 0, sp, q, n, size, touch_b, touch_w, p
+  stamp := stamp + 1
+  for i := 0 to N * N - 1 do begin
+    p := pts[i]
+    if bd[p] <> 0 then total := total + bd[p]
+    else if mark[p] <> stamp then begin
+      size := 0; touch_b := false; touch_w := false
+      sp := 1; stk[0] := p; mark[p] := stamp
+      while sp > 0 do begin
+        sp := sp - 1
+        q := stk[sp]
+        size := size + 1
+        for k := 0 to 3 do begin
+          n := neighbour(q, k)
+          if bd[n] = 1 then touch_b := true
+          if bd[n] = -1 then touch_w := true
+          if bd[n] = 0 and mark[n] <> stamp then begin
+            mark[n] := stamp; stk[sp] := n; sp := sp + 1
+          end
+        end
+      end
+      if touch_b and not touch_w then total := total + size
+      if touch_w and not touch_b then total := total - size
+    end
+  end
+  return total
+end
+
+-- ---------------------------------------------------------------------
+-- patterns: one 6-trit number
+-- ---------------------------------------------------------------------
+inline proc tv(v) = v = EDGE -> 0, v
+
+proc tactic(p, color)
+begin
+  var t := 0
+  if captures(p, color) then return 1
+  bd[p] := color
+  if liberties2(p) < 2 then t := -1
+  bd[p] := 0
+  return t
+end
+
+proc pattern(p, color)
+begin
+  var nb := ((tv(bd[p - W]) * 3 + tv(bd[p + W])) * 3 + tv(bd[p - 1])) * 3 +
+            tv(bd[p + 1])
+  -- nb * color turns the neighbours to the mover's point of view
+  return nb * color + 81 * cls[p] + 243 * tactic(p, color) + 364
+end
+
+-- ---------------------------------------------------------------------
+-- playing
+-- ---------------------------------------------------------------------
+-- With probability eps/1000 the move is an EXPERIMENT: chosen at random
+-- and (if record) remembered together with the alternatives passed over.
+-- Otherwise it is the move with the most evidence in its favour -- or a
+-- pass, if all the evidence is against moving.
+proc choose(color, eps, record)
+begin
+  var best := -1000000000, bestp := -1, bestw := 0, s, p, n := 0, k
+  for i := 0 to N * N - 1 do begin
+    p := pts[i]
+    if legal(p, color) then begin
+      cand[n] := p
+      candpat[n] := pattern(p, color)
+      n := n + 1
+    end
+  end
+  if n = 0 then return -1
+  if random(1000) < eps then begin
+    k := random(n)
+    if record then begin
+      exp_pat[nexp] := candpat[k]
+      exp_col[nexp] := color
+      for j := 0 to n - 1 do
+        if j <> k then begin alt[nalt] := candpat[j]; nalt := nalt + 1 end
+      nexp := nexp + 1
+      exp_alt[nexp] := nalt
+    end
+    return cand[k]
+  end
+  for j := 0 to n - 1 do begin
+    s := weight[candpat[j]] + random(NOISE + 1)
+    if s > best then begin
+      best := s; bestp := cand[j]; bestw := weight[candpat[j]]; k := j
+    end
+  end
+  if bestw < PASS then return -1
+  if record and CREDIT = 0 then begin
+    exp_pat[nexp] := candpat[k]
+    exp_col[nexp] := color
+    nexp := nexp + 1
+    exp_alt[nexp] := nalt
+  end
+  return bestp
+end
+
+-- a game; returns the area score (positive: black won)
+global moves
+proc game(eps_b, eps_w, record)
+begin
+  var color := 1, passes := 0, p
+  clear_board()
+  nexp := 0; nalt := 0; exp_alt[0] := 0
+  moves := 0
+  for m := 1 to MAXMOVES do
+    if passes < 2 then begin
+      p := choose(color, color > 0 -> eps_b, eps_w, record)
+      if p < 0 then passes := passes + 1
+      else begin passes := 0; play(p, color); moves := moves + 1 end
+      color := -color
+    end
+  return score()
+end
+
+-- the experiments of a finished game become evidence
+proc learn(result)
+begin
+  var winner := result > 0 -> 1, -1, pt
+  if result = 0 then return 0
+  for e := 0 to nexp - 1 do begin
+    pt := exp_pat[e]
+    if exp_col[e] = winner then begin
+      cwin[pt] := cwin[pt] + 1
+      for j := exp_alt[e] to exp_alt[e + 1] - 1 do nwin[alt[j]] := nwin[alt[j]] + 1
+    end else begin
+      clos[pt] := clos[pt] + 1
+      for j := exp_alt[e] to exp_alt[e + 1] - 1 do nlos[alt[j]] := nlos[alt[j]] + 1
+    end
+  end
+  for pt := 0 to NPAT - 1 do
+    if cwin[pt] + clos[pt] > 0 then begin
+      weight[pt] := logdb(cwin[pt] + FLAT) - logdb(clos[pt] + FLAT)
+      if CREDIT = 1 then
+        weight[pt] := weight[pt] - logdb(nwin[pt] + FLAT) + logdb(nlos[pt] + FLAT)
+    end
+end
+
+-- the learned player (no experiments) against a player that moves at random
+proc test()
+begin
+  var won := 0
+  for g := 1 to TEST do begin
+    if game(0, 1000, false) > 0 then won := won + 1
+    if game(1000, 0, false) < 0 then won := won + 1
+  end
+  return won
+end
+
+-- ---------------------------------------------------------------------
+-- showing what was learned
+-- ---------------------------------------------------------------------
+global clsname := table("centre", "edge", "corner")
+global tacname := table("puts itself in atari", "", "captures")
+
+proc stonechar(t) = t > 0 -> 'X', t < 0 -> 'O', '.'
+
+proc show_pattern(pt)
+begin
+  var v := pt - 364, nb, c, tc
+  nb := xtr(v, 0, 4)
+  c := xtr(v, 4, 1)
+  tc := xtr(v, 5, 1)
+  -- the neighbour trits, high to low: north, south, west, east
+  prints("        "); putc(stonechar(trit(nb, 3))); spaces(5)
+  printdb(weight[pt]); prints("   chosen by the winner "); print(cwin[pt])
+  prints(", by the loser "); print(clos[pt]); newline()
+  prints("       "); putc(stonechar(trit(nb, 1))); putc('*')
+  putc(stonechar(trit(nb, 0))); spaces(4)
+  prints(clsname[c + 1])
+  if tc <> 0 then begin prints(", "); prints(tacname[tc + 1]) end
+  newline()
+  prints("        "); putc(stonechar(trit(nb, 2))); newline()
+end
+
+global shown[NPAT]
+
+-- the n patterns with the most extreme evidence, among well-tried ones
+proc extremes(sgn, n)
+begin
+  var best, bp
+  for i := 1 to n do begin
+    best := 0; bp := -1
+    for pt := 0 to NPAT - 1 do
+      if shown[pt] = 0 and cwin[pt] + clos[pt] >= 20 and
+         sgn * weight[pt] > best then begin
+        best := sgn * weight[pt]; bp := pt
+      end
+    if bp >= 0 then begin shown[bp] := 1; show_pattern(bp) end
+  end
+end
+
+proc show_board()
+begin
+  for r := 1 to N do begin
+    prints("      ")
+    for c := 1 to N do begin putc(stonechar(bd[r * W + c])); space() end
+    newline()
+  end
+end
+
+proc bars(won)
+begin
+  printw(won, 8); prints(" of "); print(2 * TEST); spaces(3)
+  for i := 1 to won do prints("##")
+end
+
+proc main()
+begin
+  var trained := 0, r, eps := CREDIT = 1 -> EXPERIMENT, 200
+  prints("GO -- learning 5x5 go by self-play, measured in decibans\n\n")
+  prints(" games of       wins against a\n")
+  prints(" self-play      random player\n")
+  printw(0, 6); bars(test())
+  prints("   (it knows nothing yet)\n")
+  for round := 1 to ROUNDS do begin
+    for g := 1 to TRAIN do learn(game(eps, eps, true))
+    trained := trained + TRAIN
+    printw(trained, 6); bars(test()); newline()
+  end
+
+  prints("\nwhat it learned (* is the move, X its own stones, O the opponent's):\n")
+  prints("\n  the strongest evidence FOR a move --\n")
+  extremes(1, 4)
+  prints("\n  the strongest evidence AGAINST a move --\n")
+  extremes(-1, 4)
+  -- filling its own eye: its own stones on all four sides, in the centre
+  prints("\n  and filling its own eye, which no one warned it about: harmless\n")
+  prints("  while the group keeps other liberties, fatal when it leaves the\n")
+  prints("  group in atari --\n")
+  show_pattern(40 - 81 + 364)
+  show_pattern(40 - 81 - 243 + 364)
+
+  prints("\none game, the learner (X, black) against the random player (O):\n\n")
+  r := game(0, 1000, false)
+  show_board()
+  prints("\n      "); print(moves); prints(" stones played; area score ")
+  print(r); prints(r > 0 -> ": black wins\n", ": white wins\n")
+
+  prints("\nIt was told the rules and who won, nothing else.  Randomised\n")
+  prints("experiments turned its own games into evidence, and the evidence\n")
+  prints("into play: what it came to fear is not the eye but the lost liberty.\n")
+  prints("But four neighbours cannot see a whole group, let alone\n")
+  prints("the whole board -- the mystery of go that Good wrote about -- and\n")
+  prints("the program stays a beginner.\n")
+  return 0
+end

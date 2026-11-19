@@ -1,0 +1,9 @@
+//JOB HELLO                      -- the first program run on the Duwamish
+//SALISH FROM=../programs/hello.sal
+//EXEC
+//JOB KLEENE                     -- three-valued logic
+//SALISH FROM=../programs/kleene.sal
+//EXEC
+//JOB LISP                       -- TRILISP, running on the machine
+//EXEC TRILISP
+//DATA FROM=../programs/trilisp/tour.lsp

@@ -1,0 +1,29 @@
+-- QUINE: a SALISH program whose output is its own source text.
+-- Hofstadter, after W. V. Quine: "yields falsehood when preceded by its
+-- quotation" yields falsehood when preceded by its quotation.  The
+-- string below is the program, quoted; the program is the string, used.
+global s := "-- QUINE: a SALISH program whose output is its own source text.\n-- Hofstadter, after W. V. Quine: \"yields falsehood when preceded by its\n-- quotation\" yields falsehood when preceded by its quotation.  The\n-- string below is the program, quoted; the program is the string, used.\nglobal s := @@\n\nproc quote()\nbegin\n  var c\n  putc('\"')\n  for i := 1 to s[0] do begin\n    c := s[i]\n    if c = '\\n' then prints(\"\\\\n\")\n    else if c = '\"' then prints(\"\\\\\\\"\")\n    else if c = '\\\\' then prints(\"\\\\\\\\\")\n    else putc(c)\n  end\n  putc('\"')\nend\n\nproc main()\nbegin\n  var i := 1\n  while i <= s[0] do begin\n    if s[i] = '@' and s[i + 1] = '@' then begin quote(); i := i + 1 end\n    else putc(s[i])\n    i := i + 1\n  end\nend\n"
+
+proc quote()
+begin
+  var c
+  putc('"')
+  for i := 1 to s[0] do begin
+    c := s[i]
+    if c = '\n' then prints("\\n")
+    else if c = '"' then prints("\\\"")
+    else if c = '\\' then prints("\\\\")
+    else putc(c)
+  end
+  putc('"')
+end
+
+proc main()
+begin
+  var i := 1
+  while i <= s[0] do begin
+    if s[i] = '@' and s[i + 1] = '@' then begin quote(); i := i + 1 end
+    else putc(s[i])
+    i := i + 1
+  end
+end

@@ -1,0 +1,389 @@
+-- =====================================================================
+--  COLOSSUS: SETTING THE CHI WHEELS OF TUNNY, BY TUTTE'S METHOD
+--
+--  The second half of jobs/colossus.job.  The first step (tunny.sal)
+--  enciphered a message on the Lorenz SZ42 and left the intercept on
+--  tape 1 and the chi wheel patterns on tape 2.  This step is the
+--  Newmanry at Bletchley Park, where Max Newman's section -- I. J. Good
+--  and Donald Michie among them -- ran the Colossi from 1944.
+--
+--  Tutte's "1+2 break-in".  Write D for the delta of a stream, the sum
+--  (exclusive or) of each character and the next.  Then
+--
+--      dZ1 + dZ2 + dChi1 + dChi2  =  dP1 + dP2 + dPsi'1 + dPsi'2.
+--
+--  The psi wheels often stand still, and then dPsi' is all dots; and
+--  consecutive plain-text characters agree in impulses 1 and 2 more
+--  often than not.  So at the right settings of chi1 and chi2 the left
+--  side is a dot (0) more often than half the time -- about 55% -- and
+--  at every wrong setting it is a dot half the time.  Colossus read the
+--  message tape round and round, once for each of the 41 x 31 = 1,271
+--  settings, and counted the dots.
+--
+--  On the Duwamish a dot is +1 and a cross -1, so that exclusive or is
+--  multiplication: the tritwise EQV instruction.  A word holds 27
+--  positions of a delta stream, and one EQV combines them all; a table
+--  counts the dots, nine trits at a time.
+--
+--  Each count is weighed as Good would: in decibans, the evidence it
+--  gives that its setting is the right one (55% dots) rather than a
+--  wrong one (50%).  The prior odds on any one setting are 1 to 1,270,
+--  -31 db; the best setting must beat that, and beat every rival.  The
+--  other chi wheels are then set one at a time, each against both wheels
+--  already set, and the two weights of evidence added.
+-- =====================================================================
+
+get "devices"
+
+const NMAX = 6000
+const W = 230                         -- words in a packed stream (>= NMAX/27)
+const OFF = 9841                      -- (3^9 - 1) / 2
+
+global wlen := table(41, 31, 29, 26, 23)
+global pins[150], wbase[5]
+global z[NMAX], n, nd, nw             -- the message; its deltas; words
+
+-- ---------------------------------------------------------------------
+--  the tapes
+-- ---------------------------------------------------------------------
+proc read_tapes()
+begin
+  var s, b := 0
+  rewind(1)
+  n := 0
+  repeat
+    s := tread(1, z + n, NMAX - n)
+    if s > 0 then n := n + s
+  until s < 0 or n >= NMAX
+  rewind(2)
+  for w := 0 to 4 do begin
+    wbase[w] := b
+    s := tread(2, pins + b, wlen[w])
+    if s <> wlen[w] then begin prints("*** no wheel patterns\n"); exit(8) end
+    b := b + wlen[w]
+  end
+  nd := n - 1
+  nw := (nd + 26) / 27
+end
+
+-- ---------------------------------------------------------------------
+--  packed delta streams: +1 dot, -1 cross, 0 beyond the end
+-- ---------------------------------------------------------------------
+global pow3[27], tplus[19683]
+global dz[5 * W]                      -- delta-Z, impulses 1..5
+global dchi[150 * W]                  -- delta-chi, every wheel and start
+global sbase[5]                       -- where each wheel's streams begin
+
+proc bit(c, k) = c / table(16, 8, 4, 2, 1)[k] mod 2
+
+proc tables()
+begin
+  var v, c
+  pow3[0] := 1
+  for i := 1 to 26 do pow3[i] := pow3[i - 1] * 3
+  -- the number of +1 trits in each 9-trit value
+  for x := -OFF to OFF do begin
+    v := x; c := 0
+    for i := 1 to 9 do begin
+      if v mod 3 = 1 or v mod 3 = -2 then begin c := c + 1; v := v - 1 end
+      else if v mod 3 = 2 or v mod 3 = -1 then v := v + 1
+      v := v / 3
+    end
+    tplus[x + OFF] := c
+  end
+end
+
+proc dots(x) = tplus[xtr(x, 0, 9) + OFF] + tplus[xtr(x, 9, 9) + OFF] +
+               tplus[xtr(x, 18, 9) + OFF]
+
+-- pack the stream f(i), i = 0 .. nd-1, of 0s and 1s
+proc pack_z(k)
+begin
+  var v, d
+  for w := 0 to nw - 1 do begin
+    v := 0
+    for j := 0 to 26 do
+      if 27 * w + j < nd then begin
+        d := (bit(z[27 * w + j], k) + bit(z[27 * w + j + 1], k)) mod 2
+        v := v + (d = 0 -> 1, -1) * pow3[j]
+      end
+    dz[k * W + w] := v
+  end
+end
+
+proc pack_chi()
+begin
+  var b := 0, v, d, len, p
+  for wh := 0 to 4 do begin
+    sbase[wh] := b
+    len := wlen[wh]
+    for s := 0 to len - 1 do begin
+      for w := 0 to nw - 1 do begin
+        v := 0
+        for j := 0 to 26 do
+          if 27 * w + j < nd then begin
+            p := (s + 27 * w + j) mod len
+            d := (pins[wbase[wh] + p] + pins[wbase[wh] + (p + 1) mod len]) mod 2
+            v := v + (d = 0 -> 1, -1) * pow3[j]
+          end
+        dchi[(b + s) * W + w] := v
+      end
+    end
+    b := b + len
+  end
+end
+
+proc chi(wh, s) = dchi + (sbase[wh] + s) * W
+
+-- ---------------------------------------------------------------------
+--  weighing a count: k dots in m places, in centidecibans, for "right"
+--  (55% dots) against "wrong" (50%):
+--      k log10(1.1) + (m - k) log10(0.9)  =  41.39 k - 45.76 (m - k)
+-- ---------------------------------------------------------------------
+proc weigh(k, m) = (4139 * k - 4576 * (m - k)) / 100
+
+proc printdb(c)
+begin
+  if c < 0 then putc('-') else putc('+')
+  printfix(abs(c) / 10, 1)
+  prints(" db")
+end
+
+proc printdbw(c, w)
+begin
+  spaces(w - 6 - digits(abs(c) / 100))
+  printdb(c)
+end
+
+-- ---------------------------------------------------------------------
+--  the 1+2 run: every setting of chi1 and chi2, with the counts at
+--  several lengths of tape for the evidence as it grows
+-- ---------------------------------------------------------------------
+const NCHK = 6
+-- lengths of tape that end on a word: 19, 37, 56, 74 and 112 words
+global chk := table(513, 999, 1512, 1998, 3024, 1000000)
+global cnt[1271 * NCHK], a[W], z12[W]
+global t_run
+
+proc run12()
+begin
+  var c1, c2, sum, k, x, t
+  t := clock()
+  for w := 0 to nw - 1 do z12[w] := eqv(dz[w], dz[W + w])
+  for s1 := 0 to 40 do begin
+    c1 := chi(0, s1)
+    for w := 0 to nw - 1 do a[w] := eqv(z12[w], c1[w])
+    for s2 := 0 to 30 do begin
+      c2 := chi(1, s2)
+      sum := 0
+      k := 0
+      for w := 0 to nw - 1 do begin
+        x := eqv(a[w], c2[w])
+        sum := sum + dots(x)
+        -- the count so far, at each length of tape that ends here
+        while k < NCHK and chk[k] <= 27 * (w + 1) do begin
+          if chk[k] <= nd then cnt[(s1 * 31 + s2) * NCHK + k] := sum
+          k := k + 1
+        end
+      end
+      cnt[(s1 * 31 + s2) * NCHK + NCHK - 1] := sum
+    end
+  end
+  t_run := clock() - t
+end
+
+-- the best and the second best setting at checkpoint j
+global best, second
+
+proc rank(nset, j, m)
+begin
+  var wb := -1000000000, ws := -1000000000, v
+  best := 0; second := 0
+  for s := 0 to nset - 1 do begin
+    v := weigh(cnt[s * NCHK + j], m)
+    if v > wb then begin ws := wb; second := best; wb := v; best := s end
+    else if v > ws then begin ws := v; second := s end
+  end
+end
+
+-- the odds on the best setting against all its rivals are at least its
+-- lead over the runner-up, less log10 of the number of rivals
+proc odds_bound(lead, rivals_cdb) = lead - rivals_cdb
+
+global set[5], decided[5]
+
+proc report12()
+begin
+  var m := nd, mean := nd / 2, k, v, sig, shown := 0, wb, ws, bound
+  prints("1. THE 1+2 RUN: ALL 1,271 SETTINGS OF CHI 1 AND CHI 2\n\n")
+  prints("   The prior odds on any one setting are 1 to 1,270: -31.0 db.\n")
+  prints("   As Colossus did, only counts above a set total are printed -- here\n")
+  prints("   2.5 standard deviations above half the tape:\n\n")
+  prints("     chi1 chi2   count   excess   sigma   weight of evidence\n")
+  sig := 0
+  for s := 0 to 1270 do begin
+    k := cnt[s * NCHK + NCHK - 1]
+    -- (k - m/2) / (sqrt(m)/2) > 2.5, i.e. 4 (k - m/2)^2 > 6.25 m
+    if 2 * k > m and 16 * (2 * k - m) * (2 * k - m) > 100 * m then begin
+      printw(s / 31 + 1, 9); printw(s mod 31 + 1, 5)
+      printw(k, 8); printw(k - mean, 9)
+      -- sigma = 2 (k - m/2) / sqrt(m), to one place
+      spaces(4)
+      printfix((2 * k - m) * 10 / isqrt(m), 1)
+      printdbw(weigh(k, m), 13)
+      newline()
+      shown := shown + 1
+    end
+  end
+  rank(1271, NCHK - 1, m)
+  wb := weigh(cnt[best * NCHK + NCHK - 1], m)
+  ws := weigh(cnt[second * NCHK + NCHK - 1], m)
+  bound := odds_bound(wb - ws, 3104)
+  prints("\n   Best: chi1 "); print(best / 31 + 1); prints(", chi2 ")
+  print(best mod 31 + 1); prints(", ahead of the runner-up by ")
+  printdb(wb - ws); prints(".\n   Odds on it against all 1,270 rivals: at least ")
+  printdb(bound)
+  decided[0] := bound >= 2000
+  prints(decided[0] -> " -- set.\n", " -- not set: a longer tape is needed.\n")
+  set[0] := best / 31; set[1] := best mod 31; decided[1] := decided[0]
+end
+
+proc isqrt(m)
+begin
+  var r := 0
+  while (r + 1) * (r + 1) <= m do r := r + 1
+  return r
+end
+
+proc evidence_grows()
+begin
+  var m, wb, ws
+  prints("\n   The evidence, as more of the tape is read:\n\n")
+  prints("      tape read    leader      ahead of the next     odds on it\n")
+  for j := 0 to NCHK - 1 do
+    if chk[j] <= nd or j = NCHK - 1 then begin
+      m := j = NCHK - 1 -> nd, chk[j]
+      rank(1271, j, m)
+      wb := weigh(cnt[best * NCHK + j], m)
+      ws := weigh(cnt[second * NCHK + j], m)
+      printw(m, 13)
+      printw(best / 31 + 1, 9); prints(" "); printw(best mod 31 + 1, 2)
+      printdbw(wb - ws, 17)
+      printdbw(odds_bound(wb - ws, 3104), 18)
+      newline()
+    end
+end
+
+-- ---------------------------------------------------------------------
+--  chi 3, 4 and 5: each against chi 1 and against chi 2, the two weights
+--  of evidence added
+-- ---------------------------------------------------------------------
+global rivals := table(0, 0, 1447, 1398, 1342)   -- 1000 log10(len - 1)
+
+proc set_wheel(wh)
+begin
+  var len := wlen[wh], c, x1[W], x2[W], k1, k2, wt, wb := -1000000000
+  var ws := -1000000000, bs := 0, bound
+  -- dZ1 + dZw + dChi1 (set) and dZ2 + dZw + dChi2 (set)
+  c := chi(0, set[0])
+  for w := 0 to nw - 1 do x1[w] := eqv(eqv(dz[w], dz[wh * W + w]), c[w])
+  c := chi(1, set[1])
+  for w := 0 to nw - 1 do x2[w] := eqv(eqv(dz[W + w], dz[wh * W + w]), c[w])
+  printw(wh + 1, 6); spaces(3)
+  for s := 0 to len - 1 do begin
+    c := chi(wh, s)
+    k1 := 0; k2 := 0
+    for w := 0 to nw - 1 do begin
+      k1 := k1 + dots(eqv(x1[w], c[w]))
+      k2 := k2 + dots(eqv(x2[w], c[w]))
+    end
+    wt := weigh(k1, nd) + weigh(k2, nd)
+    if wt > wb then begin ws := wb; wb := wt; bs := s end
+    else if wt > ws then ws := wt
+  end
+  bound := odds_bound(wb - ws, rivals[wh])
+  set[wh] := bs
+  decided[wh] := bound >= 2000
+  printw(len, 7); printw(bs + 1, 9); printdbw(wb, 14); printdbw(wb - ws, 14)
+  printdbw(bound, 14)
+  prints(decided[wh] -> "   set", "   not set")
+  newline()
+end
+
+-- ---------------------------------------------------------------------
+--  taking the chi off: what goes to the Testery
+-- ---------------------------------------------------------------------
+global alpha := "ABCDEFGHIJKLMNOPQRSTUVWXYZ/93458"
+global codes := table(24, 19, 14, 18, 16, 22, 11, 5, 12, 26, 30, 9, 7,
+                      6, 3, 13, 29, 10, 20, 1, 28, 15, 25, 23, 21, 17,
+                      0, 4, 2, 8, 27, 31)
+
+proc char_of(c)
+begin
+  for i := 0 to 31 do
+    if codes[i] = c then return alpha[i + 1]
+  return '?'
+end
+
+global de[NMAX]
+
+proc dechi()
+begin
+  var c, k, nulls := 0
+  for i := 0 to n - 1 do begin
+    c := 0
+    for wh := 0 to 4 do begin
+      k := pins[wbase[wh] + (set[wh] + i) mod wlen[wh]]
+      c := c * 2 + (bit(z[i], wh) + k) mod 2
+    end
+    de[i] := c
+  end
+  for i := 0 to n - 2 do
+    if de[i] = de[i + 1] then nulls := nulls + 1
+  prints("\n3. THE DE-CHI: THE CIPHER TEXT WITH THE CHI STREAM TAKEN OFF\n\n   ")
+  for i := 0 to 127 do begin
+    putc(char_of(de[i]))
+    if i = 63 then prints("\n   ")
+  end
+  prints("\n\n   Only psi' is left on it.  Where the psi wheels stood still the\n")
+  prints("   de-chi repeats whatever the plain text repeated: consecutive\n")
+  prints("   characters are the same at "); printfix(nulls * 1000 / (n - 1), 1)
+  prints("% of the places, against 3.1% for\n")
+  prints("   random text.  The Testery broke the psi and motor wheels from\n")
+  prints("   such a de-chi, by hand.\n")
+end
+
+proc main()
+begin
+  var t, mk2
+  prints("COLOSSUS: SETTING THE CHI WHEELS OF TUNNY BY TUTTE'S METHOD\n\n")
+  t := clock()
+  read_tapes()
+  prints("   Read the intercept, "); print(n)
+  prints(" characters, from tape 1 and the chi wheel\n   patterns from tape 2.\n\n")
+  tables()
+  for k := 0 to 4 do pack_z(k)
+  pack_chi()
+  run12()
+  report12()
+  evidence_grows()
+  prints("\n2. CHI 3, 4 AND 5, EACH AGAINST CHI 1 AND CHI 2\n\n")
+  prints("   wheel   pins    best    evidence    ahead of     odds on it\n")
+  prints("                 setting                the next\n")
+  for wh := 2 to 4 do set_wheel(wh)
+  prints("\n   The chi settings: ")
+  for wh := 0 to 4 do begin print(set[wh] + 1); spaces(1) end
+  newline()
+  dechi()
+  -- the time it took, and the time Colossus took
+  prints("\n4. THE MACHINES\n\n   The 1+2 run took the Duwamish ")
+  printfix(t_run / 500000, 1)
+  prints(" seconds, 27 places of tape to an EQV.\n")
+  prints("   Colossus read its tape loop at 5,000 characters a second, once for\n")
+  prints("   each setting: ")
+  mk2 := 1271 * n / 5000
+  print(mk2 / 60); prints(" minutes for this run; the Mark 2, counting five\n")
+  prints("   settings on each pass, ")
+  print(mk2 / 5 / 60); prints(" minutes.\n")
+  return 0
+end

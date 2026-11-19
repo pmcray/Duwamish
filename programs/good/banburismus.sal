@@ -1,0 +1,178 @@
+-- =====================================================================
+--  BANBURISMUS: weight of evidence, in decibans.
+--
+--  At Bletchley Park, Turing and his assistant I. J. Good measured
+--  evidence in "bans" and "decibans".  The weight of evidence that an
+--  observation E gives for hypothesis H against its rival H' is
+--
+--       W(H : E) = 10 log10 ( P(E | H) / P(E | H') )    decibans
+--
+--  and, since log-odds add, independent weights simply add up.  A
+--  deciban was, Good said, about the smallest change in belief a person
+--  can feel.  Good spent the rest of his life arguing that this is *the*
+--  right measure of evidence.
+--
+--  The problem here is the one Banburismus solved: given two enciphered
+--  messages, were they enciphered with the same key stream ("in depth")?
+--  If so, where their plaintexts share a letter the ciphertexts do too,
+--  so letters coincide at the English repeat rate (about 1 in 15)
+--  instead of the random 1 in 26.  Each position is a small piece of
+--  evidence.  We add the decibans up and stop, as Wald's sequential test
+--  does, as soon as the total passes +20 db (odds of 100 to 1 for depth)
+--  or -20 db (100 to 1 against).
+--
+--  The machine computes its own logarithms, by repeated squaring.
+-- =====================================================================
+
+const LEN = 1500, PAIRS = 14
+const THRESH = 2000          -- hundredths of a deciban: 20 db
+const S = 100000             -- fixed-point scale
+
+-- English letter frequencies, per 1000
+global freq := table(82, 15, 28, 43, 127, 22, 20, 61, 70, 2, 8, 40, 24,
+                     67, 75, 19, 1, 60, 63, 91, 28, 10, 24, 2, 20, 1)
+global seed := 1967
+global msg_a[LEN], msg_b[LEN], key_a[LEN], key_b[LEN]
+global path[LEN]
+
+proc random(n)
+begin
+  seed := (seed * 7919 + 13) mod 1000003
+  return seed mod n
+end
+
+proc letter()
+begin
+  var r := random(1000), acc := 0
+  for i := 0 to 25 do begin
+    acc := acc + freq[i]
+    if r < acc then return i
+  end
+  return 4
+end
+
+-- log2(num/den), scaled by S, by the square-and-halve method
+proc log2fix(num, den)
+begin
+  var k := 0, y, frac := 0, bit := S
+  -- keep num * S within a 27-trit word (about 3.8 x 10^12)
+  for i := 1 to 20 do if den > 1000000 then begin num := num / 10; den := den / 10 end
+  for i := 1 to 60 do if num >= 2 * den then begin den := den * 2; k := k + 1 end
+  for i := 1 to 60 do if num < den then begin num := num * 2; k := k - 1 end
+  y := num * S / den
+  for i := 1 to 17 do begin
+    y := y * y / S
+    bit := bit / 2
+    if y >= 2 * S then begin y := y / 2; frac := frac + bit end
+  end
+  return k * S + frac
+end
+
+-- weight of evidence of a likelihood ratio num/den, in 1/100 deciban
+proc cdb(num, den) = log2fix(num, den) * 30103 / 10000000
+
+proc printdb(c)
+begin
+  if c > 0 then putc('+')
+  printfix(c, 2)
+  prints(" db")
+end
+
+global w_hit, w_miss
+
+proc make_pair(depth)
+begin
+  for i := 0 to LEN - 1 do begin
+    key_a[i] := random(26)
+    key_b[i] := depth -> key_a[i], random(26)
+    msg_a[i] := (letter() + key_a[i]) mod 26
+    msg_b[i] := (letter() + key_b[i]) mod 26
+  end
+end
+
+-- Wald's sequential test; returns +1 depth, -1 not, 0 undecided.
+-- Leaves the path of the evidence in path[] and the length in nread.
+global nread
+proc test_pair()
+begin
+  var w := 0
+  for i := 0 to LEN - 1 do begin
+    w := w + (msg_a[i] = msg_b[i] -> w_hit, w_miss)
+    path[i] := w
+    nread := i + 1
+    if w >= THRESH then return true
+    if w <= -THRESH then return false
+  end
+  return unknown
+end
+
+proc plot()
+begin
+  var step := nread / 60 + 1, cols := nread / step + 1, lvl
+  prints("\n  the evidence, letter by letter, for the first pair:\n")
+  for row := 6 to -6 by -1 do begin
+    lvl := row * 400
+    if row = 5 then prints(" +20 db |")
+    else if row = 0 then prints("   0 db |")
+    else if row = -5 then prints(" -20 db |")
+    else prints("        |")
+    for c := 0 to cols - 1 do begin
+      var i := min(c * step, nread - 1), v := path[i]
+      if v >= lvl - 200 and v < lvl + 200 then putc('*')
+      else if row = 5 or row = -5 then putc('-')
+      else if row = 0 then putc('.')
+      else putc(' ')
+    end
+    newline()
+  end
+  prints("        +"); for c := 1 to cols do putc('-')
+  prints("> letters ("); print(step); prints(" per column)\n\n")
+end
+
+proc main()
+begin
+  var pc := 0, right := 0, total_read := 0, verdict, depth, undecided := 0
+  for i := 0 to 25 do pc := pc + freq[i] * freq[i]
+  -- pc is the chance, per million, that two English letters agree
+  w_hit := cdb(pc * 26, 1000000)
+  w_miss := cdb((1000000 - pc) * 26, 1000000 * 25)
+  prints("BANBURISMUS -- sequential weight of evidence, after Turing and Good\n\n")
+  prints("English letters coincide with probability "); printfix(pc / 10, 5)
+  prints(" (random: 0.03846)\n")
+  prints("a coincidence is worth   "); printdb(w_hit); newline()
+  prints("a non-coincidence is worth "); printdb(w_miss); newline()
+  prints("decide at +/-20 db, i.e. odds of 100 to 1\n")
+
+  for p := 1 to PAIRS do begin
+    depth := random(2) = 1
+    make_pair(depth)
+    verdict := test_pair()
+    if p = 1 then plot()
+    total_read := total_read + nread
+    prints("pair "); printw(p, 2)
+    prints(depth -> "  in depth      ", "  not in depth  ")
+    prints("verdict after "); printw(nread, 3); prints(" letters: ")
+    sign verdict of
+      +: prints("DEPTH    ")
+      0: prints("UNDECIDED")
+      -: prints("NO DEPTH ")
+    end
+    prints("  ("); printdb(path[nread - 1]); prints(")")
+    if verdict = depth then right := right + 1
+    else if verdict = unknown then undecided := undecided + 1
+    else prints("   <-- wrong")
+    newline()
+  end
+  newline()
+  print(right); prints(" of "); print(PAIRS - undecided)
+  prints(" verdicts correct ("); print(undecided)
+  prints(" pairs left undecided: more traffic needed), reading\non average ")
+  print(total_read / PAIRS); prints(" letters per pair.\n")
+  prints("Adding evidence as it comes and stopping when it suffices is Wald's\n")
+  prints("sequential analysis, found independently by Turing at Bletchley.  Wald\n")
+  prints("showed it needs on average about half the observations of a fixed-length\n")
+  prints("test of the same strength.  And weights of evidence simply add:\n")
+  prints("prior odds of 1 in 30 (-14.8 db) plus +20 db of evidence leave the\n")
+  prints("posterior at +5.2 db -- about 3 to 1 in favour.\n")
+  return 0
+end

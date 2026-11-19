@@ -1,0 +1,306 @@
+-- =====================================================================
+--  SORTING WHEN A COMPARISON HAS THREE OUTCOMES
+--
+--  A comparison of two keys has three outcomes: less, equal, greater.  A
+--  binary machine branches two ways, so it must either ignore "equal" or
+--  pay a second test for it.  The Duwamish's CMP sets the condition trit
+--  to -1, 0 or +1 and J3 goes three ways at once: SALISH's
+--
+--      sign a[i] - p of  - : ...   0 : ...   + : ...  end
+--
+--  is one CMP and one J3.
+--
+--  1. Quicksort.  Hoare's partition (1961) splits the array in two about
+--     a pivot; Dijkstra's "Dutch national flag" partition (1976) splits
+--     it in three -- less, equal, greater -- and never looks at the equal
+--     keys again.  With many equal keys that is a great saving.
+--  2. Heapsort (Williams, 1964) with binary and ternary heaps.  A d-ary
+--     heap is log_d n deep, and sifting an element down one level costs
+--     d comparisons, so the cost goes as d / ln d, which is least at d =
+--     e = 2.718...  Three is the best whole number.
+--
+--  The counts are of key comparisons and of words moved; the cycles are
+--  the machine's own clock.
+-- =====================================================================
+
+const N = 3000
+
+global a[N], orig[N]
+global seed := 1961
+global ncmp, nmove
+
+proc random(n)
+begin
+  seed := (seed * 7919 + 13) mod 1000003
+  return seed mod n
+end
+
+-- ---------------------------------------------------------------------
+--  Hoare's quicksort (1961): the pointers stop on keys equal to the
+--  pivot, so equal keys are spread over both halves and the splits stay
+--  even.  Two-way comparisons only.
+-- ---------------------------------------------------------------------
+proc qs2(lo, hi)
+begin
+  var i, j, p, t
+  if hi <= lo then return
+  p := a[(lo + hi) / 2]
+  i := lo - 1
+  j := hi + 1
+  repeat
+    repeat i := i + 1; ncmp := ncmp + 1 until a[i] >= p
+    repeat j := j - 1; ncmp := ncmp + 1 until a[j] <= p
+    if i < j then begin
+      t := a[i]; a[i] := a[j]; a[j] := t; nmove := nmove + 3
+    end
+  until i >= j
+  qs2(lo, j)
+  qs2(j + 1, hi)
+end
+
+-- ---------------------------------------------------------------------
+--  Dijkstra's "Dutch national flag" (1976): a[lo..lt-1] < p,
+--  a[lt..i-1] = p, a[gt+1..hi] > p.  One comparison and one three-way
+--  jump per key -- but every smaller key is moved.
+-- ---------------------------------------------------------------------
+proc qs3(lo, hi)
+begin
+  var lt, gt, i, p, t
+  if hi <= lo then return
+  p := a[(lo + hi) / 2]
+  lt := lo
+  gt := hi
+  i := lo
+  while i <= gt do begin
+    ncmp := ncmp + 1
+    sign a[i] - p of
+      - : begin
+            t := a[lt]; a[lt] := a[i]; a[i] := t; nmove := nmove + 3
+            lt := lt + 1; i := i + 1
+          end
+      0 : i := i + 1
+      + : begin
+            t := a[i]; a[i] := a[gt]; a[gt] := t; nmove := nmove + 3
+            gt := gt - 1
+          end
+    end
+  end
+  qs3(lo, lt - 1)
+  qs3(gt + 1, hi)
+end
+
+-- ---------------------------------------------------------------------
+--  Bentley and McIlroy (1993): Hoare's scans, but keys equal to the
+--  pivot are swapped to the ends as they are met, and brought to the
+--  middle at the end.  On a binary machine each exchange costs two more
+--  tests for equality.  Here the scan's own three-way comparison has
+--  already said whether the key was equal, so they cost nothing.
+-- ---------------------------------------------------------------------
+proc qsbm(lo, hi)
+begin
+  var i, j, p, q, v, t, ci, cj, k
+  if hi <= lo then return
+  k := (lo + hi) / 2
+  t := a[lo]; a[lo] := a[k]; a[k] := t; nmove := nmove + 3
+  v := a[lo]
+  i := lo; j := hi + 1
+  p := lo; q := hi + 1
+  repeat
+    repeat
+      i := i + 1
+      ncmp := ncmp + 1
+      sign a[i] - v of
+        - : ci := -1
+        0 : ci := 0
+        + : ci := 1
+      end
+    until ci >= 0 or i = hi
+    repeat
+      j := j - 1
+      ncmp := ncmp + 1
+      sign v - a[j] of
+        - : cj := -1
+        0 : cj := 0
+        + : cj := 1
+      end
+    until cj >= 0 or j = lo
+    if i = j and ci = 0 then begin
+      p := p + 1
+      t := a[p]; a[p] := a[i]; a[i] := t; nmove := nmove + 3
+    end
+    if i >= j then break
+    t := a[i]; a[i] := a[j]; a[j] := t; nmove := nmove + 3
+    -- what was at j (cj) is now at i, and what was at i (ci) at j
+    if cj = 0 then begin
+      p := p + 1
+      t := a[p]; a[p] := a[i]; a[i] := t; nmove := nmove + 3
+    end
+    if ci = 0 then begin
+      q := q - 1
+      t := a[q]; a[q] := a[j]; a[j] := t; nmove := nmove + 3
+    end
+  until false
+  i := j + 1
+  for m := lo to p do begin
+    t := a[m]; a[m] := a[j]; a[j] := t; nmove := nmove + 3
+    j := j - 1
+  end
+  for m := hi to q by -1 do begin
+    t := a[m]; a[m] := a[i]; a[i] := t; nmove := nmove + 3
+    i := i + 1
+  end
+  qsbm(lo, j)
+  qsbm(i, hi)
+end
+
+-- ---------------------------------------------------------------------
+--  heapsort with a d-ary heap, 0-based: the children of k are dk+1 .. dk+d
+-- ---------------------------------------------------------------------
+proc sift(k, n, d)
+begin
+  var x := a[k], c, best, last, j := k
+  nmove := nmove + 1
+  repeat
+    c := d * j + 1
+    if c >= n then break
+    best := c
+    last := c + d - 1
+    if last >= n then last := n - 1
+    for m := c + 1 to last do begin
+      ncmp := ncmp + 1
+      if a[m] > a[best] then best := m
+    end
+    ncmp := ncmp + 1
+    if a[best] <= x then break
+    a[j] := a[best]
+    nmove := nmove + 1
+    j := best
+  until false
+  a[j] := x
+  nmove := nmove + 1
+end
+
+proc heapsort(n, d)
+begin
+  var t
+  for k := (n - 2) / d to 0 by -1 do sift(k, n, d)
+  for m := n - 1 to 1 by -1 do begin
+    t := a[0]; a[0] := a[m]; a[m] := t
+    nmove := nmove + 3
+    sift(0, m, d)
+  end
+end
+
+-- ---------------------------------------------------------------------
+proc sorted()
+begin
+  for i := 1 to N - 1 do if a[i - 1] > a[i] then return false
+  return true
+end
+
+proc restore()
+begin
+  for i := 0 to N - 1 do a[i] := orig[i]
+end
+
+-- the test data: kind 1 distinct, 2 ten values, 3 three values, 4 sorted
+proc make(kind)
+begin
+  for i := 0 to N - 1 do
+    orig[i] := kind = 1 -> random(1000000),
+               kind = 2 -> random(10),
+               kind = 3 -> random(3) - 1,
+               i
+end
+
+global cyc[4], cmps[4], moves[4]
+
+proc run(which)
+begin
+  var c0
+  restore()
+  ncmp := 0; nmove := 0
+  c0 := clock()
+  if which = 1 then qs2(0, N - 1)
+  else if which = 2 then qs3(0, N - 1)
+  else qsbm(0, N - 1)
+  cyc[which] := clock() - c0
+  if not sorted() then begin prints("*** NOT SORTED\n"); exit(1) end
+  cmps[which] := ncmp
+  moves[which] := nmove
+end
+
+proc quicksorts()
+begin
+  var names := table("", "distinct keys", "ten values", "three values (trits)",
+                     "already in order")
+  var best
+  prints("1. QUICKSORT, ")
+  print(N)
+  prints(" keys: comparisons, words moved, and cycles\n\n")
+  prints("                           Hoare, two ways           Dijkstra, three ways")
+  prints("     Bentley-McIlroy, three ways   fastest\n")
+  prints("   keys                      cmp    moved   cycles       cmp    moved   cycles")
+  prints("       cmp    moved   cycles\n")
+  for kind := 1 to 4 do begin
+    make(kind)
+    for w := 1 to 3 do run(w)
+    spaces(3); printsw(names[kind], 21)
+    for w := 1 to 3 do begin
+      printw(cmps[w], 9); printw(moves[w], 9); printw(cyc[w] / 1000, 7); putc('k')
+      if w < 3 then spaces(3)
+    end
+    best := 1
+    for w := 2 to 3 do if cyc[w] < cyc[best] then best := w
+    prints(best = 1 -> "   Hoare", best = 2 -> "   Dijkstra", "   Bentley-McIlroy")
+    newline()
+  end
+end
+
+proc heaps()
+begin
+  var c0, depth, span, total, bestc := 0, bestm := 0, besty := 0
+  var hc[5], hm[5], hy[5]
+  prints("\n2. HEAPSORT, ")
+  print(N)
+  prints(" distinct keys\n\n")
+  prints("   heap        comparisons    words moved      cycles      depth\n")
+  make(1)
+  for d := 2 to 4 do begin
+    restore()
+    ncmp := 0; nmove := 0
+    c0 := clock()
+    heapsort(N, d)
+    c0 := clock() - c0
+    if not sorted() then begin prints("*** NOT SORTED\n"); exit(1) end
+    hc[d] := ncmp; hm[d] := nmove; hy[d] := c0
+    spaces(3)
+    prints(d = 2 -> "binary ", d = 3 -> "ternary", "4-ary  ")
+    printw(ncmp, 16); printw(nmove, 15); printw(c0, 12)
+    depth := 0; span := 1; total := 1
+    while total < N do begin span := span * d; total := total + span; depth := depth + 1 end
+    printw(depth, 11)
+    newline()
+  end
+  for d := 2 to 4 do begin
+    if bestc = 0 or hc[d] < hc[bestc] then bestc := d
+    if bestm = 0 or hm[d] < hm[bestm] then bestm := d
+    if besty = 0 or hy[d] < hy[besty] then besty := d
+  end
+  prints("\n   Fewest comparisons: the ")
+  print(bestc)
+  prints("-ary heap, as d / ln d predicts (2.885, 2.731, 2.885).\n")
+  prints("   Fewest words moved: the ")
+  print(bestm)
+  prints("-ary heap, which is shallowest.  Fewest cycles: the ")
+  print(besty)
+  prints("-ary heap.\n")
+end
+
+proc main()
+begin
+  prints("SORTING WHEN A COMPARISON HAS THREE OUTCOMES\n\n")
+  quicksorts()
+  heaps()
+  return 0
+end

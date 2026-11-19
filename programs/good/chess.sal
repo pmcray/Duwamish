@@ -1,0 +1,148 @@
+-- =====================================================================
+--  CHESS: Los Alamos chess, and the arithmetic of lookahead.
+--
+--  Chess was the first great target of machine intelligence.  Turing
+--  designed a chess machine on paper and played it by hand; Shannon's
+--  "Programming a Computer for Playing Chess" (1950) set out the plan
+--  every later program followed: look ahead through the tree of moves,
+--  score the positions at the end with an evaluation function, and back
+--  the scores up by minimax.  In 1956 the MANIAC I at Los Alamos played a
+--  cut-down game on a 6x6 board without bishops -- this game -- and in
+--  1966-67 a program at Stanford played a correspondence match against
+--  one in Moscow.  I. J. Good wrote "A Five-Year Plan for Automatic
+--  Chess" (1968).
+--
+--  LOS ALAMOS CHESS: a 6x6 board; rooks, knights, a queen and a king on
+--  each side, and six pawns that move one square at a time; no castling,
+--  no en passant; a pawn that reaches the last rank becomes a queen.
+--
+--  THE BOARD: white pieces positive, black negative -- the sign is the
+--  colour, as throughout the Duwamish's games.
+--
+--  THIS PROGRAM shows two things.  First, the arithmetic: how many
+--  positions a full minimax search must examine, and how many alpha-beta
+--  pruning needs to reach the same answer.  Second, what lookahead is
+--  worth: a game between a program that looks three moves (plies) ahead
+--  and one that, like Turing's paper machine, looks one move ahead and
+--  follows only the captures further.
+-- =====================================================================
+
+get "chessbase"
+
+
+-- ---------------------------------------------------------------------
+-- part 1: the arithmetic of lookahead
+-- ---------------------------------------------------------------------
+proc count_search(depth, prune)
+begin
+  var v
+  setup()
+  nodes := 0
+  pruning := prune
+  quiet := false
+  mtop := 0
+  v := search(1, depth, -INF, INF, true)
+  return v
+end
+
+proc arithmetic()
+begin
+  var n1, n2, v1, v2
+  prints("1. The arithmetic of lookahead (from the opening position)\n\n")
+  prints("   plies   minimax examines   alpha-beta examines   saving   same score?\n")
+  for d := 1 to 4 do begin
+    v1 := count_search(d, false)
+    n1 := nodes
+    v2 := count_search(d, true)
+    n2 := nodes
+    printw(d, 7); printw(n1, 19); printw(n2, 22)
+    printw(100 - 100 * n2 / n1, 8); prints("%")
+    prints(v1 = v2 -> "      yes\n", "      NO\n")
+  end
+  prints("\n   Alpha-beta never changes the answer: it only stops looking at\n")
+  prints("   moves that cannot matter.  Its saving grows with depth, and with good\n")
+  prints("   move ordering it can look nearly twice as deep for the same work.\n\n")
+end
+
+-- ---------------------------------------------------------------------
+-- part 2: a game
+-- ---------------------------------------------------------------------
+proc game()
+begin
+  var col := 1, depth, moveno := 1, v, result := 0, total := 0
+  setup()
+  pruning := true
+  quiet := true
+  prints("2. A game: White looks ")
+  print(STRONG); prints(" plies ahead; Black looks ")
+  print(WEAK); prints(",\n   following captures further.\n\n")
+  for ply := 1 to MAXPLIES do begin
+    if result = 0 then begin
+      if not has_legal(col) then begin
+        result := in_check(col) -> -col, 2
+      end else begin
+        depth := col > 0 -> STRONG, WEAK
+        nodes := 0
+        mtop := 0
+        v := search(col, depth, -INF, INF, true)
+        total := total + nodes
+        if col > 0 then begin
+          printw(moveno, 4); prints(". ")
+        end else prints("   ")
+        print_move(bestmove)
+        spaces(9 - (mprom[bestmove] > 0 -> 2, 0) -
+               (kind(b[mfrom[bestmove]]) = PAWN -> 0, 1))
+        if col < 0 then begin newline(); moveno := moveno + 1 end
+        make(bestmove)
+        col := -col
+      end
+    end
+  end
+  newline()
+  newline()
+  show_board()
+  newline()
+  prints("   ")
+  if result = 1 then prints("White (three plies) wins by checkmate.")
+  else if result = -1 then prints("Black (one ply) wins by checkmate.")
+  else if result = 2 then prints("Stalemate: a draw.")
+  else begin
+    v := evaluate(1)
+    prints("Unfinished after "); print(MAXPLIES); prints(" plies; material ")
+    prints(v > 0 -> "favours White.", v < 0 -> "favours Black.", "is level.")
+  end
+  newline()
+  prints("   "); print(total); prints(" positions searched in the game.\n")
+end
+
+-- the number of legal move sequences of each length: a check on the rules
+proc perft(col, d)
+begin
+  var start := mtop, n, total := 0
+  n := gen(col, false)
+  for i := start to start + n - 1 do begin
+    make(i)
+    if not in_check(col) then
+      total := total + (d = 1 -> 1, perft(-col, d - 1))
+    unmake(i)
+  end
+  mtop := start
+  return total
+end
+
+proc main()
+begin
+  if PERFT > 0 then begin
+    setup()
+    for d := 1 to PERFT do begin prints("perft "); print(d); prints(" "); print(perft(1, d)); newline() end
+    return 0
+  end
+  prints("CHESS -- Los Alamos chess on the Duwamish\n\n")
+  arithmetic()
+  game()
+  prints("\nShannon's plan -- look ahead, evaluate, back up by minimax -- is\n")
+  prints("all this program knows, and it is enough to beat a player that looks\n")
+  prints("less far.  Whether depth alone could beat the best humans was argued\n")
+  prints("for decades; in 1997 it did.\n")
+  return 0
+end

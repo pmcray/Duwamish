@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200" role="img" aria-label="Universal Entropics, Special Systems Section">
+  <title>Universal Entropics — Special Systems Section</title>
+  <!-- House mark of Universal Entropics, Seattle, with the signature of its
+       Special Systems Section, which designed and built the Duwamish.
+       Identity after the manner of 1960s corporate programmes: one mark,
+       one grotesque typeface, one ink and one accent.  See docs/IDENTITY.md.
+       The lettering is fitted with textLength, so it keeps its measure in
+       whatever grotesque the viewer has. -->
+  <rect width="800" height="200" fill="#f4efe4"/>
+  <g transform="translate(24 24) scale(0.76)">
+    <g fill="#1b1b1b">
+      <path d="M24 20 H62 V150 H122 A16 16 0 0 0 138 134 V20 H176 V120 A60 60 0 0 1 116 180 H84 A60 60 0 0 1 24 120 Z"/>
+      <rect x="62" y="20" width="50" height="30"/>
+    </g>
+    <rect x="62" y="85" width="38" height="30" fill="#e8962e"/>
+  </g>
+  <g font-family="'Helvetica Neue', Helvetica, 'Nimbus Sans', Arial, sans-serif" fill="#1b1b1b">
+    <text x="208" y="94" font-size="42" font-weight="700" textLength="566" lengthAdjust="spacingAndGlyphs">UNIVERSAL ENTROPICS</text>
+    <rect x="208" y="112" width="566" height="4"/>
+    <text x="208" y="150" font-size="18" font-weight="700" textLength="392" lengthAdjust="spacing">SPECIAL SYSTEMS SECTION</text>
+    <text x="774" y="150" font-size="18" font-weight="400" text-anchor="end" textLength="112" lengthAdjust="spacing" fill="#c97a1c">SEATTLE</text>
+  </g>
+</svg>

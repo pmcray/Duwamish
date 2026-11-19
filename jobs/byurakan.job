@@ -1,0 +1,13 @@
+//JOB LISTEN                     -- is the signal artificial?  Good's weight of evidence
+//SALISH FROM=../programs/ceti/listen.sal
+//EXEC
+//DATA FROM=../data/byurakan1.msg
+//JOB RECEIVE1                   -- the first transmission: the receiver builds its machine
+//EXEC REFAL
+//DATA FROM=../programs/ceti/receive.ref
+//DATA FROM=../data/byurakan1.msg
+//JOB RECEIVE2                   -- the second transmission: the same receiver, another machine
+//EXEC REFAL
+//DATA FROM=../programs/ceti/receive.ref
+//DATA FROM=../data/byurakan2.msg
+//END

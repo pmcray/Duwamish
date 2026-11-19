@@ -1,0 +1,7 @@
+//JOB WHALE                      -- a tour of WHALE: facts, questions, rules, evidence
+//WHALE FROM=../programs/whale/tour.whl
+//EXEC
+//JOB DIAGNOSIS                  -- Good's weight of evidence, learned and used
+//WHALE FROM=../programs/whale/diagnosis.whl OPT
+//EXEC
+//END

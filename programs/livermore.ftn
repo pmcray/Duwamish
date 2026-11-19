@@ -1,0 +1,107 @@
+C ======================================================================
+C     LIVERMORE LOOPS IN TRI-TRAN
+C
+C     THE SAME SIX KERNELS AS PROGRAMS/LIVERMORE.SAL, IN THE LANGUAGE
+C     THEY WERE WRITTEN IN.  THE DATA ARE THE SAME, AND EACH KERNEL DOES
+C     THE SAME FLOATING-POINT OPERATIONS IN THE SAME ORDER, SO THE
+C     CHECKSUMS ARE THOSE OF THE SALISH PROGRAM'S HARDWARE COLUMN, TO
+C     THE LAST TRIT.  WHAT DIFFERS IS THE CODE THE COMPILERS MAKE.
+C
+C        1  HYDRO FRAGMENT            X(K) = Q + Y(K)*(R*Z(K+10) + T*Z(K+11))
+C        3  INNER PRODUCT             Q = Q + Z(K)*Y(K)
+C        5  TRI-DIAGONAL ELIMINATION  X(I) = Z(I)*(Y(I) - X(I-1))
+C        7  EQUATION OF STATE         A 16-OPERATION POLYNOMIAL
+C       11  FIRST SUM                 X(K) = X(K-1) + Y(K)
+C       12  FIRST DIFFERENCE          X(K) = Y(K+1) - Y(K)
+C
+C     ICLOCK() IS THE MACHINE'S CYCLE CLOCK.  ONE CYCLE IS 200 NS, SO
+C     MFLOPS = OPERATIONS * 5 / CYCLES.
+C ======================================================================
+      COMMON /DATA/ X(112), Y(112), Z(112), U(112), Q, R, T
+      INTEGER KERNEL(6), FLOPS(6), CYCLES(6), ISUM(6)
+      DIMENSION RATE(6)
+      DATA KERNEL /1, 3, 5, 7, 11, 12/
+      DATA FLOPS /500, 200, 198, 1600, 99, 100/
+C     THE TEST DATA: N/729 FOR A SCRAMBLED N IN -364..364
+      IDATUM(K) = MOD(K*7919, 729) - 364
+      N = 100
+      DO 10 K = 1, 112
+        Y(K) = FLOAT(IDATUM(K - 1)) / 729.0
+        Z(K) = FLOAT(IDATUM(K + 36)) / 729.0
+        U(K) = FLOAT(IDATUM(K + 100)) / 729.0
+        X(K) = 0.0
+   10 CONTINUE
+      Q = 250.0 / 729.0
+      R = 170.0 / 729.0
+      T = 100.0 / 729.0
+C
+C     KERNEL 1 -- HYDRO FRAGMENT
+      IC = ICLOCK()
+      DO 101 K = 1, N
+  101 X(K) = Q + Y(K)*(R*Z(K+10) + T*Z(K+11))
+      CYCLES(1) = ICLOCK() - IC
+      ISUM(1) = ICHECK(X, N)
+C
+C     KERNEL 3 -- INNER PRODUCT
+      IC = ICLOCK()
+      S = 0.0
+      DO 103 K = 1, N
+  103 S = S + Z(K)*Y(K)
+      CYCLES(2) = ICLOCK() - IC
+      ISUM(2) = NINT(S * 531441.0)
+C
+C     KERNEL 5 -- TRI-DIAGONAL ELIMINATION, BELOW THE DIAGONAL
+      X(1) = Y(1)
+      IC = ICLOCK()
+      DO 105 I = 2, N
+  105 X(I) = Z(I)*(Y(I) - X(I-1))
+      CYCLES(3) = ICLOCK() - IC
+      ISUM(3) = ICHECK(X, N)
+C
+C     KERNEL 7 -- EQUATION OF STATE FRAGMENT
+      IC = ICLOCK()
+      DO 107 K = 1, N
+        X(K) = U(K) + R*(Z(K) + R*Y(K)) +
+     1         T*(U(K+3) + R*(U(K+2) + R*U(K+1)) +
+     2            T*(U(K+6) + Q*(U(K+5) + Q*U(K+4))))
+  107 CONTINUE
+      CYCLES(4) = ICLOCK() - IC
+      ISUM(4) = ICHECK(X, N)
+C
+C     KERNEL 11 -- FIRST SUM
+      X(1) = Y(1)
+      IC = ICLOCK()
+      DO 111 K = 2, N
+  111 X(K) = X(K-1) + Y(K)
+      CYCLES(5) = ICLOCK() - IC
+      ISUM(5) = ICHECK(X, N)
+C
+C     KERNEL 12 -- FIRST DIFFERENCE
+      IC = ICLOCK()
+      DO 112 K = 1, N
+  112 X(K) = Y(K+1) - Y(K)
+      CYCLES(6) = ICLOCK() - IC
+      ISUM(6) = ICHECK(X, N)
+C
+      PRINT 900
+  900 FORMAT (41H1LIVERMORE LOOPS IN TRI-TRAN, N = 100    //
+     1        49H  KERNEL    FLOPS    CYCLES    MFLOPS    CHECKSUM)
+      H = 0.0
+      DO 200 I = 1, 6
+        RATE(I) = FLOAT(FLOPS(I)) * 5.0 / FLOAT(CYCLES(I))
+        H = H + 1.0 / RATE(I)
+        PRINT 901, KERNEL(I), FLOPS(I), CYCLES(I), RATE(I), ISUM(I)
+  200 CONTINUE
+  901 FORMAT (1X, I6, I10, I10, F10.4, I12)
+      PRINT 902, 6.0 / H
+  902 FORMAT (27H0 HARMONIC MEAN MFLOPS     , F10.4)
+      END
+C
+C     THE CHECKSUM: THE SUM OF THE RESULTS, TIMES 3**12, ROUNDED
+      INTEGER FUNCTION ICHECK(V, N)
+      DIMENSION V(N)
+      S = 0.0
+      DO 10 K = 1, N
+   10 S = S + V(K)
+      ICHECK = NINT(S * 531441.0)
+      END

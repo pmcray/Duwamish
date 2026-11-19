@@ -1,0 +1,9 @@
+//JOB POLYPHASE                  -- sorting on tape: balanced, backward, polyphase
+//TAPE 1
+//TAPE 2
+//TAPE 3
+//TAPE 4
+//TAPE 5
+//SALISH FROM=../programs/knuth/polyphase.sal OPT
+//EXEC
+//END

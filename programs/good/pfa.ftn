@@ -1,0 +1,319 @@
+C ======================================================================
+C     GOOD'S PRIME-FACTOR ALGORITHM, IN TRI-TRAN
+C
+C     I. J. GOOD, "THE INTERACTION ALGORITHM AND PRACTICAL FOURIER
+C     ANALYSIS", J. ROY. STATIST. SOC. B 20 (1958).  GOOD SAW THAT WHEN
+C     N = N1*N2 WITH N1 AND N2 PRIME TO EACH OTHER, A FOURIER TRANSFORM
+C     OF LENGTH N IS A TWO-DIMENSIONAL TRANSFORM OF N1 BY N2 -- IF THE
+C     DATA ARE PUT IN THE RIGHT ORDER.  TAKE N = N2*N1 + N1*N2 (MOD N)
+C     GOING IN, AND READ K BY THE CHINESE REMAINDER THEOREM COMING OUT,
+C     AND THE TWO SETS OF SHORT TRANSFORMS NEED NO "TWIDDLE FACTORS" TO
+C     JOIN THEM.  COOLEY AND TUKEY (1965) CITED HIS PAPER; THEIR METHOD
+C     WORKS FOR ANY FACTORS, BUT PAYS FOR THE TWIDDLES.
+C
+C     A TERNARY MACHINE'S OWN FAST TRANSFORM IS RADIX 3, WITH THE INDICES
+C     IN TRIT-REVERSED ORDER.  SO: A TRANSFORM OF LENGTH 108 = 27 X 4,
+C     DONE THREE WAYS --
+C        THE DIRECT SUM                     N*N COMPLEX PRODUCTS
+C        COOLEY-TUKEY, 27 X 4               FOUR RADIX-3 FFTS OF 27,
+C                                           27 DFTS OF 4, AND TWIDDLES
+C        GOOD, 27 X 4                       THE SAME, WITHOUT TWIDDLES
+C     -- COUNTING THE REAL MULTIPLICATIONS, AND TIMING EACH BY THE CLOCK.
+C     EACH METHOD'S INDEX TABLES ARE MADE ONCE, BEFORE THE CLOCK STARTS,
+C     AS THEY WOULD BE FOR A PROGRAM THAT TRANSFORMS MANY SERIES.
+C ======================================================================
+      COMMON /ROOTS/ WR(108), WI(108), NTOT
+      COMMON /COUNT/ NMUL
+      COMMON /MAPS/ ITW(27, 4), MAPIN(27, 4), MAPOUT(108)
+      DIMENSION XR(108), XI(108), YR(108), YI(108), ZR(108), ZI(108)
+      DIMENSION PR(108), PI(108)
+      INTEGER MULS(3), CYC(3)
+      N = 108
+      NTOT = N
+      TWOPI = 8.0 * ATAN(1.0)
+      DO 10 J = 1, N
+        A = TWOPI * FLOAT(J - 1) / FLOAT(N)
+        WR(J) = COS(A)
+        WI(J) = -SIN(A)
+   10 CONTINUE
+C     THE INDEX TABLES: COOLEY-TUKEY'S TWIDDLES, AND GOOD'S TWO MAPS
+      DO 15 J1 = 1, 27
+        DO 15 J2 = 1, 4
+          ITW(J1, J2) = MOD((J1 - 1)*(J2 - 1), 108) + 1
+          MAPIN(J1, J2) = MOD(4*(J1 - 1) + 27*(J2 - 1), 108) + 1
+   15 CONTINUE
+      DO 16 K = 1, 108
+   16 MAPOUT(K) = MOD(K - 1, 27) + 1 + 27*MOD(K - 1, 4)
+      CALL SETREV(27)
+C     THE SIGNAL: TWO TONES, AT 7 AND 30 CYCLES
+      DO 20 J = 1, N
+        A = TWOPI * FLOAT(J - 1) / FLOAT(N)
+        XR(J) = COS(7.0*A) + 0.5*SIN(30.0*A)
+        XI(J) = 0.0
+   20 CONTINUE
+C
+      NMUL = 0
+      IC = ICLOCK()
+      CALL DFT(XR, XI, YR, YI, N)
+      CYC(1) = ICLOCK() - IC
+      MULS(1) = NMUL
+C
+      NMUL = 0
+      IC = ICLOCK()
+      CALL COOLEY(XR, XI, ZR, ZI)
+      CYC(2) = ICLOCK() - IC
+      MULS(2) = NMUL
+C
+      NMUL = 0
+      IC = ICLOCK()
+      CALL GOOD(XR, XI, PR, PI)
+      CYC(3) = ICLOCK() - IC
+      MULS(3) = NMUL
+C
+      E2 = 0.0
+      E3 = 0.0
+      DO 30 K = 1, N
+        E2 = AMAX1(E2, ABS(ZR(K) - YR(K)), ABS(ZI(K) - YI(K)))
+        E3 = AMAX1(E3, ABS(PR(K) - YR(K)), ABS(PI(K) - YI(K)))
+   30 CONTINUE
+      PRINT 900
+      PRINT 901, MULS(1), CYC(1)
+      PRINT 902, MULS(2), CYC(2), E2
+      PRINT 903, MULS(3), CYC(3), E3
+  900 FORMAT (1H1, 20X, 45HGOOD'S PRIME-FACTOR ALGORITHM, N = 108 = 27X4
+     1  // 5X, 6HMETHOD, 24X, 15HMULTIPLICATIONS, 8X, 6HCYCLES,
+     2  4X, 30HDIFFERENCE FROM THE DIRECT SUM)
+  901 FORMAT (5X, 10HDIRECT SUM, 20X, I15, I14)
+  902 FORMAT (5X, 30HCOOLEY-TUKEY 27X4, TWIDDLES   , I15, I14, E16.3)
+  903 FORMAT (5X, 30HGOOD 27X4, NO TWIDDLES        , I15, I14, E16.3)
+      NSAVE = MULS(2) - MULS(3)
+      ISAVE = CYC(2) - CYC(3)
+      PRINT 907, NSAVE, 100.0*FLOAT(NSAVE)/FLOAT(MULS(2)), ISAVE,
+     1  100.0*FLOAT(ISAVE)/FLOAT(CYC(2))
+  907 FORMAT (1H0, 4X, 17HGOOD'S MAPS SAVE , I4, 18H MULTIPLICATIONS (,
+     1  F4.1, 8H PER CEN, 11HT) BUT ONLY, I5, 9H CYCLES (, F4.1,
+     2  10H PER CENT) /
+     3  5X, 42HON A DESK CALCULATOR IN 1958 THE MULTIPLIC,
+     4  41HATIONS WERE THE WORK.  ON A MACHINE WITH / 5X,
+     5  46HA FLOATING-POINT UNIT, MOVING AND INDEXING THE,
+     6  36H DATA COST MORE THAN MULTIPLYING IT.)
+C
+C     THE SPECTRUM: WHERE THE ENERGY IS
+      PRINT 904
+  904 FORMAT (1H0, 4X, 35HTHE SPECTRUM (BY GOOD'S ALGORITHM):
+     1  / 5X, 1HK, 8X, 4HREAL, 8X, 4HIMAG, 5X, 9HMAGNITUDE)
+      DO 40 K = 1, N
+        AMAG = SQRT(PR(K)**2 + PI(K)**2)
+        IF (AMAG .GT. 1.0) PRINT 905, K - 1, PR(K), PI(K), AMAG
+   40 CONTINUE
+  905 FORMAT (1X, I5, 3F12.5)
+      PRINT 906
+  906 FORMAT (1H0, 4X, 38HA COSINE OF AMPLITUDE 1 GIVES N/2 = 54,
+     1  36H AT +7 AND -7 (= 101); A SINE OF 0.5,
+     2  / 5X, 29HGIVES -27I AT 30 AND +27I AT ,
+     3  47H-30 (= 78).  EVERYWHERE ELSE THE SPECTRUM IS 0.)
+      END
+C
+C ----------------------------------------------------------------------
+C     THE DIRECT SUM: Y(K) = SUM OF X(J) W**(J*K)
+      SUBROUTINE DFT(XR, XI, YR, YI, N)
+      DIMENSION XR(N), XI(N), YR(N), YI(N)
+      COMMON /ROOTS/ WR(108), WI(108), NTOT
+      COMMON /COUNT/ NMUL
+      DO 20 K = 1, N
+        SR = 0.0
+        SI = 0.0
+        DO 10 J = 1, N
+          IW = MOD((J - 1)*(K - 1), N) + 1
+          SR = SR + XR(J)*WR(IW) - XI(J)*WI(IW)
+          SI = SI + XR(J)*WI(IW) + XI(J)*WR(IW)
+   10   CONTINUE
+        YR(K) = SR
+        YI(K) = SI
+        NMUL = NMUL + 4*N
+   20 CONTINUE
+      END
+C
+C ----------------------------------------------------------------------
+C     THE RADIX-3 FFT, IN PLACE, OF LENGTH N = 3**P.  W**J FOR THIS
+C     LENGTH IS ENTRY J*IW OF THE TABLE OF 108TH ROOTS OF UNITY.
+      SUBROUTINE FFT3(AR, AI, N, IW)
+      DIMENSION AR(N), AI(N)
+      COMMON /ROOTS/ WR(108), WI(108), NTOT
+      COMMON /COUNT/ NMUL
+      COMMON /REV/ IRV(81), NREV
+      DATA S3 /0.8660254038/
+C     FIRST, THE DATA IN TRIT-REVERSED ORDER
+      IF (N .NE. NREV) CALL SETREV(N)
+      DO 20 I = 1, N
+        J = IRV(I)
+        IF (J .LE. I) GO TO 20
+        T = AR(I)
+        AR(I) = AR(J)
+        AR(J) = T
+        T = AI(I)
+        AI(I) = AI(J)
+        AI(J) = T
+   20 CONTINUE
+C     THEN THE BUTTERFLIES, EACH OF THREE POINTS: SPANS 1, 3, 9, ...
+      M = 1
+   30 IF (M .GE. N) RETURN
+      M3 = 3*M
+      DO 50 J = 1, M
+        JJ = J - 1
+        K1 = MOD(JJ*(N/M3)*IW, NTOT) + 1
+        K2 = MOD(2*JJ*(N/M3)*IW, NTOT) + 1
+        DO 40 I = J, N, M3
+          I1 = I + M
+          I2 = I1 + M
+          IF (JJ .EQ. 0) GO TO 35
+          B1R = AR(I1)*WR(K1) - AI(I1)*WI(K1)
+          B1I = AR(I1)*WI(K1) + AI(I1)*WR(K1)
+          B2R = AR(I2)*WR(K2) - AI(I2)*WI(K2)
+          B2I = AR(I2)*WI(K2) + AI(I2)*WR(K2)
+          NMUL = NMUL + 8
+          GO TO 36
+   35     B1R = AR(I1)
+          B1I = AI(I1)
+          B2R = AR(I2)
+          B2I = AI(I2)
+C         Y0 = A + B1 + B2;  Y1, Y2 = A - S/2 -+ I*(SQRT(3)/2)*(B1 - B2)
+   36     SR = B1R + B2R
+          SI = B1I + B2I
+          DR = S3*(B1R - B2R)
+          DI = S3*(B1I - B2I)
+          TR = AR(I) - 0.5*SR
+          TI = AI(I) - 0.5*SI
+          AR(I) = AR(I) + SR
+          AI(I) = AI(I) + SI
+          AR(I1) = TR + DI
+          AI(I1) = TI - DR
+          AR(I2) = TR - DI
+          AI(I2) = TI + DR
+          NMUL = NMUL + 4
+   40   CONTINUE
+   50 CONTINUE
+      M = M3
+      GO TO 30
+      END
+C
+C     THE TABLE OF TRIT-REVERSED INDICES, AS AN FFT OF LENGTH 2**P KEEPS
+C     ONE OF BIT-REVERSED INDICES
+      SUBROUTINE SETREV(N)
+      COMMON /REV/ IRV(81), NREV
+      DO 10 I = 1, N
+   10 IRV(I) = IREV(I - 1, N) + 1
+      NREV = N
+      END
+C
+C     K WITH ITS TERNARY DIGITS REVERSED, WITHIN THE DIGITS OF N
+      INTEGER FUNCTION IREV(K, N)
+      IREV = 0
+      KK = K
+      NN = N
+   10 IF (NN .LE. 1) RETURN
+      IREV = 3*IREV + MOD(KK, 3)
+      KK = KK/3
+      NN = NN/3
+      GO TO 10
+      END
+C
+C     A TRANSFORM OF LENGTH 4 NEEDS NO MULTIPLICATIONS
+      SUBROUTINE DFT4(AR, AI)
+      DIMENSION AR(4), AI(4)
+      S0R = AR(1) + AR(3)
+      S0I = AI(1) + AI(3)
+      D0R = AR(1) - AR(3)
+      D0I = AI(1) - AI(3)
+      S1R = AR(2) + AR(4)
+      S1I = AI(2) + AI(4)
+      D1R = AR(2) - AR(4)
+      D1I = AI(2) - AI(4)
+      AR(1) = S0R + S1R
+      AI(1) = S0I + S1I
+      AR(2) = D0R + D1I
+      AI(2) = D0I - D1R
+      AR(3) = S0R - S1R
+      AI(3) = S0I - S1I
+      AR(4) = D0R - D1I
+      AI(4) = D0I + D1R
+      END
+C
+C ----------------------------------------------------------------------
+C     COOLEY-TUKEY:  J = J1 + 27*J2,  K = 4*K1 + K2.  TRANSFORMS OF 4 ON
+C     THE COLUMNS, A TWIDDLE W**(J1*K2) ON EVERY POINT, TRANSFORMS OF 27
+C     ON THE ROWS.
+      SUBROUTINE COOLEY(XR, XI, YR, YI)
+      DIMENSION XR(108), XI(108), YR(108), YI(108)
+      DIMENSION AR(27, 4), AI(27, 4), CR(4), CI(4), RR(27), RI(27)
+      COMMON /ROOTS/ WR(108), WI(108), NTOT
+      COMMON /COUNT/ NMUL
+      COMMON /MAPS/ ITW(27, 4), MAPIN(27, 4), MAPOUT(108)
+      DO 20 J1 = 1, 27
+        DO 10 J2 = 1, 4
+          CR(J2) = XR(J1 + 27*(J2 - 1))
+          CI(J2) = XI(J1 + 27*(J2 - 1))
+   10   CONTINUE
+        CALL DFT4(CR, CI)
+        DO 15 K2 = 1, 4
+          IW = ITW(J1, K2)
+          IF (IW .EQ. 1) GO TO 14
+          AR(J1, K2) = CR(K2)*WR(IW) - CI(K2)*WI(IW)
+          AI(J1, K2) = CR(K2)*WI(IW) + CI(K2)*WR(IW)
+          NMUL = NMUL + 4
+          GO TO 15
+   14     AR(J1, K2) = CR(K2)
+          AI(J1, K2) = CI(K2)
+   15   CONTINUE
+   20 CONTINUE
+      DO 40 K2 = 1, 4
+        DO 30 J1 = 1, 27
+          RR(J1) = AR(J1, K2)
+          RI(J1) = AI(J1, K2)
+   30   CONTINUE
+        CALL FFT3(RR, RI, 27, 4)
+        DO 35 K1 = 1, 27
+          YR(4*(K1 - 1) + K2) = RR(K1)
+          YI(4*(K1 - 1) + K2) = RI(K1)
+   35   CONTINUE
+   40 CONTINUE
+      END
+C
+C ----------------------------------------------------------------------
+C     GOOD:  J = 4*J1 + 27*J2 (MOD 108) GOING IN; COMING OUT, K IS THE
+C     NUMBER WITH K = K1 (MOD 27) AND K = K2 (MOD 4).  NOTHING BETWEEN.
+C     (A IS 27 BY 4, HELD BY COLUMNS IN ONE DIMENSION: MAPOUT INDEXES IT.)
+      SUBROUTINE GOOD(XR, XI, YR, YI)
+      DIMENSION XR(108), XI(108), YR(108), YI(108)
+      DIMENSION AR(108), AI(108), CR(4), CI(4), RR(27), RI(27)
+      COMMON /COUNT/ NMUL
+      COMMON /MAPS/ ITW(27, 4), MAPIN(27, 4), MAPOUT(108)
+      DO 20 J1 = 1, 27
+        DO 10 J2 = 1, 4
+          J = MAPIN(J1, J2)
+          CR(J2) = XR(J)
+          CI(J2) = XI(J)
+   10   CONTINUE
+        CALL DFT4(CR, CI)
+        DO 15 K2 = 1, 4
+          AR(J1 + 27*(K2 - 1)) = CR(K2)
+          AI(J1 + 27*(K2 - 1)) = CI(K2)
+   15   CONTINUE
+   20 CONTINUE
+      DO 40 K2 = 1, 4
+        DO 30 J1 = 1, 27
+          RR(J1) = AR(J1 + 27*(K2 - 1))
+          RI(J1) = AI(J1 + 27*(K2 - 1))
+   30   CONTINUE
+C       THE 27TH ROOTS OF UNITY ARE EVERY 4TH OF THE 108TH
+        CALL FFT3(RR, RI, 27, 4)
+        DO 35 K1 = 1, 27
+          AR(K1 + 27*(K2 - 1)) = RR(K1)
+          AI(K1 + 27*(K2 - 1)) = RI(K1)
+   35   CONTINUE
+   40 CONTINUE
+      DO 50 K = 1, 108
+        YR(K) = AR(MAPOUT(K))
+        YI(K) = AI(MAPOUT(K))
+   50 CONTINUE
+      END

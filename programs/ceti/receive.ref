@@ -1,0 +1,189 @@
+* =====================================================================
+*  BYURAKAN, 1971: the message that builds its receiver
+*
+*  Hofstadter (Goedel, Escher, Bach, chapter VI) finds three messages in
+*  any message.  The frame message says "I am a message".  The outer
+*  message says how to read the rest.  The inner message is what the
+*  sender meant.  A message between the stars has to carry all three,
+*  and the outer one cannot be written in a language, since there is
+*  none in common: it can only be recognised.
+*
+*  This transmission's frame is the primes.  Its outer message is a
+*  machine: a set of rewriting rules, of the kind Markov studied in
+*  Moscow and Lindenmayer (1968) used for the growth of plants.  Its
+*  inner message is a seed.  The receiver builds the machine and gives
+*  it the seed, and what the sender meant grows.
+*
+*  The transmission is trits on the cards: + a pulse, - a pulse of the
+*  other polarisation, 0 silence.  The receiver brings four conventions
+*  to it, and they are listed at the end.
+* =====================================================================
+
+$ENTRY Go { = <Receive <Sections <Trits <Card>>>>; }
+
+* the cards, as one string of trits
+Trits { 0 = ; e.Line = <Keep e.Line> <Trits <Card>>; }
+Keep {
+  '+' e.1 = '+' <Keep e.1>;
+  '-' e.1 = '-' <Keep e.1>;
+  '0' e.1 = '0' <Keep e.1>;
+  s.X e.1 = <Keep e.1>;
+  = ;
+}
+
+* a run of + is a number; 0 parts numbers; - parts items; -- ends a section
+Sections { e.1 '--' e.2 = (<Items e.1>) <Sections e.2>; e.1 = ; }
+Items { e.1 '-' e.2 = (<Numbers e.1>) <Items e.2>; e.1 = (<Numbers e.1>); }
+Numbers { e.1 '0' e.2 = <Count e.1> <Numbers e.2>; e.1 = <Count e.1>; }
+Count { e.1, <Lenw e.1> : s.N e.2 = s.N; }
+
+Receive {
+  ((e.Frame)) (e.Rules) ((e.Seed))
+    = <Prout 'BYURAKAN 1971 -- the message that builds its receiver'>
+      <Prout>
+      <Prout '1. The frame message: ' <Frame 2 e.Frame>>
+      <Prout '   ' e.Frame>
+      <Prout>
+      <Prout '2. The outer message: a machine of ' <Symb <Length e.Rules>> ' rules'>
+      <ShowRules e.Rules>
+      <Prout>
+      <Prout '3. The inner message: the seed ' e.Seed>
+      <Prout>
+      <Build <Shape e.Rules> (e.Rules) e.Seed>
+      <Prout>
+      <Prout 'What the receiver brought to it: that a run of pulses is a number;'>
+      <Prout 'that silence parts numbers, and the other pulse parts groups of them;'>
+      <Prout 'that the first number of a rule is what the rest replaces; and that'>
+      <Prout 'rules which all write a square number of things write squares.'>
+      <Prout 'The frame taught the first of these.  The other three it guessed.'>;
+  e.Other = <Prout 'No message: the sections are not a frame, a machine and a seed.'>;
+}
+
+* the frame: are these the primes, in order, from s.P?
+Frame {
+  s.P = 'the primes, in order, none missing';
+  s.P s.P e.Rest = <Frame <NextPrime <Add s.P 1>> e.Rest>;
+  s.P e.Rest = 'not the primes';
+}
+NextPrime { s.N, <Prime s.N 2> : True = s.N; s.N = <NextPrime <Add s.N 1>>; }
+Prime {
+  s.N s.D, <Compare <Mul s.D s.D> s.N> : '+' = True;
+  s.N s.D, <Mod s.N s.D> : 0 = False;
+  s.N s.D = <Prime s.N <Add s.D 1>>;
+}
+
+Length { e.1, <Lenw e.1> : s.N e.2 = s.N; }
+
+ShowRules { (s.X e.R) e.Rest = <Prout '   ' s.X ' -> ' e.R> <ShowRules e.Rest>; = ; }
+
+* do the rules all write the same square number of things?  then its
+* side; if not, 1: the machine works on a line
+Shape {
+  (s.X e.R) e.Rest, <Side 2 <Length e.R>> : s.K, <Same <Length e.R> e.Rest> : True = s.K;
+  e.Rules = 1;
+}
+Side {
+  s.K s.N, <Compare <Mul s.K s.K> s.N> : '0' = s.K;
+  s.K s.N, <Compare <Mul s.K s.K> s.N> : '-' = <Side <Add s.K 1> s.N>;
+  s.K s.N = ;
+}
+Same {
+  s.N = True;
+  s.N (s.X e.R) e.Rest, <Length e.R> : s.N = <Same s.N e.Rest>;
+  s.N e.Rest = False;
+}
+
+* what a thing is replaced by; a thing with no rule stays
+Rhs { s.X e.1 (s.X e.R) e.2 = e.R; s.X e.Rules = s.X; }
+
+* ---------------------------------------------------------------------
+*  the machine, built: on a line, or on a plane
+* ---------------------------------------------------------------------
+Build {
+  1 (e.Rules) e.Seed
+    = <Prout '   The machine built, and run from the seed, on a line:'>
+      <Prout>
+      <Line 0 8 (e.Rules) () e.Seed>;
+  s.K (e.Rules) e.Seed
+    = <Prout '   The machine built, and run from the seed, on a plane (each rule'>
+      <Prout '   writes a square of ' <Symb s.K> ' by ' <Symb s.K> '):'>
+      <Prout>
+      <Plane 0 3 s.K (e.Rules) () (e.Seed)>;
+}
+
+Line {
+  s.G s.Max (e.Rules) (e.Sizes) e.Now
+    = <Prout '   ' <Symb s.G> '  ' <Picture e.Now>>
+      <Line1 s.G s.Max (e.Rules) (e.Sizes <Length e.Now>) e.Now>;
+}
+Line1 {
+  s.Max s.Max (e.Rules) (e.Sizes) e.Now = <Prout> <Report ('lengths') e.Sizes>;
+  s.G s.Max (e.Rules) (e.Sizes) e.Now
+    = <Line <Add s.G 1> s.Max (e.Rules) (e.Sizes) <Rewrite (e.Rules) e.Now>>;
+}
+Rewrite { (e.Rules) s.X e.Rest = <Rhs s.X e.Rules> <Rewrite (e.Rules) e.Rest>; (e.Rules) = ; }
+
+Plane {
+  s.G s.Max s.K (e.Rules) (e.Sizes) e.Rows
+    = <Prout '   generation ' <Symb s.G>>
+      <Rows e.Rows>
+      <Plane1 s.G s.Max s.K (e.Rules) (e.Sizes <Ones 0 e.Rows>) e.Rows>;
+}
+Plane1 {
+  s.Max s.Max s.K (e.Rules) (e.Sizes) e.Rows = <Report ('things of the first kind') e.Sizes>;
+  s.G s.Max s.K (e.Rules) (e.Sizes) e.Rows
+    = <Plane <Add s.G 1> s.Max s.K (e.Rules) (e.Sizes) <Grow (e.Rules) s.K e.Rows>>;
+}
+Grow {
+  (e.Rules) s.K (e.Row) e.Rest = <Under (e.Rules) s.K 1 (e.Row)> <Grow (e.Rules) s.K e.Rest>;
+  (e.Rules) s.K = ;
+}
+* the s.K rows that one row becomes
+Under {
+  (e.Rules) s.K s.J (e.Row), <Compare s.J s.K> : '+' = ;
+  (e.Rules) s.K s.J (e.Row)
+    = (<Across (e.Rules) s.K s.J e.Row>) <Under (e.Rules) s.K <Add s.J 1> (e.Row)>;
+}
+Across {
+  (e.Rules) s.K s.J s.X e.Rest
+    = <Slice s.K s.J <Rhs s.X e.Rules>> <Across (e.Rules) s.K s.J e.Rest>;
+  (e.Rules) s.K s.J = ;
+}
+Slice { s.K 1 e.R = <Take s.K e.R>; s.K s.J e.R = <Slice s.K <Sub s.J 1> <Drop s.K e.R>>; }
+Take { 0 e.R = ; s.N t.1 e.R = t.1 <Take <Sub s.N 1> e.R>; }
+Drop { 0 e.R = e.R; s.N t.1 e.R = <Drop <Sub s.N 1> e.R>; }
+
+Rows { (e.Row) e.Rest = <Prout '   ' <Wide e.Row>> <Rows e.Rest>; = <Prout>; }
+Ones {
+  s.N (e.1 1 e.2) e.Rest = <Ones <Add s.N 1> (e.2) e.Rest>;
+  s.N (e.1) e.Rest = <Ones s.N e.Rest>;
+  s.N = s.N;
+}
+
+* things, as the printer shows them
+Picture { 1 e.R = '#' <Picture e.R>; 2 e.R = '.' <Picture e.R>; s.X e.R = <Symb s.X> <Picture e.R>; = ; }
+Wide { 1 e.R = '##' <Wide e.R>; 2 e.R = '  ' <Wide e.R>; s.X e.R = <Symb s.X> ' ' <Wide e.R>; = ; }
+
+* the receiver looks for a law in the sizes, without being told one
+Report {
+  (e.What) s.A s.B e.Sizes, <Law (s.A s.B e.Sizes) s.A s.B e.Sizes> : e.Law
+    = <Prout '   ' e.What ': ' s.A s.B e.Sizes> <Prout '   ' e.Law>;
+}
+Law {
+  (s.A s.B e.S) e.All, <Ratio <Div s.B s.A> e.All> : True
+    = 'each is ' <Symb <Div s.B s.A>> ' times the one before';
+  (e.S) e.All, <Sums e.All> : True = 'each is the sum of the two before';
+  (e.S) e.All = 'no law found';
+}
+Ratio {
+  s.R s.A s.B e.Rest, <Mul s.A s.R> : s.B = <Ratio s.R s.B e.Rest>;
+  s.R s.A = True;
+  s.R e.Rest = False;
+}
+Sums {
+  s.A s.B s.C e.Rest, <Add s.A s.B> : s.C = <Sums s.B s.C e.Rest>;
+  s.A s.B = True;
+  e.Rest = False;
+}
+
+$END  the transmission follows on the cards

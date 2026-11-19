@@ -1,0 +1,53 @@
+-- =====================================================================
+--  FLOOP: wondrous numbers (Goedel, Escher, Bach: "Aria with Diverse
+--  Variations").  Halve n if it is even, else make it 3n + 1; a number
+--  is wondrous if this reaches 1.  Nobody knows whether every number is.
+--
+--  So nobody can bound this loop in advance: it is a FlooP program, and
+--  the BlooP certifier rightly refuses it.  "Is every number wondrous?"
+--  is a GlooP question -- asked of all numbers, answered by no loop.
+-- =====================================================================
+
+proc steps(n)
+begin
+  var k := 0
+  while n <> 1 do begin
+    n := n mod 2 = 0 -> n / 2, 3 * n + 1
+    k := k + 1
+  end
+  return k
+end
+
+proc peak(n)
+begin
+  var top := n
+  while n <> 1 do begin
+    n := n mod 2 = 0 -> n / 2, 3 * n + 1
+    top := max(top, n)
+  end
+  return top
+end
+
+proc main()
+begin
+  var best := 1, bestk := 0, k
+  prints("FLOOP -- wondrous numbers\n\n")
+  prints("15 -> ")
+  var n := 15
+  while n <> 1 do begin
+    print(n); prints(" ")
+    n := n mod 2 = 0 -> n / 2, 3 * n + 1
+  end
+  prints("1\n\n")
+  for i := 1 to 5000 do begin
+    k := steps(i)
+    if k > bestk then begin
+      best := i; bestk := k
+      prints("new record: "); printw(i, 5); prints(" takes "); printw(k, 3)
+      prints(" steps, climbing as high as "); print(peak(i)); newline()
+    end
+  end
+  prints("\nevery number up to 5000 is wondrous.  Whether all are, no loop\n")
+  prints("with a bound fixed in advance can say.\n")
+  return 0
+end
