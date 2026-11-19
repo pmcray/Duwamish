@@ -344,6 +344,9 @@ comparison.
   demonstrations
 * [docs/IDENTITY.md](docs/IDENTITY.md): the house style of the Special
   Systems Section, which built the machine
+* [docs/REVIEW.md](docs/REVIEW.md): a review of the project so far: its
+  aims, timelines, philosophy, results, quality, and the questions still
+  open
 
 ## Layout
 
